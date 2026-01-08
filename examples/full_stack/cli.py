@@ -15,6 +15,8 @@ Each command is a different COMPOSITION of the same building blocks:
 The graph only runs what's needed for each command!
 """
 
+from typing import Any, Literal
+
 from kungfu import Ok, Error
 
 from examples.full_stack.domain import UserId, ProductId, Cart, CartItem
@@ -25,6 +27,7 @@ from examples.full_stack.graph import (
     UserInfoNode,
     ShippingEstimateNode,
 )
+from emergent import graph as G
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40,6 +43,7 @@ HELP_TEXT = """
 │  preview <id> <items>       Preview order (totals, no payment)              │
 │  checkout <id> <items>      Full checkout with payment                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
+│  viz [node] [format]        Visualize graph (ascii/tree/mermaid)            │
 │  users                      List available users                            │
 │  products                   List available products                         │
 │  help                       Show this help                                  │
@@ -53,6 +57,9 @@ Examples:
   shipping 1 LAPTOP:1       → Shipping cost for laptop to Alice
   preview 1 CABLE:2,CASE:1  → Order preview without payment
   checkout 1 CABLE:2,CASE:1 → Full checkout with saga
+  viz                       → ASCII diagram of checkout graph
+  viz checkout tree         → Tree view of checkout
+  viz preview mermaid       → Mermaid diagram of preview
 """
 
 
@@ -316,6 +323,32 @@ async def run_cli() -> None:
             
             case "products":
                 print_products()
+            
+            case "viz" | "graph":
+                node_name = parts[1] if len(parts) > 1 else "checkout"
+                fmt = parts[2] if len(parts) > 2 else "ascii"
+                
+                nodes: dict[str, type[Any]] = {
+                    "checkout": CreateOrderNode,
+                    "preview": PreviewNode,
+                    "user": UserInfoNode,
+                    "shipping": ShippingEstimateNode,
+                }
+                
+                target = nodes.get(node_name.lower())
+                if target is None:
+                    print(f"  ✗ Unknown node: {node_name}")
+                    print(f"  Available: {', '.join(nodes.keys())}")
+                    continue
+                
+                if fmt not in ("mermaid", "tree", "text", "layers", "ascii"):
+                    print(f"  ✗ Unknown format: {fmt}")
+                    print("  Available: ascii, tree, mermaid, text, layers")
+                    continue
+                
+                fmt_typed: Literal["mermaid", "tree", "text", "layers", "ascii"] = fmt  # type: ignore[assignment]
+                print(f"\n  {node_name.upper()} graph ({fmt}):\n")
+                print(G.visualize(target, fmt_typed))
             
             case "user":
                 if len(parts) != 2:

@@ -25,6 +25,15 @@ from emergent.graph._compiled import (
     Compiled,
     graph,
 )
+from emergent.graph._visualize import (
+    to_mermaid,
+    to_tree,
+    to_text,
+    to_ascii,
+    visualize,
+    get_layers,
+    get_dependencies,
+)
 
 __all__ = (
     "node",
@@ -35,4 +44,12 @@ __all__ = (
     "graph",
     "Compiled",
     "CompiledRun",
+    # Visualization
+    "to_mermaid",
+    "to_tree",
+    "to_text",
+    "to_ascii",
+    "visualize",
+    "get_layers",
+    "get_dependencies",
 )
