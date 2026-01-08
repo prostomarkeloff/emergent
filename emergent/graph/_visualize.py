@@ -26,7 +26,7 @@ def get_dependencies(node_type: type[Any]) -> list[type[Any]]:
 
     deps: list[type[Any]] = []
     sig = inspect.signature(compose)
-    for name, param in sig.parameters.items():
+    for name, _ in sig.parameters.items():
         if name == "cls":
             continue
         hint = hints.get(name)
@@ -198,7 +198,7 @@ def to_ascii(target: type[Any]) -> str:
         print(G.to_ascii(CheckoutNode))
     """
     layers = get_layers(target)
-    
+
     if not layers:
         return "(empty graph)"
 
