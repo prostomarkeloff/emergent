@@ -1,0 +1,36 @@
+[project]
+name = "emergent"
+version = "0.1.0"
+description = "Type-safe DSLs for common patterns. Composable, local-first, lazy."
+readme = "README.md"
+requires-python = ">=3.13"
+authors = [
+    { name = "prostomarkeloff" }
+]
+license = { text = "MIT" }
+
+dependencies = [
+    "kungfu @ git+https://github.com/timoniq/kungfu.git",
+    "combinators-py @ git+https://github.com/prostomarkeloff/combinators.py.git",
+    "nodnod @ git+https://github.com/timoniq/nodnod.git"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.350",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+
+[tool.hatch.metadata]
+allow-direct-references = true

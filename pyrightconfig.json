@@ -1,0 +1,11 @@
+{
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "strict",
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportMissingTypeStubs": false,
+  "reportUnknownMemberType": true,
+  "reportUnknownArgumentType": true,
+  "reportUnknownVariableType": true,
+  "reportMissingImports": true,
+}
