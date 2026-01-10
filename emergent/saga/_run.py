@@ -1,11 +1,13 @@
 """
 Saga execution with automatic rollback.
+
+Note: Uses combinators for parallel/race execution instead of raw asyncio.
 """
 
 from __future__ import annotations
 
-import asyncio
-from kungfu import Result, Ok, Error
+from combinators import parallel as C_parallel, race_ok, lift as L
+from kungfu import Result, Ok, Error, LazyCoroResult
 
 from emergent.saga._types import (
     SagaStep,
@@ -190,33 +192,53 @@ async def run_parallel[T, E](
     Execute saga steps in parallel.
 
     All must succeed. On any failure, compensators run for successful steps.
+
+    Note: Uses combinators.parallel instead of asyncio.gather.
     """
     compensators: list[RecordedCompensator[T]] = []
 
-    async def run_one(s: SagaStep[T, E]) -> Result[T, E]:
-        return await run_step(s, compensators)
+    def make_op(s: SagaStep[T, E]) -> LazyCoroResult[Result[T, E], str]:
+        """Wrap step execution into LazyCoroResult."""
+        return L.catching_async(
+            lambda step=s: run_step(step, compensators),
+            on_error=str,
+        )
 
-    results = await asyncio.gather(*[run_one(s) for s in par.sagas])
+    # Run all in parallel via combinators
+    parallel_result = await C_parallel(*[make_op(s) for s in par.sagas])
 
-    errors = [r for r in results if isinstance(r, Error)]
-    if errors:
-        comp_run, comp_failed = await run_compensators(compensators)
-        first_error = errors[0]
+    match parallel_result:
+        case Error(_):
+            # Parallel itself failed (shouldn't happen with catching_async)
+            comp_run, comp_failed = await run_compensators(compensators)
+            return Error(SagaError(
+                error=par.sagas[0].action if par.sagas else None,  # type: ignore[arg-type]
+                step_failed=0,
+                compensators_run=comp_run,
+                compensators_failed=comp_failed,
+                rollback_complete=comp_failed == 0,
+            ))
+        case Ok(results):
+            # results is list[Result[T, E]]
+            errors = [r for r in results if isinstance(r, Error)]
+            if errors:
+                comp_run, comp_failed = await run_compensators(compensators)
+                first_error = errors[0]
 
-        return Error(SagaError(
-            error=first_error.value,
-            step_failed=len(par.sagas) - len(errors),
-            compensators_run=comp_run,
-            compensators_failed=comp_failed,
-            rollback_complete=comp_failed == 0,
-        ))
+                return Error(SagaError(
+                    error=first_error.value,
+                    step_failed=len(par.sagas) - len(errors),
+                    compensators_run=comp_run,
+                    compensators_failed=comp_failed,
+                    rollback_complete=comp_failed == 0,
+                ))
 
-    values = tuple(r.value for r in results if isinstance(r, Ok))
-    return Ok(SagaResult(
-        value=values,
-        steps_executed=len(par.sagas),
-        compensators_recorded=len(compensators),
-    ))
+            values = tuple(r.value for r in results if isinstance(r, Ok))
+            return Ok(SagaResult(
+                value=values,
+                steps_executed=len(par.sagas),
+                compensators_recorded=len(compensators),
+            ))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,51 +252,36 @@ async def run_race[T, E](
     Race saga steps.
 
     First success wins. Pending tasks are cancelled.
+
+    Note: Uses combinators.race_ok instead of asyncio.wait.
     """
     compensators: list[RecordedCompensator[T]] = []
 
-    async def run_one(s: SagaStep[T, E]) -> Result[T, E]:
-        return await run_step(s, compensators)
+    def make_op(s: SagaStep[T, E]) -> LazyCoroResult[T, E]:
+        """Wrap step execution, unwrapping inner Result."""
+        async def impl() -> Result[T, E]:
+            step_result = await run_step(s, compensators)
+            return step_result
+        return LazyCoroResult(impl)
 
-    tasks = [asyncio.create_task(run_one(s)) for s in race_expr.sagas]
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    # Race via combinators — first Ok wins
+    race_result = await race_ok(*[make_op(s) for s in race_expr.sagas])
 
-    # Cancel pending
-    for task in pending:
-        task.cancel()
-
-    # Find first success
-    for task in done:
-        result = task.result()
-        if isinstance(result, Ok):
+    match race_result:
+        case Ok(value):
             return Ok(SagaResult(
-                value=result.value,
+                value=value,
                 steps_executed=1,
                 compensators_recorded=len(compensators),
             ))
-
-    # All failed — get first error
-    comp_run, comp_failed = await run_compensators(compensators)
-    first_done = next(iter(done))
-    first_result = first_done.result()
-
-    # first_result must be Error at this point (all failed)
-    # Use match for exhaustive handling
-    match first_result:
         case Error(e):
+            comp_run, comp_failed = await run_compensators(compensators)
             return Error(SagaError(
                 error=e,
                 step_failed=len(race_expr.sagas),
                 compensators_run=comp_run,
                 compensators_failed=comp_failed,
                 rollback_complete=comp_failed == 0,
-            ))
-        case Ok(v):
-            # This should not happen - we already handled Ok above
-            return Ok(SagaResult(
-                value=v,
-                steps_executed=1,
-                compensators_recorded=len(compensators),
             ))
 
 
