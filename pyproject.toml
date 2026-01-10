@@ -1,6 +1,6 @@
 [project]
 name = "emergent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Type-safe DSLs for common patterns. Composable, local-first, lazy."
 readme = "README.md"
 requires-python = ">=3.13"
