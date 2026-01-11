@@ -20,10 +20,11 @@ from nodnod import Scope, Value, EventLoopAgent, Node
 class TypedScope:
     """Type-safe wrapper around nodnod.Scope."""
 
-    __slots__ = ("_scope",)
+    __slots__ = ("_scope", "_injected")
 
     def __init__(self, scope: Scope | None = None, detail: str = "scope") -> None:
         self._scope = scope if scope is not None else Scope(detail=detail)
+        self._injected: dict[type[Any], Any] = {}
 
     @property
     def inner(self) -> Scope:
@@ -31,7 +32,12 @@ class TypedScope:
 
     def inject[T](self, typ: type[T], value: T) -> TypedScope:
         self._scope.push(Value(typ, value))
+        self._injected[typ] = value
         return self
+
+    def all_injected(self) -> dict[type[Any], Any]:
+        """Return all injected values."""
+        return self._injected
 
     def get[T](self, typ: type[T]) -> T:
         result = self._scope.get(typ)

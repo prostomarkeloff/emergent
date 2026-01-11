@@ -1,20 +1,15 @@
 """
-Ops — data-driven dispatch with automatic DI via nodnod.
+Ops — data-driven dispatch with automatic parallelization via nodnod.
 
 Core idea:
-- Op[T, E] is base class with .get() method returning LazyCoroResult[T, E]
-- Operations are frozen dataclasses inheriting from Op[T, E]
-- Runner injects executable .get() via scope per operation type
-- Handlers receive operation instances with working .get() method
-- Operations can be awaited directly: `result = await price_op`
+- Op[T, E] is base class for operations
+- Handlers are converted to nodnod nodes
+- nodnod builds dependency graph and executes in parallel
+- await op.get() returns cached result (already computed by nodnod)
 
 Example:
     @dataclass(frozen=True, slots=True)
     class GetPrice(Op[float, str]):
-        product_id: int
-    
-    @dataclass(frozen=True, slots=True)
-    class GetStock(Op[int, str]):
         product_id: int
     
     @dataclass(frozen=True, slots=True)
@@ -23,33 +18,17 @@ Example:
         price: GetPrice    # Dependency
         stock: GetStock    # Dependency
     
-    async def get_price(req: GetPrice, db: Database) -> Result[float, str]:
-        return Ok(await db.get_price(req.product_id))
-    
     async def build_summary(
         req: BuildSummary,
-        price: GetPrice,    # Op instance with .get()
-        stock: GetStock,    # Op instance with .get()
+        price: GetPrice,    # Op with .get() → cached Result
+        stock: GetStock,    # Op with .get() → cached Result
     ) -> Result[str, str]:
-        p = await price  # or price.get()
-        s = await stock
-        
-        match (p, s):
-            case (Ok(pv), Ok(sv)):
-                return Ok(f"${pv}, {sv} units")
-            case _:
-                return Error("failed")
+        p = await price  # instant — already computed by nodnod
+        s = await stock  # instant — already computed by nodnod
+        ...
     
-    runner = (
-        ops()
-        .on(GetPrice, get_price)
-        .on(GetStock, get_stock)
-        .on(BuildSummary, build_summary)
-        .compile()
-        .inject(Database, db)
-    )
-    
-    result = await runner.run(GetPrice(123))
+    runner = ops().on(GetPrice, get_price).on(BuildSummary, build_summary).compile()
+    result = await runner.run(BuildSummary(...))  # GetPrice & GetStock run in parallel
 """
 
 from __future__ import annotations
@@ -59,7 +38,10 @@ from dataclasses import dataclass, field, fields
 from typing import Any, TypeVar, Callable, Awaitable, Generic, get_type_hints, cast
 from abc import ABC
 
-from kungfu import Result, Error, LazyCoroResult
+from kungfu import Result, Ok, Error, LazyCoroResult, Some
+
+from nodnod import Node, EventLoopAgent
+from nodnod.utils.create_node import create_node
 
 from emergent import graph as G
 from emergent.ops._policy import Policy
@@ -76,31 +58,17 @@ class Op(ABC, Generic[T_co, E_co]):
     """
     Base class for operations.
     
-    Provides:
-    - .get() → LazyCoroResult[T, E]
-    - __await__ → can be awaited directly
-    
-    Usage:
-        @dataclass(frozen=True, slots=True)
-        class GetPrice(Op[float, str]):
-            product_id: int
-        
-        async def handler(price: GetPrice):
-            result = await price  # or price.get()
+    Provides .get() and __await__ for accessing cached results.
     """
     
-    # Note: These are "overridden" by runner via wrapper class.
-    # Default implementation raises error to catch unbound ops.
-    
     def get(self) -> LazyCoroResult[T_co, E_co]:
-        """Execute operation and return result."""
+        """Get cached result (set by runner after nodnod execution)."""
         raise RuntimeError(
             f"Operation {type(self).__name__} not bound. "
             "Did you forget to register handler via .on()?"
         )
     
     def __await__(self):
-        """Allow: result = await op"""
         return self.get().__await__()
 
 
@@ -114,16 +82,118 @@ def _is_op_type(typ: object) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class _OpReg:
-    """Registration: Op type → handler function."""
+    """Registration: Op type → handler + node."""
     op_type: type[Op[Any, Any]]
     handler: HandlerFunc
+    node_cls: type[Node[Any, Any]]
     policy: Policy
+
+
+class _CachedOp(Generic[T_co, E_co]):
+    """
+    Op wrapper with pre-computed result.
+    
+    .get() and __await__ return the cached Result instantly.
+    """
+    __slots__ = ("_result",)
+    
+    def __init__(self, result: Result[T_co, E_co]) -> None:
+        object.__setattr__(self, "_result", result)
+    
+    def get(self) -> LazyCoroResult[T_co, E_co]:
+        """Return cached result instantly."""
+        result: Result[T_co, E_co] = object.__getattribute__(self, "_result")
+        
+        async def instant() -> Result[T_co, E_co]:
+            return result
+        
+        return LazyCoroResult(instant)
+    
+    def __await__(self):
+        return self.get().__await__()
+
+
+def _create_node_for_handler(
+    op_type: type[Op[Any, Any]],
+    handler: HandlerFunc,
+    registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]],
+    op_param_names: dict[type[Op[Any, Any]], set[str]],
+) -> type[Node[Any, Any]]:
+    """
+    Create nodnod Node from handler function.
+    
+    Handler params become node dependencies:
+    - req: OpType → injected from scope
+    - other_op: OtherOp → depends on OtherOp's node (wrapped in _CachedOp)
+    - dep: SomeClass → injected from scope
+    """
+    sig = inspect.signature(handler)
+    hints = get_type_hints(handler)
+    
+    # Track which params are Op dependencies (need wrapping)
+    op_dep_params: set[str] = set()
+    
+    # Build __compose__ annotations
+    compose_annotations: dict[str, Any] = {}
+    compose_params: list[inspect.Parameter] = []
+    
+    for pname, p in sig.parameters.items():
+        ptype = hints.get(pname, p.annotation)
+        
+        if ptype is op_type:
+            # Request param → inject op_type from scope
+            compose_annotations[pname] = op_type
+        elif _is_op_type(ptype) and ptype in registry:
+            # Another Op → depend on its node (returns Result, wrap in _CachedOp)
+            compose_annotations[pname] = registry[ptype]
+            op_dep_params.add(pname)
+        else:
+            # Regular dependency → inject from scope
+            compose_annotations[pname] = ptype
+        
+        compose_params.append(inspect.Parameter(pname, inspect.Parameter.POSITIONAL_OR_KEYWORD))
+    
+    compose_annotations["return"] = Result[Any, Any]
+    
+    # Create __compose__ function that wraps Op deps in _CachedOp
+    async def compose_fn(**kwargs: Any) -> Result[Any, Any]:
+        # Wrap Op dependency results in _CachedOp so handler can await them
+        wrapped_kwargs: dict[str, Any] = {}
+        for k, v in kwargs.items():
+            if k in op_dep_params and isinstance(v, (Ok, Error)):
+                # Wrap Result in _CachedOp
+                wrapped_kwargs[k] = _CachedOp(cast(Result[Any, Any], v))
+            else:
+                wrapped_kwargs[k] = v
+        return await handler(**wrapped_kwargs)
+    
+    compose_fn.__annotations__ = compose_annotations
+    compose_fn.__signature__ = inspect.Signature(parameters=compose_params)  # type: ignore[attr-defined]
+    compose_fn.__name__ = f"compose_{op_type.__name__}"
+    
+    # Store op_dep_params for reference
+    op_param_names[op_type] = op_dep_params
+    
+    # Create node class
+    node_cls = create_node(
+        name=f"Node:{op_type.__name__}",
+        base_node=Node,
+        bases=(),
+        namespace={
+            "__compose__": compose_fn,
+            "__module__": handler.__module__,
+        },
+    )
+    
+    return node_cls
+
+
 
 
 @dataclass(slots=True, frozen=True)
 class OpsBuilder:
     """Builder for operation handlers."""
-    _items: tuple[_OpReg, ...] = ()
+    _items: tuple[tuple[type[Op[Any, Any]], HandlerFunc, Policy], ...] = ()
     
     def on(
         self,
@@ -131,175 +201,129 @@ class OpsBuilder:
         handler: HandlerFunc,
         policy: Policy | None = None,
     ) -> OpsBuilder:
-        """
-        Register handler for operation type.
-        
-        Handler signature:
-            async def handler(req: OpType, dep1: Dep1, dep2: OpType2) -> Result[T, E]
-        
-        - req: The operation request (same type as op_type)
-        - dep1, dep2: Either injected deps OR other Op types (will have .get())
-        """
-        reg = _OpReg(
-            op_type=op_type,
-            handler=handler,
-            policy=policy or Policy(),
-        )
+        """Register handler for operation type."""
         # Last registration wins
-        others = tuple(i for i in self._items if i.op_type is not op_type)
-        return OpsBuilder(_items=(*others, reg))
+        others = tuple(i for i in self._items if i[0] is not op_type)
+        return OpsBuilder(_items=(*others, (op_type, handler, policy or Policy())))
     
     def compile(self) -> Runner:
-        """Compile into executable runner."""
-        registry: dict[type[Op[Any, Any]], _OpReg] = {}
-        for reg in self._items:
-            registry[reg.op_type] = reg
-        return Runner(_registry=registry)
-
-
-class _BoundOp(Generic[T_co, E_co]):
-    """
-    Wrapper that binds .get() to a runner.
-    
-    Proxies all attributes to original op, but overrides .get() and __await__.
-    """
-    __slots__ = ("_op", "_runner")
-    
-    def __init__(self, op: Op[T_co, E_co], runner: Runner) -> None:
-        object.__setattr__(self, "_op", op)
-        object.__setattr__(self, "_runner", runner)
-    
-    def __getattr__(self, name: str) -> Any:
-        return getattr(object.__getattribute__(self, "_op"), name)
-    
-    def __setattr__(self, name: str, value: Any) -> None:
-        # Redirect to original (frozen, so will raise)
-        setattr(object.__getattribute__(self, "_op"), name, value)
-    
-    def get(self) -> LazyCoroResult[T_co, E_co]:
-        """Execute operation via runner."""
-        runner: Runner = object.__getattribute__(self, "_runner")
-        op: Op[T_co, E_co] = object.__getattribute__(self, "_op")
+        """
+        Compile into runner.
         
-        async def executor() -> Result[T_co, E_co]:
-            return await runner.run(op)
+        Creates nodnod nodes for all handlers with proper dependency wiring.
+        """
+        # First pass: collect all op types
+        op_handlers: dict[type[Op[Any, Any]], tuple[HandlerFunc, Policy]] = {}
+        for op_type, handler, policy in self._items:
+            op_handlers[op_type] = (handler, policy)
         
-        return LazyCoroResult(executor)
-    
-    def __await__(self):
-        """Allow: result = await bound_op"""
-        return self.get().__await__()
+        # Second pass: create nodes (need to handle dependencies)
+        node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]] = {}
+        registrations: dict[type[Op[Any, Any]], _OpReg] = {}
+        op_param_names: dict[type[Op[Any, Any]], set[str]] = {}
+        
+        # Build in dependency order (simple: just iterate, nodes reference by type)
+        for op_type, (handler, policy) in op_handlers.items():
+            node_cls = _create_node_for_handler(op_type, handler, node_registry, op_param_names)
+            node_registry[op_type] = node_cls
+            registrations[op_type] = _OpReg(
+                op_type=op_type,
+                handler=handler,
+                node_cls=node_cls,
+                policy=policy,
+            )
+        
+        return Runner(_registry=registrations, _node_registry=node_registry)
 
 
 @dataclass(slots=True)
 class Runner:
     """
-    Executes operations via scope injection pattern.
+    Executes operations via nodnod for automatic parallelization.
     
-    When handler requests Op[T,E] as parameter:
-    1. Gets the op instance from request fields
-    2. Wraps it with _BoundOp (binds .get() to this runner)
-    3. Handler calls .get() or awaits → executes recursively
+    When running an operation:
+    1. Collect all Op dependencies from request fields
+    2. Build nodnod agent with all required nodes
+    3. Execute via nodnod (parallel resolution)
+    4. Pass cached results to handler
     """
     _registry: dict[type[Op[Any, Any]], _OpReg]
+    _node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]]
     _global_scope: G.TypedScope = field(default_factory=lambda: G.TypedScope(detail="ops:global"))
     
     def inject(self, typ: type[object], impl: object) -> Runner:
-        """Inject shared dependency (Database, etc.)."""
+        """Inject shared dependency."""
         self._global_scope.inject(typ, impl)
         return self
     
-    def _bind_op(self, op: Op[T_co, E_co]) -> _BoundOp[T_co, E_co]:
-        """Wrap operation with bound .get() method."""
-        return _BoundOp(op, self)
+    def _collect_op_deps(self, req: Op[Any, Any]) -> list[tuple[type[Op[Any, Any]], Op[Any, Any]]]:
+        """Collect all Op dependencies from request fields."""
+        deps: list[tuple[type[Op[Any, Any]], Op[Any, Any]]] = []
+        if hasattr(req, "__dataclass_fields__"):
+            for f in fields(req):  # type: ignore[arg-type]
+                val: object = getattr(req, f.name)
+                if isinstance(val, Op):
+                    val_typed = cast(Op[Any, Any], val)
+                    val_type = type(val_typed)
+                    if val_type in self._registry:
+                        deps.append((val_type, val_typed))
+        return deps
     
     async def run(self, req: Op[T, E]) -> Result[T, E]:
         """
-        Execute operation.
+        Execute operation with automatic parallelization.
         
-        1. Find handler for operation type
-        2. Resolve parameters:
-           - req param: the request itself
-           - Op[T,E] params: get from req fields, wrap with _BoundOp
-           - Other params: get from global scope (injected deps)
-        3. Call handler
+        nodnod resolves all dependencies in parallel before calling handler.
         """
         op_type = type(req)
         reg = self._registry.get(op_type)
         if not reg:
             return cast(Result[T, E], Error(f"Op not registered: {op_type.__name__}"))
         
-        # Extract handler signature
-        sig = inspect.signature(reg.handler)
-        hints = get_type_hints(reg.handler)
-        kwargs: dict[str, Any] = {}
+        # Collect all op dependencies
+        op_deps = self._collect_op_deps(req)
         
-        # Build mapping: field_name → field_value for request
-        req_fields: dict[str, Any] = {}
-        if hasattr(req, "__dataclass_fields__"):
-            for f in fields(req):  # type: ignore[arg-type]
-                req_fields[f.name] = getattr(req, f.name)
+        # Build set of nodes to execute
+        nodes_to_run: set[type[Node[Any, Any]]] = {reg.node_cls}
+        for dep_type, _ in op_deps:
+            dep_reg = self._registry.get(dep_type)
+            if dep_reg:
+                nodes_to_run.add(dep_reg.node_cls)
         
-        for param_name, param in sig.parameters.items():
-            param_type = hints.get(param_name, param.annotation)
-            
-            if param_type is inspect.Parameter.empty:
-                continue
-            
-            # Case 1: This is the request parameter (same type)
-            if param_type is op_type:
-                kwargs[param_name] = req
-                continue
-            
-            # Case 2: This is another Op type → bind .get() method
-            if _is_op_type(param_type) and param_type in self._registry:
-                # Find matching field in request
-                found_dep: object | None = None
-                
-                # First try: field with same name
-                if param_name in req_fields:
-                    field_val = req_fields[param_name]
-                    if isinstance(field_val, Op):
-                        found_dep = cast(object, field_val)
-                
-                # Second try: field with matching type
-                if found_dep is None:
-                    for _, fv in req_fields.items():
-                        if isinstance(fv, param_type):
-                            found_dep = fv
-                            break
-                
-                if found_dep is not None:
-                    # Note: found_dep is Op[?, ?] here, cast to Op[Any, Any]
-                    kwargs[param_name] = self._bind_op(cast(Op[Any, Any], found_dep))
-                    continue
-                else:
-                    return cast(
-                        Result[T, E],
-                        Error(f"Missing dependency field for {param_type.__name__} in {op_type.__name__}")
-                    )
-            
-            # Case 3: Injected dependency from scope
-            if isinstance(param_type, type):
-                try:
-                    kwargs[param_name] = self._global_scope.get(param_type)
-                except KeyError:
-                    return cast(
-                        Result[T, E],
-                        Error(f"Missing injected dependency: {param_type.__name__}")
-                    )
+        # Build agent
+        agent = EventLoopAgent.build(nodes_to_run)
         
-        # Execute handler
-        result = await reg.handler(**kwargs)
-        return cast(Result[T, E], result)
+        # Create scope with injections (use G.TypedScope for type-safety)
+        async with G.TypedScope(detail=f"ops:{op_type.__name__}") as scope:
+            # Inject global dependencies
+            for typ, impl in self._global_scope.all_injected().items():
+                scope.inject(typ, impl)
+            
+            # Inject request
+            scope.inject(op_type, req)
+            
+            # Inject op dependencies (so their nodes can extract them)
+            for dep_type, dep_val in op_deps:
+                scope.inject(dep_type, dep_val)
+            
+            # Run agent — nodnod parallelizes automatically
+            await agent.run(local_scope=scope.inner, mapped_scopes={})  # type: ignore[misc]
+            
+            # Get result from scope
+            result_opt = scope.inner.retrieve(reg.node_cls)
+            match result_opt:
+                case Some(val):
+                    node_result = val.value
+                    # node_result should be Result[T, E]
+                    if isinstance(node_result, (Ok, Error)):
+                        return cast(Result[T, E], node_result)
+                    # Wrap in Ok if not Result
+                    return cast(Result[T, E], Ok(node_result))
+                case _:
+                    return cast(Result[T, E], Error(f"Node not found: {reg.node_cls}"))
     
     def __call__(self, req: Op[T, E]) -> LazyCoroResult[T, E]:
-        """
-        Execute operation (returns awaitable).
-        
-        Usage:
-            result = await runner(GetPrice(123))
-        """
+        """Execute operation (returns awaitable)."""
         async def inner() -> Result[T, E]:
             return await self.run(req)
         return LazyCoroResult(inner)
@@ -310,7 +334,7 @@ def ops() -> OpsBuilder:
     return OpsBuilder()
 
 
-# Aliases for Op (semantic naming)
+# Aliases
 Returns = Op
 Returning = Op
 
