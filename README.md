@@ -97,10 +97,55 @@ result = await G.compose(CheckoutNode, cart)
 
 | Module | Pattern | One-liner |
 |--------|---------|-----------|
+| `ops` | Data-driven dispatch | Replaces match/case. Handlers with auto DI. |
 | `saga` | Distributed transactions | Steps + compensators. Failure = auto-rollback. |
 | `cache` | Multi-tier caching | key → tiers → fetch. Miss = fetch + store. |
 | `graph` | Computation graphs | Nodes + deps = parallelization + DI. |
 | `idempotency` | Exactly-once execution | Deduplicate concurrent calls. TTL + stores. |
+
+---
+
+## ops
+
+Data-driven dispatch — replaces `match/case` with declarative registration:
+
+```python
+from emergent import ops as O
+from kungfu import Result, Ok, Error
+
+@dataclass(frozen=True, slots=True)
+class GetUser(O.Returning[User, NotFound]):
+    user_id: int
+
+async def get_user(req: GetUser, db: Database) -> Result[User, NotFound]:
+    return await db.get(req.user_id)
+
+runner = O.ops().on(GetUser, get_user).compile().inject(Database, db)
+
+result = await runner.run(GetUser(42))
+```
+
+**Composition** — operations depending on other operations:
+
+```python
+@dataclass(frozen=True, slots=True)
+class BuildSummary(O.Returning[str, str]):
+    product_id: int
+    price: GetPrice    # dependency
+    stock: GetStock    # dependency
+
+async def build_summary(
+    req: BuildSummary,
+    price: GetPrice,    # has .get() → Result
+    stock: GetStock,    # has .get() → Result
+) -> Result[str, str]:
+    p = await price  # or price.get()
+    s = await stock
+    
+    match (p, s):
+        case (Ok(pv), Ok(sv)): return Ok(f"${pv}, {sv} units")
+        case _: return Error("failed")
+```
 
 ---
 

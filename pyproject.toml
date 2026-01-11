@@ -34,3 +34,9 @@ reportUnknownMemberType = false
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.408",
+    "ruff>=0.14.11",
+]
