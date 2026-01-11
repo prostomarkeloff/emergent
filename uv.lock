@@ -21,7 +21,7 @@ dependencies = [
 
 [[package]]
 name = "emergent"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "combinators-py" },
@@ -59,7 +59,7 @@ wheels = [
 [[package]]
 name = "kungfu"
 version = "0.2.1"
-source = { git = "https://github.com/timoniq/kungfu?rev=main#a8fd4b57d9dca3e6542d6db9925963659f255d40" }
+source = { git = "https://github.com/timoniq/kungfu.git#a8fd4b57d9dca3e6542d6db9925963659f255d40" }
 dependencies = [
     { name = "typing-extensions" },
 ]
