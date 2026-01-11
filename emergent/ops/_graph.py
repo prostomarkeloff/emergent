@@ -44,7 +44,6 @@ from nodnod import Node, EventLoopAgent
 from nodnod.utils.create_node import create_node
 
 from emergent import graph as G
-from emergent.ops._policy import Policy
 
 T = TypeVar("T")
 E = TypeVar("E")
@@ -86,7 +85,6 @@ class _OpReg:
     op_type: type[Op[Any, Any]]
     handler: HandlerFunc
     node_cls: type[Node[Any, Any]]
-    policy: Policy
 
 
 class _CachedOp(Generic[T_co, E_co]):
@@ -188,23 +186,20 @@ def _create_node_for_handler(
     return node_cls
 
 
-
-
 @dataclass(slots=True, frozen=True)
 class OpsBuilder:
     """Builder for operation handlers."""
-    _items: tuple[tuple[type[Op[Any, Any]], HandlerFunc, Policy], ...] = ()
+    _items: tuple[tuple[type[Op[Any, Any]], HandlerFunc], ...] = ()
     
     def on(
         self,
         op_type: type[Op[Any, Any]],
         handler: HandlerFunc,
-        policy: Policy | None = None,
     ) -> OpsBuilder:
         """Register handler for operation type."""
         # Last registration wins
         others = tuple(i for i in self._items if i[0] is not op_type)
-        return OpsBuilder(_items=(*others, (op_type, handler, policy or Policy())))
+        return OpsBuilder(_items=(*others, (op_type, handler)))
     
     def compile(self) -> Runner:
         """
@@ -213,9 +208,9 @@ class OpsBuilder:
         Creates nodnod nodes for all handlers with proper dependency wiring.
         """
         # First pass: collect all op types
-        op_handlers: dict[type[Op[Any, Any]], tuple[HandlerFunc, Policy]] = {}
-        for op_type, handler, policy in self._items:
-            op_handlers[op_type] = (handler, policy)
+        op_handlers: dict[type[Op[Any, Any]], HandlerFunc] = {}
+        for op_type, handler in self._items:
+            op_handlers[op_type] = handler
         
         # Second pass: create nodes (need to handle dependencies)
         node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]] = {}
@@ -223,14 +218,13 @@ class OpsBuilder:
         op_param_names: dict[type[Op[Any, Any]], set[str]] = {}
         
         # Build in dependency order (simple: just iterate, nodes reference by type)
-        for op_type, (handler, policy) in op_handlers.items():
+        for op_type, handler in op_handlers.items():
             node_cls = _create_node_for_handler(op_type, handler, node_registry, op_param_names)
             node_registry[op_type] = node_cls
             registrations[op_type] = _OpReg(
                 op_type=op_type,
                 handler=handler,
                 node_cls=node_cls,
-                policy=policy,
             )
         
         return Runner(_registry=registrations, _node_registry=node_registry)

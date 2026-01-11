@@ -23,7 +23,7 @@ db = FakeDb()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Operations — frozen dataclasses inheriting from Op[T, E]
+# Operations — frozen dataclasses inheriting from Returning[T, E]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True, slots=True)

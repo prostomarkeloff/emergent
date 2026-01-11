@@ -97,7 +97,7 @@ result = await G.compose(CheckoutNode, cart)
 
 | Module | Pattern | One-liner |
 |--------|---------|-----------|
-| `ops` | Data-driven dispatch | Replaces match/case. Handlers with auto DI. |
+| `ops` | Data-driven dispatch | Replaces match/case. Auto DI + parallelization. |
 | `saga` | Distributed transactions | Steps + compensators. Failure = auto-rollback. |
 | `cache` | Multi-tier caching | key → tiers → fetch. Miss = fetch + store. |
 | `graph` | Computation graphs | Nodes + deps = parallelization + DI. |
@@ -121,11 +121,10 @@ async def get_user(req: GetUser, db: Database) -> Result[User, NotFound]:
     return await db.get(req.user_id)
 
 runner = O.ops().on(GetUser, get_user).compile().inject(Database, db)
-
 result = await runner.run(GetUser(42))
 ```
 
-**Composition** — operations depending on other operations:
+**Composition** — operations depending on other operations (auto parallelization):
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -136,16 +135,17 @@ class BuildSummary(O.Returning[str, str]):
 
 async def build_summary(
     req: BuildSummary,
-    price: GetPrice,    # has .get() → Result
-    stock: GetStock,    # has .get() → Result
+    price: GetPrice,    # has .get() → cached Result
+    stock: GetStock,    # has .get() → cached Result
 ) -> Result[str, str]:
-    p = await price  # or price.get()
+    p = await price  # instant (already computed in parallel)
     s = await stock
-    
     match (p, s):
         case (Ok(pv), Ok(sv)): return Ok(f"${pv}, {sv} units")
         case _: return Error("failed")
 ```
+
+**Policies** (retry, timeout, idempotency) are achieved via composition with `combinators.py` and other emergent modules: `saga`, `cache`, `idempotency`.
 
 ---
 

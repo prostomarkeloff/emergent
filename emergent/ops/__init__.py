@@ -1,46 +1,40 @@
 """
-Ops — data-driven dispatch with automatic DI.
+Ops — data-driven dispatch with automatic DI and parallelization.
 
-Clean functional style:
+Replaces match/case with declarative registration:
     from emergent import ops as O
 
     @dataclass(frozen=True, slots=True)
-    class GetPrice(O.Op[float, str]):
-        product_id: int
+    class GetUser(O.Returning[User, NotFound]):
+        user_id: int
 
-    async def get_price(req: GetPrice, db: Database) -> Result[float, str]:
-        return Ok(await db.get_price(req.product_id))
+    async def get_user(req: GetUser, db: Database) -> Result[User, NotFound]:
+        return await db.get(req.user_id)
 
-    runner = (
-        O.ops()
-        .on(GetPrice, get_price)
-        .compile()
-        .inject(Database, db)
-    )
-    
-    result = await runner.run(GetPrice(123))
+    runner = O.ops().on(GetUser, get_user).compile().inject(Database, db)
+    result = await runner.run(GetUser(42))
 
-With composition (handlers receive Op instances with .get()):
+Composition (handlers receive Op with .get()):
     @dataclass(frozen=True, slots=True)
-    class BuildSummary(O.Op[str, str]):
+    class BuildSummary(O.Returning[str, str]):
         product_id: int
         price: GetPrice    # Dependency
         stock: GetStock    # Dependency
 
     async def build_summary(
         req: BuildSummary,
-        price: GetPrice,    # Op with .get() method
-        stock: GetStock,    # Op with .get() method
+        price: GetPrice,    # has .get() → cached Result
+        stock: GetStock,    # has .get() → cached Result
     ) -> Result[str, str]:
-        p = await price  # or price.get()
+        p = await price  # instant (already computed in parallel)
         s = await stock
-        
-        match (p, s):
-            case (Ok(pv), Ok(sv)): return Ok(f"${pv}, {sv} units")
-            case _: return Error("failed")
+        ...
+
+Policies (retry, timeout, idempotency) are achieved via composition
+with combinators.py and other emergent modules: saga, cache, idempotency.
 """
 
-# Clean API
+
 from emergent.ops._graph import (
     Op,
     Returns,
@@ -50,31 +44,11 @@ from emergent.ops._graph import (
     ops,
 )
 
-# Policy
-from emergent.ops._policy import (
-    Policy,
-    Retry,
-    Timeout,
-    IdemSpec,
-    WAIT,
-    FAIL,
-    FORCE,
-)
-
 __all__ = (
-    # Core
     "Op",
     "Returns",
     "Returning",
     "OpsBuilder",
     "Runner",
     "ops",
-    # Policy
-    "Policy",
-    "Retry",
-    "Timeout",
-    "IdemSpec",
-    "WAIT",
-    "FAIL",
-    "FORCE",
 )

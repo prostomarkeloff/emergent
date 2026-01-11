@@ -2,7 +2,7 @@
 Ops Composition — operations depending on other operations.
 
 Handler receives Op instances with .get() method.
-Call .get() or await directly to execute dependent operation.
+nodnod executes dependencies in parallel automatically.
 
 Level 5: emergent.ops
 Level 2: kungfu.Result
@@ -31,7 +31,7 @@ repo = ProductRepo(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Operations — Op[T, E] with composition via fields
+# Operations — Returning[T, E] with composition via fields
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass(frozen=True, slots=True)
@@ -48,8 +48,8 @@ class GetStock(O.Returning[int, str]):
 class BuildSummary(O.Returning[str, str]):
     """Composite operation — depends on GetPrice and GetStock."""
     product_id: int
-    price: GetPrice    # ← dependency
-    stock: GetStock    # ← dependency
+    price: GetPrice    # ← dependency (executed in parallel)
+    stock: GetStock    # ← dependency (executed in parallel)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -68,12 +68,12 @@ async def get_stock(req: GetStock, r: ProductRepo) -> Result[int, str]:
 
 async def build_summary(
     req: BuildSummary,
-    price: GetPrice,    # ← Op instance with .get()
-    stock: GetStock,    # ← Op instance with .get()
+    price: GetPrice,    # ← Op with .get() → cached Result
+    stock: GetStock,    # ← Op with .get() → cached Result
 ) -> Result[str, str]:
-    # Execute dependent ops (await or .get())
-    p = await price
-    s = await stock
+    # Dependencies already computed in parallel by nodnod
+    p = await price  # instant
+    s = await stock  # instant
 
     match (p, s):
         case (Ok(pv), Ok(sv)):
@@ -106,7 +106,7 @@ async def main() -> None:
     r1 = await runner(GetPrice(1))
     print(f"   → {r1}")
 
-    print("\n2. Composite op (BuildSummary → GetPrice + GetStock):")
+    print("\n2. Composite op (GetPrice + GetStock in parallel → BuildSummary):")
     r2 = await runner.run(BuildSummary(
         product_id=1,
         price=GetPrice(1),
