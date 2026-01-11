@@ -8,4 +8,5 @@
   "reportUnknownArgumentType": true,
   "reportUnknownVariableType": true,
   "reportMissingImports": true,
+  "exclude": [],
 }
