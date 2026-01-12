@@ -21,6 +21,10 @@ Backend code gets messy fast. Retries here, caching there, rollback logic somewh
 **❌ Standard Python: 45 lines of scattered logic**
 
 ```python
+# Assume domain types/services already exist:
+# Cart, Order, get_profile, get_loyalty, get_item, tax_service,
+# inventory, payment_service, create_order, PaymentError
+
 async def checkout(user_id: int, cart: Cart) -> Order:
     # Fetch user (no caching, sequential)
     profile = await get_profile(user_id)
@@ -58,35 +62,96 @@ async def checkout(user_id: int, cart: Cart) -> Order:
 **✅ Emergent: declare topology, not instructions**
 
 ```python
-from emergent import graph as G, saga as S, cache as C
-from combinators import lift as L
+from dataclasses import dataclass
+from emergent import ops as O, saga as S
+from kungfu import Result, Ok, Error
 
-@G.node
-class ProfileNode:
-    @classmethod
-    async def __compose__(cls, cart: CartInput) -> ProfileNode:
-        result = await profile_cache.get(cart.user_id)
-        return cls(result.unwrap().value)
+# Ops
+@dataclass(frozen=True, slots=True)
+class GetProfile(O.Returning[Profile, str]):
+    user_id: int
 
-@G.node
-class LoyaltyNode:
-    @classmethod
-    async def __compose__(cls, cart: CartInput) -> LoyaltyNode:
-        return cls(await repo.get_loyalty(cart.user_id))
+@dataclass(frozen=True, slots=True)
+class GetItems(O.Returning[list[Item], str]):
+    cart: Cart
 
-@G.node  
-class CheckoutNode:
-    @classmethod
-    async def __compose__(
-        cls,
-        profile: ProfileNode,   # ┐
-        loyalty: LoyaltyNode,   # ├─ parallel (auto)
-        items: ItemsNode,       # ┘
-        saga: PaymentSagaNode,  # rollback (auto)
-    ) -> CheckoutNode:
-        return cls(Order(...))
+@dataclass(frozen=True, slots=True)
+class PaymentFlow(O.Returning[str, str]):  # returns tx id
+    items: GetItems  # Op dependency → runs first, then awaited as cached
 
-result = await G.compose(CheckoutNode, cart)
+@dataclass(frozen=True, slots=True)
+class BuildCheckout(O.Returning[Order, str]):
+    cart: Cart
+    profile: GetProfile
+    items: GetItems
+    payment: PaymentFlow
+
+# Handlers
+async def get_profile_op(req: GetProfile, repo: Repo) -> Result[Profile, str]:
+    p = await repo.get_profile(req.user_id)
+    return Ok(p) if p else Error("profile not found")
+
+async def get_items_op(req: GetItems, repo: Repo) -> Result[list[Item], str]:
+    items = await repo.get_items(req.cart)
+    return Ok(items) if items else Error("no items")
+
+async def payment_flow_op(
+    req: PaymentFlow,
+    items: GetItems,               # awaited → cached Result
+    inventory: Inventory,
+    gateway: PaymentGateway,
+) -> Result[str, str]:
+    match await items:
+        case Ok(item_list):
+            subtotal = sum(i.price * i.qty for i in item_list)
+            flow = S.from_async(
+                lambda: inventory.reserve(item_list),
+                on_error=lambda e: f"reserve: {e}",
+                compensate=lambda r: inventory.release(r),
+            ).then(lambda r: S.from_async(
+                lambda: gateway.charge(subtotal),
+                on_error=lambda e: f"charge: {e}",
+                compensate=lambda tx: gateway.refund(tx),
+            ))
+            match await S.run_chain(flow):
+                case Ok(ok): return Ok(ok.value)   # tx id
+                case Error(_): return Error("payment failed")
+        case Error(e):
+            return Error(e)
+
+async def build_checkout_op(
+    req: BuildCheckout,
+    profile: GetProfile,
+    items: GetItems,
+    payment: PaymentFlow,
+) -> Result[Order, str]:
+    p, i, tx = await profile, await items, await payment
+    match (p, i, tx):
+        case (Ok(profile), Ok(items), Ok(tx_id)):
+            return Ok(Order(profile, items, tx_id))
+        case _:
+            return Error("checkout failed")
+
+# Wire and run — the framework analyzes dependencies and parallelizes
+runner = (
+    O.ops()
+    .on(GetProfile, get_profile_op)
+    .on(GetItems, get_items_op)
+    .on(PaymentFlow, payment_flow_op)
+    .on(BuildCheckout, build_checkout_op)
+).compile() \
+ .inject(Repo, repo) \
+ .inject(Inventory, inventory) \
+ .inject(PaymentGateway, gateway)
+
+result = await runner.run(
+    BuildCheckout(
+        cart,
+        GetProfile(cart.user_id),     # runs in parallel with GetItems
+        GetItems(cart),               # cached Result passed to PaymentFlow
+        PaymentFlow(GetItems(cart)),  # depends on Items; compensates on failure
+    )
+)
 ```
 
 **The difference?** One is instructions. The other is a dependency graph the framework optimizes.
