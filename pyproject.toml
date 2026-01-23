@@ -10,7 +10,7 @@ authors = [
 license = { text = "MIT" }
 
 dependencies = [
-    "kungfu @ git+https://github.com/timoniq/kungfu.git",
+    "kungfu-fp @ git+https://github.com/timoniq/kungfu.git",
     "combinators-py @ git+https://github.com/prostomarkeloff/combinators.py.git",
     "nodnod @ git+https://github.com/timoniq/nodnod.git"
 ]
