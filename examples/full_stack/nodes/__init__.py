@@ -36,7 +36,11 @@ from examples.full_stack.nodes._order import CreateOrderNode
 # Composed views
 from examples.full_stack.nodes._preview import OrderPreview, PreviewNode
 from examples.full_stack.nodes._userinfo import UserInfo, UserInfoNode
-from examples.full_stack.nodes._shipping import ShippingLine, ShippingEstimate, ShippingEstimateNode
+from examples.full_stack.nodes._shipping import (
+    ShippingLine,
+    ShippingEstimate,
+    ShippingEstimateNode,
+)
 
 __all__ = (
     # Cache
@@ -66,4 +70,3 @@ __all__ = (
     "ShippingEstimate",
     "ShippingEstimateNode",
 )
-

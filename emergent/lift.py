@@ -26,10 +26,13 @@ from combinators.lift import (
 # Emergent-specific helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def from_result[T, E](result: Result[T, E]) -> LazyCoroResult[T, E]:
     """Lift a Result into LazyCoroResult."""
+
     async def _run() -> Result[T, E]:
         return result
+
     return LazyCoroResult(_run)
 
 
@@ -39,7 +42,7 @@ def from_awaitable[T, E](
 ) -> LazyCoroResult[T, E]:
     """
     Create LazyCoroResult from async function.
-    
+
     Alias for catching_async with clearer naming.
     """
     return catching_async(awaitable_fn, on_error=on_error)
@@ -48,7 +51,7 @@ def from_awaitable[T, E](
 __all__ = (
     # From combinators.lift
     "pure",
-    "fail", 
+    "fail",
     "catching_async",
     "wrap_async",
     "lifted",

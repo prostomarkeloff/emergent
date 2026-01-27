@@ -184,7 +184,7 @@ def _short_name(name: str, max_len: int = 12) -> str:
     name = name.replace("Node", "")
     if len(name) <= max_len:
         return name
-    return name[:max_len - 2] + ".."
+    return name[: max_len - 2] + ".."
 
 
 def to_ascii(target: type[Any]) -> str:
@@ -300,4 +300,12 @@ def visualize(
             return "\n".join(lines)
 
 
-__all__ = ("to_mermaid", "to_tree", "to_text", "to_ascii", "visualize", "get_layers", "get_dependencies")
+__all__ = (
+    "to_mermaid",
+    "to_tree",
+    "to_text",
+    "to_ascii",
+    "visualize",
+    "get_layers",
+    "get_dependencies",
+)

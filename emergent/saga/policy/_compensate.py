@@ -7,10 +7,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+
 @dataclass(frozen=True, slots=True)
 class AllOnFailurePolicy:
     """Compensate all completed steps on any failure."""
+
     pass
+
 
 def all_on_failure() -> AllOnFailurePolicy:
     """Compensate all steps on failure."""
@@ -20,7 +23,9 @@ def all_on_failure() -> AllOnFailurePolicy:
 @dataclass(frozen=True, slots=True)
 class SequentialPolicy:
     """Run compensators sequentially (no parallelism)."""
+
     pass
+
 
 def sequential() -> SequentialPolicy:
     """Run compensators one at a time."""
@@ -30,7 +35,9 @@ def sequential() -> SequentialPolicy:
 @dataclass(frozen=True, slots=True)
 class ParallelPolicy:
     """Run compensators in parallel."""
+
     max_concurrent: int = 10
+
 
 def parallel(max_concurrent: int = 10) -> ParallelPolicy:
     """Run compensators in parallel."""
@@ -40,8 +47,10 @@ def parallel(max_concurrent: int = 10) -> ParallelPolicy:
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     """Retry failed compensators."""
+
     times: int
     delay: timedelta
+
 
 def retry(times: int = 3, delay: timedelta = timedelta(seconds=1)) -> RetryPolicy:
     """Retry compensators on failure."""
@@ -51,7 +60,9 @@ def retry(times: int = 3, delay: timedelta = timedelta(seconds=1)) -> RetryPolic
 @dataclass(frozen=True, slots=True)
 class SkipPolicy:
     """Skip compensation entirely."""
+
     pass
+
 
 def skip() -> SkipPolicy:
     """No compensation."""
@@ -70,4 +81,3 @@ __all__ = (
     "SkipPolicy",
     "skip",
 )
-

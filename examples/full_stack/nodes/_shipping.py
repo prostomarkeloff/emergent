@@ -18,6 +18,7 @@ from examples.full_stack.nodes._items import ItemsDataNode
 @dataclass
 class ShippingLine:
     """Shipping for one item."""
+
     product_name: str
     quantity: int
     carrier: str
@@ -28,6 +29,7 @@ class ShippingLine:
 @dataclass
 class ShippingEstimate:
     """Shipping estimate for all items."""
+
     ship_to_city: str
     ship_to_state: str
     lines: list[ShippingLine]
@@ -39,14 +41,14 @@ class ShippingEstimate:
 class ShippingEstimateNode:
     """
     Shipping estimate — just shipping costs.
-    
+
     COMPOSITION EXAMPLE:
     Depends on: AddressNode, ItemsDataNode (which needs LoyaltyNode)
     Does NOT depend on: TaxNode, FraudCheckNode, CheckoutSagaNode
-    
+
     Shows minimal subgraph for specific use case.
     """
-    
+
     def __init__(self, data: ShippingEstimate) -> None:
         self.data = data
 
@@ -66,10 +68,10 @@ class ShippingEstimateNode:
             )
             for item in items.items
         ]
-        
+
         total_cost = sum(line.cost for line in lines)
         max_days = max((line.days for line in lines), default=0)
-        
+
         estimate = ShippingEstimate(
             ship_to_city=address.data.city,
             ship_to_state=address.data.state,
@@ -83,7 +85,7 @@ class ShippingEstimateNode:
     async def execute(cls, cart: Cart) -> Result[ShippingEstimate, CheckoutError]:
         """
         Get shipping estimate.
-        
+
         Only runs: user address → items (product + shipping)
         Does NOT run: fraud, payment, order creation
         """
@@ -98,4 +100,3 @@ class ShippingEstimateNode:
 
 
 __all__ = ("ShippingLine", "ShippingEstimate", "ShippingEstimateNode")
-

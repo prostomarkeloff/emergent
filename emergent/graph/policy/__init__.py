@@ -13,10 +13,13 @@ from datetime import timedelta
 # Policies
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class CacheAllPolicy:
     """Cache all node results."""
+
     pass
+
 
 def cache_all() -> CacheAllPolicy:
     return CacheAllPolicy()
@@ -25,7 +28,9 @@ def cache_all() -> CacheAllPolicy:
 @dataclass(frozen=True, slots=True)
 class ParallelMaxPolicy:
     """Limit parallel execution."""
+
     max_concurrent: int
+
 
 def parallel_max(n: int) -> ParallelMaxPolicy:
     return ParallelMaxPolicy(n)
@@ -34,7 +39,9 @@ def parallel_max(n: int) -> ParallelMaxPolicy:
 @dataclass(frozen=True, slots=True)
 class TimeoutPolicy:
     """Timeout for resolution."""
+
     duration: timedelta
+
 
 def timeout(seconds: float) -> TimeoutPolicy:
     return TimeoutPolicy(timedelta(seconds=seconds))
@@ -43,8 +50,10 @@ def timeout(seconds: float) -> TimeoutPolicy:
 @dataclass(frozen=True, slots=True)
 class RetryPolicy:
     """Retry failed nodes."""
+
     times: int
     on: type[Exception] | None = None
+
 
 def retry(times: int = 3, on: type[Exception] | None = None) -> RetryPolicy:
     return RetryPolicy(times, on)
@@ -64,4 +73,3 @@ __all__ = (
     "RetryPolicy",
     "retry",
 )
-

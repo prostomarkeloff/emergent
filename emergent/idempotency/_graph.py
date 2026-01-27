@@ -51,6 +51,7 @@ from emergent.idempotency._policy import Policy, OnPending
 # Input — Spec (injected)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class IdempotencySpec:
     """
@@ -60,6 +61,7 @@ class IdempotencySpec:
     If provided, cached results are only returned if hash matches.
     Почему: Защита от коллизий ключей — разные inputs с одинаковым key.
     """
+
     key: str
     input_value: Any
     operation: Any
@@ -71,6 +73,7 @@ class IdempotencySpec:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Entry Node
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @G.node
 class SpecNode:
@@ -87,6 +90,7 @@ class SpecNode:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Fetch Record
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @G.node
 class FetchRecordNode:
@@ -118,11 +122,14 @@ class FetchRecordNode:
 # State Nodes — Each validates a specific record state
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @G.node
 class CompletedRecordNode:
     """Validates: record exists, COMPLETED, not expired."""
 
-    def __init__(self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec) -> None:
+    def __init__(
+        self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec
+    ) -> None:
         self.record = record
         self.spec = spec
 
@@ -142,7 +149,9 @@ class CompletedRecordNode:
 class FailedRecordNode:
     """Validates: record exists, FAILED, not expired."""
 
-    def __init__(self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec) -> None:
+    def __init__(
+        self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec
+    ) -> None:
         self.record = record
         self.spec = spec
 
@@ -162,7 +171,9 @@ class FailedRecordNode:
 class PendingRecordNode:
     """Validates: record exists, PENDING."""
 
-    def __init__(self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec) -> None:
+    def __init__(
+        self, record: IdempotencyRecord[Any, Any], spec: IdempotencySpec
+    ) -> None:
         self.record = record
         self.spec = spec
 
@@ -244,9 +255,11 @@ class ValidatedInputNode:
 # Outcome Types
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class OutcomeOk:
     """Successful outcome."""
+
     value: Any
     from_cache: bool
     key: str
@@ -255,6 +268,7 @@ class OutcomeOk:
 @dataclass(frozen=True)
 class OutcomeError:
     """Error outcome."""
+
     kind: IdempotencyErrorKind
     message: str
     original_error: Any | None
@@ -266,6 +280,7 @@ type Outcome = OutcomeOk | OutcomeError
 # ═══════════════════════════════════════════════════════════════════════════════
 # Polymorphic Outcome — Each case uses validated state nodes
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @polymorphic[Outcome]
 class IdempotencyOutcome:
@@ -393,7 +408,9 @@ class IdempotencyOutcome:
         # Store result
         match result:
             case Ok(value):
-                store_result = await spec.store.set_completed(spec.key, value, spec.policy.result_ttl)
+                store_result = await spec.store.set_completed(
+                    spec.key, value, spec.policy.result_ttl
+                )
                 match store_result:
                     case Error(err):
                         return OutcomeError(
@@ -491,7 +508,9 @@ class IdempotencyOutcome:
                     # Race — check if completed
                     get_result = await spec.store.get(spec.key)
                     match get_result:
-                        case Ok(rec) if rec is not None and rec.state == RecordState.COMPLETED:
+                        case Ok(rec) if (
+                            rec is not None and rec.state == RecordState.COMPLETED
+                        ):
                             return OutcomeOk(
                                 value=rec.value,
                                 from_cache=True,
@@ -519,7 +538,9 @@ class IdempotencyOutcome:
         # Store result
         match result:
             case Ok(value):
-                store_result = await spec.store.set_completed(spec.key, value, spec.policy.result_ttl)
+                store_result = await spec.store.set_completed(
+                    spec.key, value, spec.policy.result_ttl
+                )
                 match store_result:
                     case Error(err):
                         return OutcomeError(
@@ -546,6 +567,7 @@ class IdempotencyOutcome:
 # Final Node
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @G.node
 class FinalResultNode:
     """Converts Outcome to typed Result."""
@@ -562,12 +584,15 @@ class FinalResultNode:
             case OutcomeOk(value=v, from_cache=fc, key=k):
                 return Ok(IdempotencyResult(value=v, from_cache=fc, key=k))
             case OutcomeError(kind=kind, message=msg, original_error=orig):
-                return Error(IdempotencyError(kind=kind, message=msg, original_error=orig))
+                return Error(
+                    IdempotencyError(kind=kind, message=msg, original_error=orig)
+                )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Public API
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run_idempotent(
     spec: IdempotencySpec,
@@ -583,10 +608,18 @@ async def run_idempotent(
 
 __all__ = (
     "IdempotencySpec",
-    "Outcome", "OutcomeOk", "OutcomeError",
-    "SpecNode", "FetchRecordNode",
-    "CompletedRecordNode", "FailedRecordNode", "PendingRecordNode", "NoRecordNode",
-    "ValidatedInputNode", "StoreErrorNode",
-    "IdempotencyOutcome", "FinalResultNode",
+    "Outcome",
+    "OutcomeOk",
+    "OutcomeError",
+    "SpecNode",
+    "FetchRecordNode",
+    "CompletedRecordNode",
+    "FailedRecordNode",
+    "PendingRecordNode",
+    "NoRecordNode",
+    "ValidatedInputNode",
+    "StoreErrorNode",
+    "IdempotencyOutcome",
+    "FinalResultNode",
     "run_idempotent",
 )

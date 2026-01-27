@@ -19,9 +19,11 @@ from emergent.graph._run import TypedScope
 # CompiledRun — Fluent runner with pre-compiled agent
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True)
 class CompiledRun[T]:
     """Run with pre-compiled agent."""
+
     _target: type[T]
     _agent: EventLoopAgent
     _injections: tuple[tuple[type[Any], Any], ...]
@@ -76,6 +78,7 @@ class CompiledRun[T]:
 # Compiled — Pre-compiled graph
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True, frozen=True)
 class Compiled[T]:
     """
@@ -91,6 +94,7 @@ class Compiled[T]:
         result = await pipeline(order, db, email)
         result = await pipeline.run().inject(order).inject(db)
     """
+
     _target: type[T]
     _agent: EventLoopAgent
 
@@ -123,9 +127,7 @@ def graph[T](target: type[T]) -> Compiled[T]:
         r1 = await pipeline(order1, db)
         r2 = await pipeline(order2, db)
     """
-    all_nodes: set[type[Node[Any, Any]]] = {
-        cast(type[Node[Any, Any]], target)
-    }
+    all_nodes: set[type[Node[Any, Any]]] = {cast(type[Node[Any, Any]], target)}
     agent = EventLoopAgent.build(all_nodes)
     return Compiled(_target=target, _agent=agent)
 

@@ -35,21 +35,23 @@ NODES: dict[str, type[Any]] = {
 def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize checkout graph")
     parser.add_argument(
-        "--style", "-s",
+        "--style",
+        "-s",
         choices=["ascii", "mermaid", "tree", "text", "layers"],
         default="ascii",
         help="Output style (default: ascii)",
     )
     parser.add_argument(
-        "--node", "-n",
+        "--node",
+        "-n",
         choices=list(NODES.keys()),
         default="checkout",
         help="Node to visualize (default: checkout)",
     )
     args = parser.parse_args()
-    
+
     target = NODES[args.node]
-    
+
     print(f"# {args.node.upper()} ({args.style})\n")
     print(G.visualize(target, args.style))
 

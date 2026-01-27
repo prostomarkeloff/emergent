@@ -28,11 +28,13 @@ type KeyFn[K] = Callable[[K], str]
 # Idempotent Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True, frozen=True)
 class Idempotent[K, T, E]:
     """
     Fluent idempotency builder.
     """
+
     _operation: Callable[[K], LazyCoroResult[T, E]]
     _key_fn: KeyFn[K] | None
     _store: StoreAny | None
@@ -84,6 +86,7 @@ class Idempotent[K, T, E]:
 # Idempotent Executor
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True, frozen=True)
 class IdempotentExecutor[K, T, E]:
     """
@@ -91,12 +94,15 @@ class IdempotentExecutor[K, T, E]:
 
     Note: Thin wrapper — creates IdempotencySpec and runs graph.
     """
+
     operation: Callable[[K], LazyCoroResult[T, E]]
     key_fn: KeyFn[K]
     store: StoreAny
     policy: Policy
 
-    def run(self, input_val: K) -> LazyCoroResult[IdempotencyResult[T], IdempotencyError[E]]:
+    def run(
+        self, input_val: K
+    ) -> LazyCoroResult[IdempotencyResult[T], IdempotencyError[E]]:
         """Execute with idempotency via graph."""
         # Import here to avoid circular import
         from emergent.idempotency._graph import IdempotencySpec, run_idempotent
@@ -121,6 +127,7 @@ class IdempotentExecutor[K, T, E]:
     async def invalidate(self, input_val: K) -> bool:
         """Invalidate idempotency record."""
         from kungfu import Ok
+
         key = self.key_fn(input_val)
         result = await self.store.delete(key)
         match result:
@@ -133,6 +140,7 @@ class IdempotentExecutor[K, T, E]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # idempotent() — Entry Point
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def idempotent[K, T, E](
     operation: Callable[[K], LazyCoroResult[T, E]],

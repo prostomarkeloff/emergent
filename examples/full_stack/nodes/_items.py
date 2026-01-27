@@ -33,6 +33,7 @@ from examples.full_stack.nodes._user import LoyaltyNode, AddressNode
 @dataclass
 class ItemData:
     """Aggregated data for one cart item."""
+
     item: CartItem
     product: Product
     inventory: InventoryStatus
@@ -45,16 +46,16 @@ class ItemData:
 class ItemsDataNode:
     """
     Fetch ALL per-item data in parallel using combinators.
-    
+
     For each item:
     - Product details (catalog)
     - Inventory check
     - Promotions
     - Shipping (needs address)
-    
+
     All items processed in parallel via combinators.traverse_par.
     """
-    
+
     def __init__(self, items: list[ItemData]) -> None:
         self.items = items
 
@@ -65,16 +66,17 @@ class ItemsDataNode:
         loyalty: LoyaltyNode,
         address: AddressNode,
     ) -> "ItemsDataNode":
-        
         def process_item(item: CartItem) -> LazyCoroResult[ItemData, CheckoutError]:
             """Build a lazy computation for one item."""
-            
+
             fetch_product = C.catching_async(
                 lambda pid=item.product_id: catalog_service.get(pid),
                 on_error=lambda e: CheckoutError("CATALOG_ERROR", str(e)),
             )
             fetch_inventory = C.catching_async(
-                lambda pid=item.product_id, q=item.quantity: inventory_service.check(pid, q),
+                lambda pid=item.product_id, q=item.quantity: inventory_service.check(
+                    pid, q
+                ),
                 on_error=lambda e: CheckoutError("INVENTORY_ERROR", str(e)),
             )
             fetch_promo = C.catching_async(
@@ -82,19 +84,21 @@ class ItemsDataNode:
                 on_error=lambda e: CheckoutError("PROMO_ERROR", str(e)),
             )
             fetch_shipping = C.catching_async(
-                lambda pid=item.product_id: shipping_service.calculate(pid, address.data),
+                lambda pid=item.product_id: shipping_service.calculate(
+                    pid, address.data
+                ),
                 on_error=lambda e: CheckoutError("SHIPPING_ERROR", str(e)),
             )
-            
+
             return C.parallel(
                 fetch_product,
                 fetch_inventory,
                 fetch_promo,
                 fetch_shipping,
             ).map(lambda results: _build_item_data(item, results, loyalty.data))
-        
+
         result = await C.traverse_par(cart.data.items, process_item)()
-        
+
         match result:
             case Ok(items_data):
                 return cls(items_data)
@@ -112,11 +116,11 @@ def _build_item_data(
     inventory = results[1]
     promotion = results[2]
     shipping = results[3]
-    
+
     assert isinstance(product, Product)
     assert isinstance(inventory, InventoryStatus)
     assert isinstance(shipping, ShippingOption)
-    
+
     unit_price = product.base_price
     product_discount = 0
     if isinstance(promotion, ProductPromotion):
@@ -139,4 +143,3 @@ def _build_item_data(
 
 
 __all__ = ("ItemData", "ItemsDataNode")
-

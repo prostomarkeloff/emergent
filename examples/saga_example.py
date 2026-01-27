@@ -35,15 +35,18 @@ async def main() -> None:
     banner("Saga: Book Trip")
 
     # Define saga chain
-    saga = (
-        S.step(
-            action=L.catching_async(lambda: book_flight("NYC→LON"), on_error=lambda e: Failure(str(e))),
-            compensate=cancel_flight,
-        )
-        .then(lambda _: S.step(
-            action=L.catching_async(lambda: book_hotel("Hilton"), on_error=lambda e: Failure(str(e))),
+    saga = S.step(
+        action=L.catching_async(
+            lambda: book_flight("NYC→LON"), on_error=lambda e: Failure(str(e))
+        ),
+        compensate=cancel_flight,
+    ).then(
+        lambda _: S.step(
+            action=L.catching_async(
+                lambda: book_hotel("Hilton"), on_error=lambda e: Failure(str(e))
+            ),
             compensate=cancel_hotel,
-        ))
+        )
     )
 
     # Execute

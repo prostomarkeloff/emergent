@@ -26,6 +26,7 @@ from examples.full_stack.nodes._totals import SubtotalNode, TaxNode, GrandTotalN
 @dataclass
 class OrderPreview:
     """Preview of an order — totals calculated but no payment."""
+
     user_name: str
     loyalty_level: str
     loyalty_discount_percent: int
@@ -44,15 +45,15 @@ class OrderPreview:
 class PreviewNode:
     """
     Order preview — calculate totals without payment.
-    
+
     COMPOSITION EXAMPLE:
     This node depends on ProfileNode, LoyaltyNode, AddressNode,
     ItemsDataNode, SubtotalNode, TaxNode, GrandTotalNode.
-    
+
     It does NOT depend on FraudCheckNode or CheckoutSagaNode.
     The graph only executes what's needed!
     """
-    
+
     def __init__(self, data: OrderPreview) -> None:
         self.data = data
 
@@ -87,7 +88,7 @@ class PreviewNode:
     async def execute(cls, cart: Cart) -> Result[OrderPreview, CheckoutError]:
         """
         Execute preview — NO payment, NO fraud check.
-        
+
         Only runs: user data → items → totals → tax
         Does NOT run: fraud, saga, payment
         """
@@ -102,4 +103,3 @@ class PreviewNode:
 
 
 __all__ = ("OrderPreview", "PreviewNode")
-

@@ -24,6 +24,7 @@ type KeyFn[K] = Callable[[K], str]
 # Cache Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True, frozen=True)
 class Cache[K, T, E]:
     """
@@ -41,6 +42,7 @@ class Cache[K, T, E]:
             .build()
         )
     """
+
     _key_fn: KeyFn[K]
     _fetch: Callable[[K], LazyCoroResult[T, E]]
     _tiers: tuple[Tier[T], ...]
@@ -66,9 +68,11 @@ class Cache[K, T, E]:
 # Cache Executor
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(slots=True, frozen=True)
 class CacheExecutor[K, T, E]:
     """Compiled cache executor."""
+
     key_fn: KeyFn[K]
     tiers: tuple[Tier[T], ...]
     fetch: Callable[[K], LazyCoroResult[T, E]]
@@ -90,12 +94,14 @@ class CacheExecutor[K, T, E]:
                 try:
                     value = await t.get(cache_key)
                     if value is not None:
-                        return Ok(CacheResult(
-                            value=value,
-                            hit=True,
-                            tier=t.name,
-                            ttl_remaining=None,
-                        ))
+                        return Ok(
+                            CacheResult(
+                                value=value,
+                                hit=True,
+                                tier=t.name,
+                                ttl_remaining=None,
+                            )
+                        )
                 except Exception:
                     # Tier error - continue to next tier
                     continue
@@ -111,12 +117,14 @@ class CacheExecutor[K, T, E]:
                         except Exception:
                             pass  # Best effort
 
-                    return Ok(CacheResult(
-                        value=value,
-                        hit=False,
-                        tier=None,
-                        ttl_remaining=None,
-                    ))
+                    return Ok(
+                        CacheResult(
+                            value=value,
+                            hit=False,
+                            tier=None,
+                            ttl_remaining=None,
+                        )
+                    )
                 case Error(e):
                     return Error(e)
 
@@ -148,6 +156,7 @@ class CacheExecutor[K, T, E]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # cache() — Entry Point (Type-Safe)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def cache[K, T, E](
     key: KeyFn[K],

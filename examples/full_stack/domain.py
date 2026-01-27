@@ -20,6 +20,7 @@ from dataclasses import dataclass
 # IDs
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class UserId:
     value: int
@@ -48,6 +49,7 @@ class OrderId:
 # ═══════════════════════════════════════════════════════════════════════════════
 # User Domain
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True)
 class UserProfile:
@@ -87,6 +89,7 @@ class PaymentMethod:
 # Product Domain
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class Product:
     id: ProductId
@@ -115,6 +118,7 @@ class ProductPromotion:
 # Cart Domain
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class CartItem:
     product_id: ProductId
@@ -130,6 +134,7 @@ class Cart:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pricing Domain
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True)
 class ItemPricing:
@@ -161,6 +166,7 @@ class ShippingOption:
 # Payment Domain
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class FraudCheckResult:
     user_id: UserId
@@ -180,6 +186,7 @@ class PaymentAuthorization:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Order Domain
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True)
 class OrderLineItem:
@@ -210,6 +217,7 @@ class OrderSummary:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Errors
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class CheckoutError(Exception):
     def __init__(self, code: str, message: str) -> None:

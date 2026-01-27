@@ -18,6 +18,7 @@ from examples._infra import banner, run
 # Domain
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ProductRepo:
     prices: dict[int, float]
@@ -34,6 +35,7 @@ repo = ProductRepo(
 # Operations — Returning[T, E] with composition via fields
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class GetPrice(O.Returning[float, str]):
     product_id: int
@@ -47,14 +49,16 @@ class GetStock(O.Returning[int, str]):
 @dataclass(frozen=True, slots=True)
 class BuildSummary(O.Returning[str, str]):
     """Composite operation — depends on GetPrice and GetStock."""
+
     product_id: int
-    price: GetPrice    # ← dependency (executed in parallel)
-    stock: GetStock    # ← dependency (executed in parallel)
+    price: GetPrice  # ← dependency (executed in parallel)
+    stock: GetStock  # ← dependency (executed in parallel)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handlers
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def get_price(req: GetPrice, r: ProductRepo) -> Result[float, str]:
     p = r.prices.get(req.product_id)
@@ -68,8 +72,8 @@ async def get_stock(req: GetStock, r: ProductRepo) -> Result[int, str]:
 
 async def build_summary(
     req: BuildSummary,
-    price: GetPrice,    # ← Op with .get() → cached Result
-    stock: GetStock,    # ← Op with .get() → cached Result
+    price: GetPrice,  # ← Op with .get() → cached Result
+    stock: GetStock,  # ← Op with .get() → cached Result
 ) -> Result[str, str]:
     # Dependencies already computed in parallel by nodnod
     p = await price  # instant
@@ -107,27 +111,33 @@ async def main() -> None:
     print(f"   → {r1}")
 
     print("\n2. Composite op (GetPrice + GetStock in parallel → BuildSummary):")
-    r2 = await runner.run(BuildSummary(
-        product_id=1,
-        price=GetPrice(1),
-        stock=GetStock(1),
-    ))
+    r2 = await runner.run(
+        BuildSummary(
+            product_id=1,
+            price=GetPrice(1),
+            stock=GetStock(1),
+        )
+    )
     print(f"   → {r2}")
 
     print("\n3. Composite with out-of-stock product:")
-    r3 = await runner.run(BuildSummary(
-        product_id=2,
-        price=GetPrice(2),
-        stock=GetStock(2),
-    ))
+    r3 = await runner.run(
+        BuildSummary(
+            product_id=2,
+            price=GetPrice(2),
+            stock=GetStock(2),
+        )
+    )
     print(f"   → {r3}")
 
     print("\n4. Error propagation:")
-    r4 = await runner.run(BuildSummary(
-        product_id=999,
-        price=GetPrice(999),
-        stock=GetStock(999),
-    ))
+    r4 = await runner.run(
+        BuildSummary(
+            product_id=999,
+            price=GetPrice(999),
+            stock=GetStock(999),
+        )
+    )
     print(f"   → {r4}")
 
     print("\nDone!")

@@ -82,6 +82,7 @@ def _is_op_type(typ: object) -> bool:
 @dataclass(frozen=True, slots=True)
 class _OpReg:
     """Registration: Op type → handler + node."""
+
     op_type: type[Op[Any, Any]]
     handler: HandlerFunc
     node_cls: type[Node[Any, Any]]
@@ -93,6 +94,7 @@ class _CachedOp(Generic[T_co, E_co]):
 
     .get() and __await__ return the cached Result instantly.
     """
+
     __slots__ = ("_result",)
 
     def __init__(self, result: Result[T_co, E_co]) -> None:
@@ -149,7 +151,9 @@ def _create_node_for_handler(
             # Regular dependency → inject from scope
             compose_annotations[pname] = ptype
 
-        compose_params.append(inspect.Parameter(pname, inspect.Parameter.POSITIONAL_OR_KEYWORD))
+        compose_params.append(
+            inspect.Parameter(pname, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        )
 
     compose_annotations["return"] = Result[Any, Any]
 
@@ -189,6 +193,7 @@ def _create_node_for_handler(
 @dataclass(slots=True, frozen=True)
 class OpsBuilder:
     """Builder for operation handlers."""
+
     _items: tuple[tuple[type[Op[Any, Any]], HandlerFunc], ...] = ()
 
     def on(
@@ -219,7 +224,9 @@ class OpsBuilder:
 
         # Build in dependency order (simple: just iterate, nodes reference by type)
         for op_type, handler in op_handlers.items():
-            node_cls = _create_node_for_handler(op_type, handler, node_registry, op_param_names)
+            node_cls = _create_node_for_handler(
+                op_type, handler, node_registry, op_param_names
+            )
             node_registry[op_type] = node_cls
             registrations[op_type] = _OpReg(
                 op_type=op_type,
@@ -241,16 +248,21 @@ class Runner:
     3. Execute via nodnod (parallel resolution)
     4. Pass cached results to handler
     """
+
     _registry: dict[type[Op[Any, Any]], _OpReg]
     _node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]]
-    _global_scope: G.TypedScope = field(default_factory=lambda: G.TypedScope(detail="ops:global"))
+    _global_scope: G.TypedScope = field(
+        default_factory=lambda: G.TypedScope(detail="ops:global")
+    )
 
     def inject(self, typ: type[object], impl: object) -> Runner:
         """Inject shared dependency."""
         self._global_scope.inject(typ, impl)
         return self
 
-    def _collect_op_deps(self, req: Op[Any, Any]) -> list[tuple[type[Op[Any, Any]], Op[Any, Any]]]:
+    def _collect_op_deps(
+        self, req: Op[Any, Any]
+    ) -> list[tuple[type[Op[Any, Any]], Op[Any, Any]]]:
         """
         Collect all Op dependencies recursively from request fields.
         """
@@ -334,8 +346,10 @@ class Runner:
 
     def __call__(self, req: Op[T, E]) -> LazyCoroResult[T, E]:
         """Execute operation (returns awaitable)."""
+
         async def inner() -> Result[T, E]:
             return await self.run(req)
+
         return LazyCoroResult(inner)
 
 

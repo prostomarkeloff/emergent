@@ -18,6 +18,7 @@ from examples._infra import banner, run
 # Domain
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class Payment:
     tx_id: str
@@ -29,6 +30,7 @@ call_count = 0
 
 def charge(order_id: str) -> LazyCoroResult[Payment, str]:
     """Simulate payment API call."""
+
     async def impl() -> Payment:
         global call_count
         call_count += 1
@@ -54,6 +56,7 @@ executor = (
 # ═══════════════════════════════════════════════════════════════════════════════
 # Demo
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def main() -> None:
     global call_count

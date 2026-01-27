@@ -21,6 +21,7 @@ from examples.full_stack.repo import user_service
 # Profile Cache
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _make_profile_key(user_id: UserId) -> str:
     return f"profile:{user_id.value}"
 
@@ -43,6 +44,7 @@ profile_cache = (
 # Loyalty Cache
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def _make_loyalty_key(user_id: UserId) -> str:
     return f"loyalty:{user_id.value}"
 
@@ -62,4 +64,3 @@ loyalty_cache = (
 
 
 __all__ = ("profile_cache", "loyalty_cache")
-

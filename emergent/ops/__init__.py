@@ -34,7 +34,6 @@ Policies (retry, timeout, idempotency) are achieved via composition
 with combinators.py and other emergent modules: saga, cache, idempotency.
 """
 
-
 from emergent.ops._graph import (
     Op,
     Returns,

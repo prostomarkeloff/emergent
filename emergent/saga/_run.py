@@ -29,6 +29,7 @@ type RecordedCompensator[T] = tuple[T, CompensatorWithValue[T]]
 # run_step() — Execute single step
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 async def run_step[T, E](
     step: SagaStep[T, E],
     compensators: list[RecordedCompensator[T]],
@@ -47,6 +48,7 @@ async def run_step[T, E](
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_compensators() — Rollback
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run_compensators[T](
     compensators: list[RecordedCompensator[T]],
@@ -68,6 +70,7 @@ async def run_compensators[T](
 # ═══════════════════════════════════════════════════════════════════════════════
 # run() — Execute Saga Step
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run[T, E](
     saga: SagaStep[T, E],
@@ -100,27 +103,32 @@ async def run[T, E](
 
     match result:
         case Ok(value):
-            return Ok(SagaResult(
-                value=value,
-                steps_executed=1,
-                compensators_recorded=len(compensators),
-            ))
+            return Ok(
+                SagaResult(
+                    value=value,
+                    steps_executed=1,
+                    compensators_recorded=len(compensators),
+                )
+            )
 
         case Error(error):
             comp_run, comp_failed = await run_compensators(compensators)
 
-            return Error(SagaError(
-                error=error,
-                step_failed=1,
-                compensators_run=comp_run,
-                compensators_failed=comp_failed,
-                rollback_complete=comp_failed == 0,
-            ))
+            return Error(
+                SagaError(
+                    error=error,
+                    step_failed=1,
+                    compensators_run=comp_run,
+                    compensators_failed=comp_failed,
+                    rollback_complete=comp_failed == 0,
+                )
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_chain() — Execute Then chain
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run_chain[T, U, E, E2](
     chain: Then[T, U, E, E2],
@@ -150,40 +158,48 @@ async def run_chain[T, U, E, E2](
 
             match next_result:
                 case Ok(final_value):
-                    return Ok(SagaResult(
-                        value=final_value,
-                        steps_executed=steps,
-                        compensators_recorded=len(compensators_t) + len(compensators_u),
-                    ))
+                    return Ok(
+                        SagaResult(
+                            value=final_value,
+                            steps_executed=steps,
+                            compensators_recorded=len(compensators_t)
+                            + len(compensators_u),
+                        )
+                    )
 
                 case Error(e):
                     # Rollback next compensators first, then inner
                     comp_run1, comp_failed1 = await run_compensators(compensators_u)
                     comp_run2, comp_failed2 = await run_compensators(compensators_t)
 
-                    return Error(SagaError(
-                        error=e,
-                        step_failed=steps,
-                        compensators_run=comp_run1 + comp_run2,
-                        compensators_failed=comp_failed1 + comp_failed2,
-                        rollback_complete=(comp_failed1 + comp_failed2) == 0,
-                    ))
+                    return Error(
+                        SagaError(
+                            error=e,
+                            step_failed=steps,
+                            compensators_run=comp_run1 + comp_run2,
+                            compensators_failed=comp_failed1 + comp_failed2,
+                            rollback_complete=(comp_failed1 + comp_failed2) == 0,
+                        )
+                    )
 
         case Error(e):
             comp_run, comp_failed = await run_compensators(compensators_t)
 
-            return Error(SagaError(
-                error=e,
-                step_failed=steps,
-                compensators_run=comp_run,
-                compensators_failed=comp_failed,
-                rollback_complete=comp_failed == 0,
-            ))
+            return Error(
+                SagaError(
+                    error=e,
+                    step_failed=steps,
+                    compensators_run=comp_run,
+                    compensators_failed=comp_failed,
+                    rollback_complete=comp_failed == 0,
+                )
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_parallel() — Execute Parallel
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run_parallel[T, E](
     par: Parallel[T, E],
@@ -211,13 +227,15 @@ async def run_parallel[T, E](
         case Error(_):
             # Parallel itself failed (shouldn't happen with catching_async)
             comp_run, comp_failed = await run_compensators(compensators)
-            return Error(SagaError(
-                error=par.sagas[0].action if par.sagas else None,  # type: ignore[arg-type]
-                step_failed=0,
-                compensators_run=comp_run,
-                compensators_failed=comp_failed,
-                rollback_complete=comp_failed == 0,
-            ))
+            return Error(
+                SagaError(
+                    error=par.sagas[0].action if par.sagas else None,  # type: ignore[arg-type]
+                    step_failed=0,
+                    compensators_run=comp_run,
+                    compensators_failed=comp_failed,
+                    rollback_complete=comp_failed == 0,
+                )
+            )
         case Ok(results):
             # results is list[Result[T, E]]
             errors = [r for r in results if isinstance(r, Error)]
@@ -225,25 +243,30 @@ async def run_parallel[T, E](
                 comp_run, comp_failed = await run_compensators(compensators)
                 first_error = errors[0]
 
-                return Error(SagaError(
-                    error=first_error.value,
-                    step_failed=len(par.sagas) - len(errors),
-                    compensators_run=comp_run,
-                    compensators_failed=comp_failed,
-                    rollback_complete=comp_failed == 0,
-                ))
+                return Error(
+                    SagaError(
+                        error=first_error.value,
+                        step_failed=len(par.sagas) - len(errors),
+                        compensators_run=comp_run,
+                        compensators_failed=comp_failed,
+                        rollback_complete=comp_failed == 0,
+                    )
+                )
 
             values = tuple(r.value for r in results if isinstance(r, Ok))
-            return Ok(SagaResult(
-                value=values,
-                steps_executed=len(par.sagas),
-                compensators_recorded=len(compensators),
-            ))
+            return Ok(
+                SagaResult(
+                    value=values,
+                    steps_executed=len(par.sagas),
+                    compensators_recorded=len(compensators),
+                )
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # run_race() — Execute Race
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def run_race[T, E](
     race_expr: Race[T, E],
@@ -259,9 +282,11 @@ async def run_race[T, E](
 
     def make_op(s: SagaStep[T, E]) -> LazyCoroResult[T, E]:
         """Wrap step execution, unwrapping inner Result."""
+
         async def impl() -> Result[T, E]:
             step_result = await run_step(s, compensators)
             return step_result
+
         return LazyCoroResult(impl)
 
     # Race via combinators — first Ok wins
@@ -269,20 +294,24 @@ async def run_race[T, E](
 
     match race_result:
         case Ok(value):
-            return Ok(SagaResult(
-                value=value,
-                steps_executed=1,
-                compensators_recorded=len(compensators),
-            ))
+            return Ok(
+                SagaResult(
+                    value=value,
+                    steps_executed=1,
+                    compensators_recorded=len(compensators),
+                )
+            )
         case Error(e):
             comp_run, comp_failed = await run_compensators(compensators)
-            return Error(SagaError(
-                error=e,
-                step_failed=len(race_expr.sagas),
-                compensators_run=comp_run,
-                compensators_failed=comp_failed,
-                rollback_complete=comp_failed == 0,
-            ))
+            return Error(
+                SagaError(
+                    error=e,
+                    step_failed=len(race_expr.sagas),
+                    compensators_run=comp_run,
+                    compensators_failed=comp_failed,
+                    rollback_complete=comp_failed == 0,
+                )
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

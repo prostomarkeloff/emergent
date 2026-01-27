@@ -11,7 +11,11 @@ from kungfu import Ok, Error
 
 from examples._infra import run, banner
 from examples.idempotency_payments.db import create_database
-from examples.idempotency_payments.service import PaymentService, PaymentProvider, CreateOrderRequest
+from examples.idempotency_payments.service import (
+    PaymentService,
+    PaymentProvider,
+    CreateOrderRequest,
+)
 
 
 async def main() -> None:

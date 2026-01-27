@@ -14,6 +14,7 @@ from emergent.saga._types import SagaStep, CompensatorWithValue
 # step() — Primary Constructor
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def step[T, E](
     action: LazyCoroResult[T, E],
     compensate: CompensatorWithValue[T] | None = None,
@@ -55,6 +56,7 @@ def step[T, E](
 # ═══════════════════════════════════════════════════════════════════════════════
 # from_async() — Create step from async callable
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def from_async[T, E](
     action: Callable[[], Awaitable[T]],

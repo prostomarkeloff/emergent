@@ -28,6 +28,7 @@ from examples.full_stack.nodes._fraud import FraudCheckNode
 @dataclass
 class CheckoutTransaction:
     """Result of the saga: reservations + payment auth."""
+
     reservations: list[InventoryReservation]
     payment: PaymentAuthorization
 
@@ -36,11 +37,11 @@ class CheckoutTransaction:
 class CheckoutSagaNode:
     """
     Saga: Reserve inventory → Authorize payment.
-    
+
     Uses emergent.saga for automatic compensation on failure.
     If payment fails, all inventory reservations are released.
     """
-    
+
     def __init__(self, data: CheckoutTransaction) -> None:
         self.data = data
 
@@ -53,34 +54,40 @@ class CheckoutSagaNode:
         fraud: FraudCheckNode,  # Ensures fraud check runs first
     ) -> "CheckoutSagaNode":
         _ = fraud  # Dependency injection
-        
+
         # Step 1: Reserve inventory for ALL items
         reservations: list[InventoryReservation] = []
-        
+
         for item_data in items.items:
-            reserve_step: S.SagaStep[InventoryReservation, CheckoutError] = S.from_async(
-                lambda i=item_data: inventory_service.reserve(i.item.product_id, i.item.quantity),
-                on_error=lambda e: CheckoutError("INVENTORY_ERROR", str(e)),
-                compensate=lambda r: inventory_service.release(r),
+            reserve_step: S.SagaStep[InventoryReservation, CheckoutError] = (
+                S.from_async(
+                    lambda i=item_data: inventory_service.reserve(
+                        i.item.product_id, i.item.quantity
+                    ),
+                    on_error=lambda e: CheckoutError("INVENTORY_ERROR", str(e)),
+                    compensate=lambda r: inventory_service.release(r),
+                )
             )
-            
+
             saga_result = await S.run(reserve_step)
             match saga_result:
                 case Ok(result):
                     reservations.append(result.value)
                 case Error(saga_error):
-                    print(f"      [Saga] Inventory failed — rolling back {len(reservations)} reservations")
+                    print(
+                        f"      [Saga] Inventory failed — rolling back {len(reservations)} reservations"
+                    )
                     for res in reservations:
                         await inventory_service.release(res)
                     raise saga_error.error
-        
+
         # Step 2: Authorize payment
         payment_step: S.SagaStep[PaymentAuthorization, CheckoutError] = S.from_async(
             lambda: payment_service.authorize(payment_method.data, total.total),
             on_error=lambda e: CheckoutError("PAYMENT_ERROR", str(e)),
             compensate=lambda auth: payment_service.void(auth),
         )
-        
+
         payment_saga_result = await S.run(payment_step)
         match payment_saga_result:
             case Ok(result):
@@ -90,9 +97,9 @@ class CheckoutSagaNode:
                     for res in reservations:
                         await inventory_service.release(res)
                     raise CheckoutError("PAYMENT_DECLINED", "Card declined")
-                
+
                 return cls(CheckoutTransaction(reservations, auth))
-            
+
             case Error(saga_error):
                 print("      [Saga] Payment failed — rolling back inventory")
                 for res in reservations:
@@ -101,4 +108,3 @@ class CheckoutSagaNode:
 
 
 __all__ = ("CheckoutTransaction", "CheckoutSagaNode")
-

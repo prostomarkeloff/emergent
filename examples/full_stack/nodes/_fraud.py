@@ -12,12 +12,14 @@ from examples.full_stack.nodes._totals import GrandTotalNode
 @G.node
 class FraudCheckNode:
     """Check for fraudulent transactions."""
-    
+
     def __init__(self, data: FraudCheckResult) -> None:
         self.data = data
 
     @classmethod
-    async def __compose__(cls, cart: CartNode, total: GrandTotalNode) -> "FraudCheckNode":
+    async def __compose__(
+        cls, cart: CartNode, total: GrandTotalNode
+    ) -> "FraudCheckNode":
         result = await fraud_service.check(cart.data.user_id, total.total)
         if not result.approved:
             raise CheckoutError("FRAUD_REJECTED", result.reason)
@@ -25,4 +27,3 @@ class FraudCheckNode:
 
 
 __all__ = ("FraudCheckNode",)
-

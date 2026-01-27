@@ -17,6 +17,7 @@ from emergent.idempotency import IdempotencyMixin
 # Base
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class Base(DeclarativeBase):
     pass
 
@@ -24,6 +25,7 @@ class Base(DeclarativeBase):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Orders Table — with IdempotencyMixin
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class OrderTable(Base, IdempotencyMixin):
     """
@@ -36,6 +38,7 @@ class OrderTable(Base, IdempotencyMixin):
     - idempotency_error: str | None
     - idempotency_expires_at: datetime | None
     """
+
     __tablename__ = "orders"
 
     # Primary key

@@ -13,6 +13,7 @@ from enum import Enum, auto
 # On Pending — Conflict Resolution Strategy
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class OnPending(Enum):
     """
     What to do when a request arrives while another is pending.
@@ -28,6 +29,7 @@ class OnPending(Enum):
     FORCE: Ignore existing pending, execute anyway (DANGEROUS).
            Use when: You know what you're doing and need to override.
     """
+
     WAIT = auto()
     FAIL = auto()
     FORCE = auto()
@@ -42,6 +44,7 @@ FORCE = OnPending.FORCE
 # ═══════════════════════════════════════════════════════════════════════════════
 # Policy — Full Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True, slots=True)
 class Policy:
@@ -62,6 +65,7 @@ class Policy:
     Note: Immutable — each method returns new Policy.
     Почему: Prevents accidental mutation, enables safe sharing.
     """
+
     result_ttl: timedelta | None = None
     conflict_strategy: OnPending = OnPending.WAIT
     pending_wait_timeout: timedelta = timedelta(seconds=30)

@@ -3,7 +3,7 @@ Cache — multi-tier caching with L1/L2 pattern.
 
 Key concepts:
 - Tier = storage backend (global, inject via DI)
-- Cache = declarative builder (per-use-case, type-safe)  
+- Cache = declarative builder (per-use-case, type-safe)
 - Tiers STACK: .tier(L1).tier(L2) = check L1 → L2 → fetch
 
 Level 5: emergent.cache
@@ -25,8 +25,10 @@ db = FakeDb()
 # Custom tier with distinct name (simulates Redis)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class NamedTier[T]:
     """Wrapper to give tier a distinct name."""
+
     def __init__(self, inner: Tier[T], tier_name: str) -> None:
         self._inner = inner
         self._name = tier_name
@@ -63,16 +65,22 @@ l2_tier: Tier[User] = NamedTier(C.LocalTier(max_size=1000), "L2-redis")
 # 2. FETCH FUNCTION — returns LazyCoroResult
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def fetch_user(uid: UserId) -> LazyCoroResult[User, NotFound]:
     async def _fetch() -> User:
         print(f"  [ORIGIN] Fetching user {uid.value} from DB...")
         result = await db.get_user(uid)
         match result:
-            case Ok(user): return user
-            case Error(e): raise e
+            case Ok(user):
+                return user
+            case Error(e):
+                raise e
+
     return L.catching_async(
         _fetch,
-        on_error=lambda e: e if isinstance(e, NotFound) else NotFound("User", uid.value),
+        on_error=lambda e: e
+        if isinstance(e, NotFound)
+        else NotFound("User", uid.value),
     )
 
 
@@ -101,28 +109,36 @@ async def main() -> None:
     print("\n1. First request (miss L1 → miss L2 → fetch from origin):")
     r1 = await user_cache.get(uid)
     match r1:
-        case Ok(r): print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
-        case Error(e): print(f"   error: {e}")
+        case Ok(r):
+            print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
+        case Error(e):
+            print(f"   error: {e}")
 
     print("\n2. Second request (hit L1):")
     r2 = await user_cache.get(uid)
     match r2:
-        case Ok(r): print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
-        case Error(e): print(f"   error: {e}")
+        case Ok(r):
+            print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
+        case Error(e):
+            print(f"   error: {e}")
 
     print("\n3. Clear L1 only, request again (miss L1 → hit L2):")
     await l1_tier.delete(f"user:{uid.value}")  # simulate L1 eviction
     r3 = await user_cache.get(uid)
     match r3:
-        case Ok(r): print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
-        case Error(e): print(f"   error: {e}")
+        case Ok(r):
+            print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
+        case Error(e):
+            print(f"   error: {e}")
 
     print("\n4. Invalidate ALL tiers, refetch:")
     await user_cache.invalidate(uid)
     r4 = await user_cache.get(uid)
     match r4:
-        case Ok(r): print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
-        case Error(e): print(f"   error: {e}")
+        case Ok(r):
+            print(f"   tier={r.tier} hit={r.hit} → {r.value.name}")
+        case Error(e):
+            print(f"   error: {e}")
 
     print("\nDone!")
 

@@ -28,9 +28,11 @@ E = TypeVar("E")
 # Store Error
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True)
 class StoreError:
     """Storage operation error."""
+
     message: str
     cause: Exception | None = None
 
@@ -38,6 +40,7 @@ class StoreError:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Store Protocol — Typed, Result-based
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class Store(Protocol[T]):
     """
@@ -66,7 +69,9 @@ class Store(Protocol[T]):
             # ... other methods
     """
 
-    async def get(self, key: str) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
+    async def get(
+        self, key: str
+    ) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
         """Get existing record. Returns Ok(None) if not found."""
         ...
 
@@ -111,10 +116,18 @@ class Store(Protocol[T]):
 # Function-based Store Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 
-type GetFn[T] = Callable[[str], Awaitable[Result[IdempotencyRecord[T, Any] | None, StoreError]]]
-type SetPendingFn = Callable[[str, timedelta | None, str | None], Awaitable[Result[bool, StoreError]]]
-type SetCompletedFn[T] = Callable[[str, T, timedelta | None], Awaitable[Result[None, StoreError]]]
-type SetFailedFn = Callable[[str, Any, timedelta | None], Awaitable[Result[None, StoreError]]]
+type GetFn[T] = Callable[
+    [str], Awaitable[Result[IdempotencyRecord[T, Any] | None, StoreError]]
+]
+type SetPendingFn = Callable[
+    [str, timedelta | None, str | None], Awaitable[Result[bool, StoreError]]
+]
+type SetCompletedFn[T] = Callable[
+    [str, T, timedelta | None], Awaitable[Result[None, StoreError]]
+]
+type SetFailedFn = Callable[
+    [str, Any, timedelta | None], Awaitable[Result[None, StoreError]]
+]
 type DeleteFn = Callable[[str], Awaitable[Result[bool, StoreError]]]
 
 
@@ -132,13 +145,16 @@ class FunctionalStore(Generic[T]):
             delete=my_repo.delete_record,
         )
     """
+
     _get: GetFn[T]
     _set_pending: SetPendingFn
     _set_completed: SetCompletedFn[T]
     _set_failed: SetFailedFn
     _delete: DeleteFn
 
-    async def get(self, key: str) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
+    async def get(
+        self, key: str
+    ) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
         return await self._get(key)
 
     async def set_pending(
@@ -201,9 +217,11 @@ def store_from(
 # Memory Store — For Testing
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class _StoredRecord(Generic[T]):
     """Internal mutable record for MemoryStore."""
+
     key: str
     state: RecordState
     value: T | None
@@ -236,7 +254,9 @@ class MemoryStore(Generic[T]):
         self._records: dict[str, _StoredRecord[T]] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, key: str) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
+    async def get(
+        self, key: str
+    ) -> Result[IdempotencyRecord[T, Any] | None, StoreError]:
         async with self._lock:
             record = self._records.get(key)
             if record is None:

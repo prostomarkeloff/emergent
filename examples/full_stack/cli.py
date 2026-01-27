@@ -71,6 +71,7 @@ def print_help() -> None:
 # Data Display
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def print_users() -> None:
     print("\n┌────────────────────────────────────────┐")
     print("│              USERS                     │")
@@ -85,7 +86,7 @@ def print_products() -> None:
     print("│                  PRODUCTS                       │")
     print("├────────────────────────────────────────────────┤")
     for p in catalog_service.list_all():
-        line = f"│  [{p.id.value:6}] {p.name:20} ${p.base_price/100:>8.2f} │"
+        line = f"│  [{p.id.value:6}] {p.name:20} ${p.base_price / 100:>8.2f} │"
         print(line)
     print("└────────────────────────────────────────────────┘")
 
@@ -93,6 +94,7 @@ def print_products() -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Parsing
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def parse_items(items_str: str) -> list[CartItem]:
     """Parse 'CABLE:2,PHONE:1' into CartItem list."""
@@ -119,10 +121,11 @@ def make_cart(user_id: int, items_str: str) -> Cart | None:
 # Commands
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 async def cmd_user(user_id: int) -> None:
     """Show user info — only runs user-related nodes."""
     result = await UserInfoNode.execute(UserId(user_id))
-    
+
     match result:
         case Ok(info):
             profile_badge = " 📦" if info.profile_cached else ""
@@ -135,7 +138,7 @@ async def cmd_user(user_id: int) -> None:
 │  Email:    {info.email:35} │
 ├────────────────────────────────────────────────┤
 │  Loyalty:  {info.loyalty_level:10} ({info.loyalty_discount}% discount){loyalty_badge:6} │
-│  Free ship: orders over ${info.free_shipping_threshold/100:.0f}               │
+│  Free ship: orders over ${info.free_shipping_threshold / 100:.0f}               │
 ├────────────────────────────────────────────────┤
 │  Address:  {info.address_full:35} │
 │  Payment:  {info.payment_type} ****{info.payment_last_four:27} │
@@ -143,7 +146,7 @@ async def cmd_user(user_id: int) -> None:
 """)
             if info.profile_cached or info.loyalty_cached:
                 print("  📦 = served from cache")
-        
+
         case Error(e):
             print(f"\n  ✗ Failed: [{e.code}] {e.message}")
 
@@ -153,13 +156,13 @@ async def cmd_shipping(user_id: int, items_str: str) -> None:
     cart = make_cart(user_id, items_str)
     if not cart:
         return
-    
+
     print(f"\n  Shipping estimate for user {user_id}:")
     for item in cart.items:
         print(f"    • {item.quantity}x {item.product_id.value}")
-    
+
     result = await ShippingEstimateNode.execute(cart)
-    
+
     match result:
         case Ok(estimate):
             print(f"""
@@ -168,12 +171,14 @@ async def cmd_shipping(user_id: int, items_str: str) -> None:
 │  Ship to: {estimate.ship_to_city}, {estimate.ship_to_state:28} │
 ├────────────────────────────────────────────────┤""")
             for line in estimate.lines:
-                print(f"│  {line.quantity}x {line.product_name:20} ${line.cost/100:>6.2f}  {line.days}d │")
+                print(
+                    f"│  {line.quantity}x {line.product_name:20} ${line.cost / 100:>6.2f}  {line.days}d │"
+                )
             print(f"""├────────────────────────────────────────────────┤
-│  TOTAL: ${estimate.total_cost/100:>6.2f}  ({estimate.estimated_days} days max)           │
+│  TOTAL: ${estimate.total_cost / 100:>6.2f}  ({estimate.estimated_days} days max)           │
 └────────────────────────────────────────────────┘
 """)
-        
+
         case Error(e):
             print(f"\n  ✗ Failed: [{e.code}] {e.message}")
 
@@ -183,13 +188,13 @@ async def cmd_preview(user_id: int, items_str: str) -> None:
     cart = make_cart(user_id, items_str)
     if not cart:
         return
-    
+
     print(f"\n  Order preview for user {user_id}:")
     for item in cart.items:
         print(f"    • {item.quantity}x {item.product_id.value}")
-    
+
     result = await PreviewNode.execute(cart)
-    
+
     match result:
         case Ok(preview):
             print(f"""
@@ -203,20 +208,22 @@ async def cmd_preview(user_id: int, items_str: str) -> None:
 │  Items:                                         │""")
             for item in preview.items:
                 disc = item.pricing.product_discount + item.pricing.loyalty_discount
-                disc_str = f" (-${disc/100:.2f})" if disc else ""
-                print(f"│    {item.item.quantity}x {item.product.name:18} ${item.pricing.unit_price/100:.2f}{disc_str:10} │")
+                disc_str = f" (-${disc / 100:.2f})" if disc else ""
+                print(
+                    f"│    {item.item.quantity}x {item.product.name:18} ${item.pricing.unit_price / 100:.2f}{disc_str:10} │"
+                )
             print(f"""├────────────────────────────────────────────────┤
-│  Subtotal:   ${preview.subtotal/100:>8.2f}                       │
-│  Discounts: -${preview.discounts/100:>8.2f}                       │
-│  Shipping:   ${preview.shipping/100:>8.2f}                       │
-│  Tax ({preview.tax_rate*100:.0f}%):    ${preview.tax_amount/100:>8.2f}                       │
+│  Subtotal:   ${preview.subtotal / 100:>8.2f}                       │
+│  Discounts: -${preview.discounts / 100:>8.2f}                       │
+│  Shipping:   ${preview.shipping / 100:>8.2f}                       │
+│  Tax ({preview.tax_rate * 100:.0f}%):    ${preview.tax_amount / 100:>8.2f}                       │
 ├────────────────────────────────────────────────┤
-│  TOTAL:      ${preview.grand_total/100:>8.2f}                       │
+│  TOTAL:      ${preview.grand_total / 100:>8.2f}                       │
 └────────────────────────────────────────────────┘
 
   ⚠️  This is a preview. Use 'checkout' to complete the order.
 """)
-        
+
         case Error(e):
             print(f"\n  ✗ Failed: [{e.code}] {e.message}")
 
@@ -226,11 +233,11 @@ async def cmd_checkout(user_id: int, items_str: str) -> None:
     cart = make_cart(user_id, items_str)
     if not cart:
         return
-    
+
     print(f"\n  Checkout for user {user_id}:")
     for item in cart.items:
         print(f"    • {item.quantity}x {item.product_id.value}")
-    
+
     result = await CreateOrderNode.execute(cart)
 
     match result:
@@ -246,15 +253,17 @@ async def cmd_checkout(user_id: int, items_str: str) -> None:
 ╠════════════════════════════════════════════════╣
 ║  Items:                                         ║""")
             for item in order.items:
-                disc_str = f" (-${item.discounts/100:.2f})" if item.discounts else ""
-                print(f"║    {item.quantity}x {item.product.name:18} ${item.unit_price/100:.2f}{disc_str:10} ║")
+                disc_str = f" (-${item.discounts / 100:.2f})" if item.discounts else ""
+                print(
+                    f"║    {item.quantity}x {item.product.name:18} ${item.unit_price / 100:.2f}{disc_str:10} ║"
+                )
             print(f"""╠════════════════════════════════════════════════╣
-║  Subtotal:   ${order.subtotal/100:>8.2f}                       ║
-║  Discounts: -${order.total_discounts/100:>8.2f}                       ║
-║  Shipping:   ${order.shipping_total/100:>8.2f}                       ║
-║  Tax ({order.tax.tax_rate*100:.0f}%):    ${order.tax.tax_amount/100:>8.2f}                       ║
+║  Subtotal:   ${order.subtotal / 100:>8.2f}                       ║
+║  Discounts: -${order.total_discounts / 100:>8.2f}                       ║
+║  Shipping:   ${order.shipping_total / 100:>8.2f}                       ║
+║  Tax ({order.tax.tax_rate * 100:.0f}%):    ${order.tax.tax_amount / 100:>8.2f}                       ║
 ╠════════════════════════════════════════════════╣
-║  TOTAL:      ${order.grand_total/100:>8.2f}                       ║
+║  TOTAL:      ${order.grand_total / 100:>8.2f}                       ║
 ╠════════════════════════════════════════════════╣
 ║  Auth Code:  {order.auth_code:33} ║
 ╚════════════════════════════════════════════════╝
@@ -314,42 +323,42 @@ async def run_cli() -> None:
             case "quit" | "exit" | "q":
                 print("Bye!")
                 break
-            
+
             case "help" | "h" | "?":
                 print_help()
-            
+
             case "users":
                 print_users()
-            
+
             case "products":
                 print_products()
-            
+
             case "viz" | "graph":
                 node_name = parts[1] if len(parts) > 1 else "checkout"
                 fmt = parts[2] if len(parts) > 2 else "ascii"
-                
+
                 nodes: dict[str, type[Any]] = {
                     "checkout": CreateOrderNode,
                     "preview": PreviewNode,
                     "user": UserInfoNode,
                     "shipping": ShippingEstimateNode,
                 }
-                
+
                 target = nodes.get(node_name.lower())
                 if target is None:
                     print(f"  ✗ Unknown node: {node_name}")
                     print(f"  Available: {', '.join(nodes.keys())}")
                     continue
-                
+
                 if fmt not in ("mermaid", "tree", "text", "layers", "ascii"):
                     print(f"  ✗ Unknown format: {fmt}")
                     print("  Available: ascii, tree, mermaid, text, layers")
                     continue
-                
+
                 fmt_typed: Literal["mermaid", "tree", "text", "layers", "ascii"] = fmt  # type: ignore[assignment]
                 print(f"\n  {node_name.upper()} graph ({fmt}):\n")
                 print(G.visualize(target, fmt_typed))
-            
+
             case "user":
                 if len(parts) != 2:
                     print("  Usage: user <user_id>")
@@ -359,7 +368,7 @@ async def run_cli() -> None:
                     await cmd_user(int(parts[1]))
                 except ValueError:
                     print("  ✗ user_id must be a number")
-            
+
             case "shipping":
                 if len(parts) != 3:
                     print("  Usage: shipping <user_id> <items>")
@@ -369,7 +378,7 @@ async def run_cli() -> None:
                     await cmd_shipping(int(parts[1]), parts[2])
                 except ValueError:
                     print("  ✗ user_id must be a number")
-            
+
             case "preview":
                 if len(parts) != 3:
                     print("  Usage: preview <user_id> <items>")
@@ -379,7 +388,7 @@ async def run_cli() -> None:
                     await cmd_preview(int(parts[1]), parts[2])
                 except ValueError:
                     print("  ✗ user_id must be a number")
-            
+
             case "checkout":
                 if len(parts) != 3:
                     print("  Usage: checkout <user_id> <items>")
@@ -389,7 +398,7 @@ async def run_cli() -> None:
                     await cmd_checkout(int(parts[1]), parts[2])
                 except ValueError:
                     print("  ✗ user_id must be a number")
-            
+
             case _:
                 print(f"  ✗ Unknown command: {cmd}")
                 print("  Type 'help' for available commands.")

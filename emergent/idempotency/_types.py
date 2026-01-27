@@ -17,6 +17,7 @@ E = TypeVar("E")
 # Record State — Operation Lifecycle
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class RecordState(Enum):
     """
     State of an idempotency record.
@@ -26,6 +27,7 @@ class RecordState(Enum):
                 → FAILED (error)
                 → (expired/deleted)
     """
+
     PENDING = auto()
     COMPLETED = auto()
     FAILED = auto()
@@ -34,6 +36,7 @@ class RecordState(Enum):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Idempotency Record — Stored State
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyRecord(Generic[T, E]):
@@ -46,6 +49,7 @@ class IdempotencyRecord(Generic[T, E]):
     input_hash: Optional fingerprint of the original input.
     Зачем: Collision detection — разные inputs с одинаковым key.
     """
+
     key: str
     state: RecordState
     value: T | None
@@ -78,6 +82,7 @@ class IdempotencyRecord(Generic[T, E]):
 # Result Types
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class IdempotencyResult(Generic[T]):
     """
@@ -85,6 +90,7 @@ class IdempotencyResult(Generic[T]):
 
     Note: from_cache indicates if result was cached vs freshly computed.
     """
+
     value: T
     from_cache: bool
     key: str
@@ -92,12 +98,13 @@ class IdempotencyResult(Generic[T]):
 
 class IdempotencyErrorKind(Enum):
     """Kinds of idempotency errors."""
-    CONFLICT = auto()       # Concurrent request with same key
-    TIMEOUT = auto()        # Waiting for pending timed out
-    STORE_ERROR = auto()    # Storage backend error
-    LOCK_ERROR = auto()     # Failed to acquire lock
-    EXECUTION = auto()      # Wrapped operation failed
-    INPUT_MISMATCH = auto() # Cached result has different input hash
+
+    CONFLICT = auto()  # Concurrent request with same key
+    TIMEOUT = auto()  # Waiting for pending timed out
+    STORE_ERROR = auto()  # Storage backend error
+    LOCK_ERROR = auto()  # Failed to acquire lock
+    EXECUTION = auto()  # Wrapped operation failed
+    INPUT_MISMATCH = auto()  # Cached result has different input hash
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,7 @@ class IdempotencyError(Generic[E]):
 
     Note: original_error содержит ошибку от wrapped operation (если EXECUTION).
     """
+
     kind: IdempotencyErrorKind
     message: str
     original_error: E | None = None

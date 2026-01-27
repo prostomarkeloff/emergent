@@ -33,6 +33,7 @@ type Fallible[T, E] = Lazy[T, E]
 # Node Identity
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class NodeId[T]:
     """
@@ -40,7 +41,9 @@ class NodeId[T]:
 
     The TYPE itself is the identity — no strings needed.
     """
+
     node_type: type[T]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Compensator Type (for Saga)

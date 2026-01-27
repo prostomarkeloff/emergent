@@ -17,6 +17,7 @@ from nodnod import Scope, Value, EventLoopAgent, Node
 # TypedScope
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class TypedScope:
     """Type-safe wrapper around nodnod.Scope."""
 
@@ -39,6 +40,17 @@ class TypedScope:
         """Return all injected values."""
         return self._injected
 
+    def copy(self) -> TypedScope:
+        """
+        Note: Create independent copy для immutable patterns.
+        Почему: Builder patterns нужны independent scopes.
+        """
+        new_scope = TypedScope(detail=self._scope.detail)
+        # Copy all injections
+        for typ, value in self._injected.items():
+            new_scope.inject(typ, value)
+        return new_scope
+
     def get[T](self, typ: type[T]) -> T:
         result = self._scope.get(typ)
         if result is None:
@@ -56,6 +68,7 @@ class TypedScope:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Run — Fluent awaitable builder
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(slots=True)
 class Run[T]:
@@ -76,6 +89,7 @@ class Run[T]:
         # Short style
         result = await run(ProcessOrder).given(order, db, email)
     """
+
     _target: type[T]
     _injections: tuple[tuple[type[Any], Any], ...]
 
@@ -153,6 +167,7 @@ def run[T](target: type[T]) -> Run[T]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # compose — One-shot
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 async def compose[T](target: type[T], *inputs: object) -> T:
     """

@@ -57,6 +57,7 @@ from emergent.idempotency._store import StoreError
 # Idempotency Mixin — add to your SQLAlchemy model
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class IdempotencyMixin:
     """
     Mixin for SQLAlchemy models with idempotency support.
@@ -108,8 +109,10 @@ class IdempotencyMixin:
 # Status enum
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class IdempotencyStatus:
     """Status constants for idempotency_status column."""
+
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
@@ -119,6 +122,7 @@ class IdempotencyStatus:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Protocol for idempotent models
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @runtime_checkable
 class IdempotentModel(Protocol):
@@ -151,6 +155,7 @@ P = TypeVar("P")  # Pending data type
 # ═══════════════════════════════════════════════════════════════════════════════
 # Generic SQLAlchemy Store
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class SQLAlchemyStore(Generic[M, P]):
     """
@@ -222,7 +227,9 @@ class SQLAlchemyStore(Generic[M, P]):
         new_store._pending = pending
         return new_store
 
-    async def get(self, key: str) -> Result[IdempotencyRecord[str, str] | None, StoreError]:
+    async def get(
+        self, key: str
+    ) -> Result[IdempotencyRecord[str, str] | None, StoreError]:
         """Get record by idempotency_key."""
         try:
             async with self._session_factory() as session:
@@ -238,7 +245,10 @@ class SQLAlchemyStore(Generic[M, P]):
                 model = cast(IdempotentModel, row)
 
                 # Check expiry
-                if model.idempotency_expires_at and datetime.now() > model.idempotency_expires_at:
+                if (
+                    model.idempotency_expires_at
+                    and datetime.now() > model.idempotency_expires_at
+                ):
                     return Ok(None)
 
                 return Ok(self._to_record(model))
@@ -255,14 +265,18 @@ class SQLAlchemyStore(Generic[M, P]):
         """Create pending record atomically."""
         try:
             if self._pending is None:
-                return Error(StoreError("Pending data not set. Call with_pending() first."))
+                return Error(
+                    StoreError("Pending data not set. Call with_pending() first.")
+                )
 
             async with self._session_factory() as session:
                 model = self._to_pending(key, self._pending)
 
                 # Set expiry if TTL provided
                 if ttl:
-                    cast(IdempotentModel, model).idempotency_expires_at = datetime.now() + ttl
+                    cast(IdempotentModel, model).idempotency_expires_at = (
+                        datetime.now() + ttl
+                    )
 
                 stmt = self._to_insert(model)
                 cursor = cast(CursorResult[Any], await session.execute(stmt))

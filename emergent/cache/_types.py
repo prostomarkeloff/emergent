@@ -13,6 +13,7 @@ from typing import Protocol
 # Tier Protocol — Users Implement This
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class Tier[T](Protocol):
     """
     Cache tier protocol.
@@ -73,6 +74,7 @@ class Tier[T](Protocol):
 # Local Tier — In-Memory LRU (Default)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 class LocalTier[T]:
     """
     In-memory LRU cache tier.
@@ -118,6 +120,7 @@ class LocalTier[T]:
 
     async def delete_pattern(self, pattern: str) -> int:
         import fnmatch
+
         keys_to_delete = [k for k in self._cache if fnmatch.fnmatch(k, pattern)]
         for key in keys_to_delete:
             del self._cache[key]
@@ -129,9 +132,11 @@ class LocalTier[T]:
 # Cache Result
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class CacheResult[T]:
     """Cache operation result with metadata."""
+
     value: T
     hit: bool
     tier: str | None
@@ -140,6 +145,7 @@ class CacheResult[T]:
 
 class CacheErrorKind(Enum):
     """Cache error kinds."""
+
     MISS = auto()
     CONNECTION = auto()
     SERIALIZATION = auto()
@@ -150,6 +156,7 @@ class CacheErrorKind(Enum):
 @dataclass(frozen=True, slots=True)
 class CacheError:
     """Cache operation error."""
+
     kind: CacheErrorKind
     message: str
 

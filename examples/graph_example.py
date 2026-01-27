@@ -52,6 +52,7 @@ class OrderInput:
 @G.node
 class FetchUser:
     """Fetch user from repo."""
+
     def __init__(self, data: User) -> None:
         self.data = data
 
@@ -64,6 +65,7 @@ class FetchUser:
 @G.node
 class CalcDiscount:
     """Calculate discount based on user tier."""
+
     def __init__(self, data: Discount | None) -> None:
         self.data = data
 
@@ -71,14 +73,18 @@ class CalcDiscount:
     async def __compose__(cls, user: FetchUser) -> "CalcDiscount":
         # Depends on FetchUser — runs after it
         match user.data.tier:
-            case "gold": return cls(Discount(20, "Gold member"))
-            case "silver": return cls(Discount(10, "Silver member"))
-            case _: return cls(None)
+            case "gold":
+                return cls(Discount(20, "Gold member"))
+            case "silver":
+                return cls(Discount(10, "Silver member"))
+            case _:
+                return cls(None)
 
 
 @G.node
 class ProcessOrder:
     """Final order processing."""
+
     def __init__(self, data: OrderResult) -> None:
         self.data = data
 
@@ -121,6 +127,7 @@ class MockPayment:
 @G.node
 class ProcessPayment:
     """Payment processing with injected gateway."""
+
     def __init__(self, charge_id: str) -> None:
         self.charge_id = charge_id
 

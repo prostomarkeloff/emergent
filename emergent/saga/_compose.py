@@ -10,6 +10,7 @@ from emergent.saga._types import SagaStep, Parallel, Race
 # parallel() — All Must Succeed
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def parallel[T, E](
     *sagas: SagaStep[T, E],
 ) -> Parallel[T, E]:
@@ -33,6 +34,7 @@ def parallel[T, E](
 # ═══════════════════════════════════════════════════════════════════════════════
 # race() — First Success Wins
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def race[T, E](
     *sagas: SagaStep[T, E],

@@ -18,6 +18,7 @@ from examples.idempotency_payments.db import OrderTable
 # Order Config — typed input for pending order creation
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass(frozen=True, slots=True)
 class OrderPending:
     """
@@ -25,6 +26,7 @@ class OrderPending:
 
     Note: Typed dataclass — compile-time safety.
     """
+
     order_id: str
     customer_id: str
     amount_cents: int
@@ -35,6 +37,7 @@ class OrderPending:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Store Factory
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def create_order_store(
     session_factory: async_sessionmaker[AsyncSession],
@@ -82,13 +85,17 @@ def _create_pending_order(key: str, pending: OrderPending) -> OrderTable:
 
 def _create_insert_stmt(model: OrderTable) -> Any:
     """Create INSERT ... ON CONFLICT DO NOTHING."""
-    return sqlite_insert(OrderTable).values(
-        id=model.id,
-        idempotency_key=model.idempotency_key,
-        idempotency_status=model.idempotency_status,
-        customer_id=model.customer_id,
-        amount_cents=model.amount_cents,
-        currency=model.currency,
-        description=model.description,
-        created_at=model.created_at,
-    ).on_conflict_do_nothing(index_elements=["idempotency_key"])
+    return (
+        sqlite_insert(OrderTable)
+        .values(
+            id=model.id,
+            idempotency_key=model.idempotency_key,
+            idempotency_status=model.idempotency_status,
+            customer_id=model.customer_id,
+            amount_cents=model.amount_cents,
+            currency=model.currency,
+            description=model.description,
+            created_at=model.created_at,
+        )
+        .on_conflict_do_nothing(index_elements=["idempotency_key"])
+    )

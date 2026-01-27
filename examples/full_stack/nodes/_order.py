@@ -33,7 +33,7 @@ _order_counter = 0
 @G.node
 class CreateOrderNode:
     """Final node: create the order from all gathered data."""
-    
+
     def __init__(self, data: OrderSummary) -> None:
         self.data = data
 
@@ -81,32 +81,34 @@ class CreateOrderNode:
         )
 
         print(f"      [CreateOrder] {order.order_id.value}")
-        print(f"        Inventory reservations: {[r.reservation_id for r in saga.data.reservations]}")
+        print(
+            f"        Inventory reservations: {[r.reservation_id for r in saga.data.reservations]}"
+        )
         return cls(order)
 
     @classmethod
     async def execute(cls, cart: Cart) -> Result[OrderSummary, CheckoutError]:
         """
         Execute the full checkout graph.
-        
+
         FULL STACK demonstration:
-        
+
         1. GRAPH: Auto-parallelizes independent nodes
            - User: profile*, loyalty*, address, payment (4 parallel)
            - Items: product, inventory, promo, shipping (4N parallel)
-        
+
         2. CACHE: Profile and loyalty served from cache on repeat checkouts
            - First checkout: cache miss → fetch from service
            - Second checkout same user: cache hit → instant
-        
+
         3. COMBINATORS: traverse_par + parallel for per-item fetching
            - Fail-fast semantics with Result[T, E]
-        
+
         4. SAGA: Transactional inventory + payment
            - Reserve inventory (with release compensator)
            - Authorize payment (with void compensator)
            - On failure: automatic rollback
-        
+
         (* = cached)
         """
         start = time.perf_counter()
@@ -123,4 +125,3 @@ class CreateOrderNode:
 
 
 __all__ = ("CreateOrderNode",)
-

@@ -22,7 +22,7 @@ from examples.full_stack.nodes._cache import profile_cache, loyalty_cache
 @G.node
 class ProfileNode:
     """User profile — cached."""
-    
+
     def __init__(self, data: UserProfile, cached: bool) -> None:
         self.data = data
         self.cached = cached
@@ -33,7 +33,9 @@ class ProfileNode:
         match result:
             case Ok(cache_result):
                 if cache_result.hit:
-                    print(f"      [ProfileNode] CACHE HIT for user {cart.data.user_id.value}")
+                    print(
+                        f"      [ProfileNode] CACHE HIT for user {cart.data.user_id.value}"
+                    )
                 return cls(cache_result.value, cache_result.hit)
             case Error(e):
                 if isinstance(e, CheckoutError):
@@ -44,7 +46,7 @@ class ProfileNode:
 @G.node
 class LoyaltyNode:
     """User loyalty tier — cached."""
-    
+
     def __init__(self, data: LoyaltyTier, cached: bool) -> None:
         self.data = data
         self.cached = cached
@@ -55,7 +57,9 @@ class LoyaltyNode:
         match result:
             case Ok(cache_result):
                 if cache_result.hit:
-                    print(f"      [LoyaltyNode] CACHE HIT for user {cart.data.user_id.value}")
+                    print(
+                        f"      [LoyaltyNode] CACHE HIT for user {cart.data.user_id.value}"
+                    )
                 return cls(cache_result.value, cache_result.hit)
             case Error(e):
                 if isinstance(e, CheckoutError):
@@ -66,7 +70,7 @@ class LoyaltyNode:
 @G.node
 class AddressNode:
     """User default shipping address."""
-    
+
     def __init__(self, data: Address) -> None:
         self.data = data
 
@@ -79,7 +83,7 @@ class AddressNode:
 @G.node
 class PaymentMethodNode:
     """User default payment method."""
-    
+
     def __init__(self, data: PaymentMethod) -> None:
         self.data = data
 
@@ -90,4 +94,3 @@ class PaymentMethodNode:
 
 
 __all__ = ("ProfileNode", "LoyaltyNode", "AddressNode", "PaymentMethodNode")
-

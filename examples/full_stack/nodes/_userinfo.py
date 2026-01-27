@@ -22,6 +22,7 @@ from examples.full_stack.nodes._user import (
 @dataclass
 class UserInfo:
     """Complete user information."""
+
     user_id: int
     name: str
     email: str
@@ -41,12 +42,12 @@ class UserInfo:
 class UserInfoNode:
     """
     User info — just user data, no items.
-    
+
     COMPOSITION EXAMPLE:
     Depends on: ProfileNode, LoyaltyNode, AddressNode, PaymentMethodNode
     Does NOT depend on: ItemsDataNode, TaxNode, FraudCheckNode, etc.
     """
-    
+
     def __init__(self, data: UserInfo) -> None:
         self.data = data
 
@@ -80,13 +81,13 @@ class UserInfoNode:
     async def execute(cls, user_id: UserId) -> Result[UserInfo, CheckoutError]:
         """
         Fetch user info.
-        
+
         Creates a minimal cart just to trigger the graph.
         Only runs user-related nodes.
         """
         # Minimal cart with no items — just to provide user_id
         cart = Cart(user_id, tuple())
-        
+
         print(f"\n    Fetching user info for {user_id.value}:")
         try:
             result = await G.compose(cls, cart)
@@ -98,4 +99,3 @@ class UserInfoNode:
 
 
 __all__ = ("UserInfo", "UserInfoNode")
-
