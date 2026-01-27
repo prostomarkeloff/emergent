@@ -167,6 +167,7 @@ result = await runner.run(
 | `cache` | Multi-tier caching | key → tiers → fetch. Miss = fetch + store. |
 | `graph` | Computation graphs | Nodes + deps = parallelization + DI. |
 | `idempotency` | Exactly-once execution | Deduplicate concurrent calls. TTL + stores. |
+| `wire` | Transport-agnostic endpoints | Expose ops via triggers + codecs. |
 
 ---
 
@@ -627,6 +628,76 @@ Why this design:
 Infra stores (Memory/Redis)
 - Keep a single MemoryStore per process, or share a Redis client.
 - Build small Store wrappers; inject them via nodes/DI instead of recreating clients.
+
+---
+
+## wire
+
+Expose ops/graphs over transports via triggers and codecs.
+
+```python
+from pydantic import BaseModel
+from kungfu import Result, Ok, Error
+from emergent import wire as W
+from examples.ops_composition_example import (
+    BuildSummary, GetPrice, GetStock, runner as ops_runner,
+)
+
+class BuildSummaryIn(BaseModel):
+    product_id: int
+
+    def to_domain(self) -> BuildSummary:
+        pid = self.product_id
+        return BuildSummary(product_id=pid, price=GetPrice(pid), stock=GetStock(pid))
+
+
+class BuildSummaryOut(BaseModel):
+    summary: str
+
+    @classmethod
+    def from_domain(cls, dom: Result[str, str]) -> "BuildSummaryOut":
+        match dom:
+            case Ok(txt):
+                return cls(summary=txt)
+            case Error(e):
+                return cls(summary=f"Can't build summary: {e}")
+
+
+# Endpoint → expose runner with HTTP trigger and RRC codec
+endp = W.endpoint(ops_runner).expose(
+    trigger=W.triggers.http.HTTPRouteTrigger(path="/hello", method="GET"),
+    codec=W.codecs.RequestResponseCodec(
+        request=BuildSummaryIn, response=BuildSummaryOut
+    ),
+)
+
+# Application → can mount multiple endpoints
+app = W.application().mount(endp)
+
+# FastAPI adapter (optional contrib)
+fastapi_app = W.contrib.fastapi.from_application(app)
+```
+
+```
+┌ Request ─ HTTP ───────────┐
+│  HTTPRouteTrigger + RRC    │
+└────────────┬──────────────┘
+             ▼
+         Endpoint ──→ Runner (ops)
+             ▼
+           Response
+```
+
+Notes
+- Triggers: routing and transport (e.g., `HTTPRouteTrigger`).
+- Codecs: request/response conversion (`RequestResponseCodec` expects `to_domain`/`from_domain`).
+- Contrib: `wire.contrib.fastapi` compiles an `Application` to a FastAPI app.
+
+See `examples/wiring.py` for a complete, runnable snippet. To try with FastAPI docs:
+
+```bash
+uvicorn examples.wiring:fastapi_app --reload
+```
 
 ---
 
