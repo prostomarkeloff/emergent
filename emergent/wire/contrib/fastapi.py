@@ -6,7 +6,7 @@ FastAPI integration for emergent.wire (optional dependency).
 """
 
 try:
-    from ._fastapi import (
+    from ._impls._fastapi import (
         add_endpoint_to_app,
         from_application,
         compile_to_fastapi_route,

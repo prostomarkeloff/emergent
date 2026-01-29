@@ -93,6 +93,7 @@ async def build_summary(
 # Runner
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 runner = (
     O.ops()
     .on(GetPrice, get_price)

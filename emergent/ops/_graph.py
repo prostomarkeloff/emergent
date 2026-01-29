@@ -35,12 +35,22 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field, fields
-from typing import Any, TypeVar, Callable, Awaitable, Generic, get_type_hints, cast
+from typing import (
+    Any,
+    TypeVar,
+    Callable,
+    Awaitable,
+    Generic,
+    get_type_hints,
+    cast,
+    Protocol,
+)
 from abc import ABC
 
 from kungfu import Result, Ok, Error, LazyCoroResult, Some
 
 from nodnod import Node, EventLoopAgent
+from nodnod.agent.base import Agent
 from nodnod.utils.create_node import create_node
 
 from emergent import graph as G
@@ -51,6 +61,12 @@ T_co = TypeVar("T_co", covariant=True)
 E_co = TypeVar("E_co", covariant=True)
 
 HandlerFunc = Callable[..., Awaitable[Result[Any, Any]]]
+
+
+class AgentFactory(Protocol):
+    """Anything with ``.build(nodes) -> Agent``: a class (EventLoopAgent) or a custom factory."""
+
+    def build(self, nodes: set[type[Node[Any, Any]]]) -> Agent: ...
 
 
 class Op(ABC, Generic[T_co, E_co]):
@@ -195,6 +211,9 @@ class OpsBuilder:
     """Builder for operation handlers."""
 
     _items: tuple[tuple[type[Op[Any, Any]], HandlerFunc], ...] = ()
+    _precompile_scope: G.TypedScope = field(
+        default_factory=lambda: G.TypedScope(detail="builder:precompile")
+    )
 
     def on(
         self,
@@ -206,7 +225,12 @@ class OpsBuilder:
         others = tuple(i for i in self._items if i[0] is not op_type)
         return OpsBuilder(_items=(*others, (op_type, handler)))
 
-    def compile(self) -> Runner:
+    def inject(self, typ: type[object], impl: object) -> OpsBuilder:
+        """Inject shared dependency."""
+        self._precompile_scope.inject(typ, impl)
+        return self
+
+    def compile(self, agent: AgentFactory | None = None) -> Runner:
         """
         Compile into runner.
 
@@ -234,7 +258,12 @@ class OpsBuilder:
                 node_cls=node_cls,
             )
 
-        return Runner(_registry=registrations, _node_registry=node_registry)
+        return Runner(
+            _registry=registrations,
+            _node_registry=node_registry,
+            _global_scope=self._precompile_scope,
+            _agent=agent or EventLoopAgent,
+        )
 
 
 @dataclass(slots=True)
@@ -249,6 +278,7 @@ class Runner:
     4. Pass cached results to handler
     """
 
+    _agent: AgentFactory
     _registry: dict[type[Op[Any, Any]], _OpReg]
     _node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]]
     _global_scope: G.TypedScope = field(
@@ -291,11 +321,18 @@ class Runner:
         collect_recursive(req)
         return deps
 
-    async def run(self, req: Op[T, E]) -> Result[T, E]:
+    async def run(
+        self,
+        req: Op[T, E],
+        scope_extras: dict[type, object] | None = None,
+    ) -> Result[T, E]:
         """
         Execute operation with automatic parallelization.
 
         nodnod resolves all dependencies in parallel before calling handler.
+
+        scope_extras: additional typed values to inject into the handler scope
+        (used by middleware to enrich scope before handler execution).
         """
         op_type = type(req)
         reg = self._registry.get(op_type)
@@ -312,14 +349,18 @@ class Runner:
             if dep_reg:
                 nodes_to_run.add(dep_reg.node_cls)
 
-        # Build agent
-        agent = EventLoopAgent.build(nodes_to_run)
+        agent = self._agent.build(nodes_to_run)
 
         # Create scope with injections (use G.TypedScope for type-safety)
         async with G.TypedScope(detail=f"ops:{op_type.__name__}") as scope:
             # Inject global dependencies
             for typ, impl in self._global_scope.all_injected().items():
                 scope.inject(typ, impl)
+
+            # Inject middleware scope enrichments
+            if scope_extras:
+                for typ, impl in scope_extras.items():
+                    scope.inject(typ, impl)
 
             # Inject request
             scope.inject(op_type, req)
@@ -358,8 +399,12 @@ def ops() -> OpsBuilder:
     return OpsBuilder()
 
 
+def operation_set() -> OpsBuilder:
+    return ops()
+
+
 # Aliases
 Returns = Op
 Returning = Op
 
-__all__ = ("Op", "Returns", "Returning", "OpsBuilder", "Runner", "ops")
+__all__ = ("Op", "Returns", "Returning", "OpsBuilder", "Runner", "AgentFactory", "ops")

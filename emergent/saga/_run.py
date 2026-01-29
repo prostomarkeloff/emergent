@@ -245,7 +245,7 @@ async def run_parallel[T, E](
 
                 return Error(
                     SagaError(
-                        error=first_error.value,
+                        error=first_error.error,
                         step_failed=len(par.sagas) - len(errors),
                         compensators_run=comp_run,
                         compensators_failed=comp_failed,

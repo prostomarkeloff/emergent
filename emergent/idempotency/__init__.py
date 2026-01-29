@@ -90,16 +90,9 @@ from emergent.idempotency._builder import (
     IdempotentExecutor,
 )
 
-# SQLAlchemy integration (optional import)
-try:
-    from emergent.idempotency._sqlalchemy import (
-        IdempotencyMixin,
-        IdempotencyStatus,
-        IdempotentModel,
-        SQLAlchemyStore,
-    )
-except ImportError:
-    pass
+# Optional integrations available via contrib subpackage:
+#   from emergent.idempotency.contrib import sqlalchemy
+# See emergent/idempotency/contrib/ for available integrations.
 
 __all__ = (
     # Types
@@ -142,9 +135,4 @@ __all__ = (
     "idempotent",
     "Idempotent",
     "IdempotentExecutor",
-    # SQLAlchemy (optional)
-    "IdempotencyMixin",
-    "IdempotencyStatus",
-    "IdempotentModel",
-    "SQLAlchemyStore",
 )

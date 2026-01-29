@@ -7,10 +7,10 @@ Note: Используем IdempotencyMixin из emergent — добавляет
 from datetime import datetime
 
 from sqlalchemy import String, DateTime, Integer, Text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker, AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from emergent.idempotency import IdempotencyMixin
+from emergent.idempotency.contrib.sqlalchemy import IdempotencyMixin
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -62,8 +62,6 @@ class OrderTable(Base, IdempotencyMixin):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Database Setup
 # ═══════════════════════════════════════════════════════════════════════════════
-
-from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 async def create_database(

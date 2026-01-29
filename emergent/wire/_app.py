@@ -1,14 +1,16 @@
-from typing import Self
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
 from emergent.wire._endpoint import Endpoint
 
 
+@dataclass(slots=True)
 class Application:
-    def __init__(self) -> None:
-        self.endpoints: list[Endpoint] = []
+    endpoints: list[Endpoint] = field(default_factory=list[Endpoint])
 
-    def mount(self, *endps: Endpoint) -> Self:
-        self.endpoints.append(*endps)
-        return self
+    def mount(self, *endps: Endpoint) -> Application:
+        return Application(endpoints=[*self.endpoints, *endps])
 
 
 def application() -> Application:

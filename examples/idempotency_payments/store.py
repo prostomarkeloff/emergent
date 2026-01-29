@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from emergent.idempotency import SQLAlchemyStore, IdempotencyStatus
+from emergent.idempotency.contrib.sqlalchemy import SQLAlchemyStore, IdempotencyStatus
 
 from examples.idempotency_payments.db import OrderTable
 

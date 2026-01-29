@@ -1,6 +1,6 @@
 [project]
 name = "emergent"
-version = "0.2.1"
+version = "0.2.5"
 description = "Type-safe DSLs for common patterns. Composable, local-first, lazy."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -21,6 +21,12 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+cli = [
+    "libcst>=1.0",
+]
+
+[project.scripts]
+emergent-cli = "emergent_cli.cli:main"
 
 [build-system]
 requires = ["hatchling"]

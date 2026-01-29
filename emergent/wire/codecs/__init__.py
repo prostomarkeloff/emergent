@@ -1,21 +1,43 @@
 """
 Codecs — convert transport payloads to domain ops and back.
 
-    from emergent.wire.codecs import RequestResponseCodec
+    from emergent.wire.codecs import rrc, stateful
 
-    # class Request(...): implements to_domain()
-    # class Response(...): implements from_domain()
-    # codec = RequestResponseCodec(Request, Response)
+    # RRC: Request/Response pattern
+    codec = rrc(RegisterRequest, RegisterResponse).use(auth_mw).build()
+
+    # Stateful: FSM-based conversations
+    codec = stateful(BetFlow, BetStart).key(ChatId).build()
 """
 
 from emergent.wire.codecs.rrc import (
     RequestResponseCodec,
+    RRCBuilder,
     ToDomain,
     FromDomain,
+    rrc,
+)
+from emergent.wire.codecs.stateful import (
+    StatefulCodec,
+    StatefulBuilder,
+    Done,
+    StateStore,
+    MemoryStateStore,
+    stateful,
 )
 
 __all__ = (
+    # RRC
     "RequestResponseCodec",
+    "RRCBuilder",
     "ToDomain",
     "FromDomain",
+    "rrc",
+    # Stateful
+    "StatefulCodec",
+    "StatefulBuilder",
+    "Done",
+    "StateStore",
+    "MemoryStateStore",
+    "stateful",
 )
