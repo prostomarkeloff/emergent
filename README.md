@@ -432,7 +432,7 @@ SQLAlchemy in 60 seconds
 ```python
 from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
-from emergent.idempotency import IdempotencyMixin, SQLAlchemyStore, IdempotencyStatus
+from emergent.idempotency.contrib.sqlalchemy import IdempotencyMixin, SQLAlchemyStore, IdempotencyStatus
 
 # 1) Model with IdempotencyMixin
 class OrderTable(Base, IdempotencyMixin):
@@ -633,71 +633,643 @@ Infra stores (Memory/Redis)
 
 ## wire
 
-Expose ops/graphs over transports via triggers and codecs.
+Declarative multi-transport wiring — write business logic once, expose it everywhere.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              The Leverage                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Your domain:    auth_runner, game_runner (pure ops, tested once)          │
+│                              ↓                                               │
+│   Wire programs:  HTTP app, CLI app, Telegram app (idiomatic per transport) │
+│                              ↓                                               │
+│   Compilers:      FastAPI app, argparse parser, Telegrinder Dispatch        │
+│                   (framework-native artifacts with full features)           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**The promise:** Your runners don't know about HTTP, CLI, or Telegram. Your request types are idiomatic to each transport. Compilers translate everything into native framework constructs — FastAPI gets OpenAPI schemas, CLI gets `--help`, Telegram gets keyboard flows.
+
+---
+
+### The Leverage: eDSL Inside eDSL
+
+Look at `StatefulCodec`. The `__transition__` method signature **IS a DSL**:
 
 ```python
-from pydantic import BaseModel
-from kungfu import Result, Ok, Error
-from emergent import wire as W
-from examples.ops_composition_example import (
-    BuildSummary, GetPrice, GetStock, runner as ops_runner,
-)
+async def __transition__(
+    self,
+    token: Option[HttpToken],      # "try to get token, Nothing if can't"
+    bet_input: Option[BetInput],   # "try to get bet, Nothing if can't"
+    request: fastapi.Request,      # "I require the raw request"
+) -> Self | tuple[Self, Response] | Done:
+```
 
-class BuildSummaryIn(BaseModel):
-    product_id: int
+You **declare what you want** in types. The framework **introspects and delivers**:
+- `Option[X]` → compose X, wrap failure in `Nothing`
+- `Result[X, E]` → compose X, wrap failure in `Error`
+- Plain `X` → compose X, fail if can't
+- Return type → what can happen next
 
-    def to_domain(self) -> BuildSummary:
-        pid = self.product_id
-        return BuildSummary(product_id=pid, price=GetPrice(pid), stock=GetStock(pid))
+This is **eDSL layering**:
+- Level 1: `application().mount(endpoint().expose())` — structure
+- Level 2: `stateful().key().use().build()` — codec config
+- Level 3: `__transition__` signature — behavior via types
 
+Each level hides complexity. Each level provides leverage.
 
-class BuildSummaryOut(BaseModel):
-    summary: str
+**The pattern generalizes.** Codecs can define their own "signature-as-DSL" patterns:
+
+**JobCodec** — async operations that take time:
+
+```python
+@dataclass(frozen=True, slots=True)
+class JobCodec:
+    """Async job pattern: start → poll → result."""
+    start: type      # start.to_domain() → Op that returns job_id
+    progress: type   # progress type (optional)
+    result: type     # final result type
+    ttl: timedelta   # how long to keep completed jobs
+
+# User writes ONE declaration. Compiler creates THREE endpoints:
+# POST /jobs      → start job, return job_id
+# GET /jobs/{id}  → get status + progress
+# GET /jobs/{id}/result → get final result (when done)
+
+# The "DSL" is the type declarations + how they compose:
+@dataclass
+class ImageResizeJob:
+    image_url: str
+    width: int
+    height: int
+
+    def to_domain(self) -> StartResize:
+        return StartResize(self.image_url, self.width, self.height)
+
+@dataclass
+class ResizeProgress:
+    percent: int
+    stage: str
+
+@dataclass
+class ResizeResult:
+    url: str
 
     @classmethod
-    def from_domain(cls, dom: Result[str, str]) -> "BuildSummaryOut":
+    def from_domain(cls, dom: Result[str, str]) -> Self: ...
+```
+
+**SubscriptionCodec** — server-push patterns:
+
+```python
+@dataclass(frozen=True, slots=True)
+class SubscriptionCodec:
+    """Subscribe once, receive events until disconnect."""
+    subscribe: type   # subscribe.to_domain() → Op that validates subscription
+    event: type       # event type pushed to client
+    filter: type | None  # optional per-subscriber filter
+
+# The "DSL" is in the subscribe type's __compose__:
+@dataclass
+class OrderUpdates(DataNode):
+    user_id: int
+    order_ids: list[str]
+
+    @classmethod
+    def __compose__(cls, auth: AuthUser, req: SubscribeRequest) -> Self:
+        # Auth user can only subscribe to their own orders
+        return cls(user_id=auth.id, order_ids=req.order_ids)
+
+    def to_domain(self) -> ValidateSubscription:
+        return ValidateSubscription(self.user_id, self.order_ids)
+
+# Compiler creates SSE/WebSocket endpoint that:
+# 1. Composes subscribe type (validates via nodnod)
+# 2. Holds connection
+# 3. Pushes events matching filter
+```
+
+**WizardCodec** — ordered multi-step flows:
+
+```python
+@dataclass(frozen=True, slots=True)
+class WizardCodec:
+    """Ordered steps with validation, back/forward navigation."""
+    steps: tuple[type[WizardStep], ...]  # step order
+    response: type
+    allow_back: bool = True
+
+class WizardStep(Protocol):
+    """Each step declares its inputs via __compose__ signature."""
+    @classmethod
+    def __compose__(cls, ...) -> Self: ...
+    def validate(self) -> Result[Self, ValidationError]: ...
+
+# The "DSL" is the step sequence + each step's __compose__:
+@dataclass
+class ShippingStep(DataNode):
+    address: str
+    city: str
+
+    @classmethod
+    def __compose__(cls, form: ShippingForm) -> Self:
+        return cls(address=form.address, city=form.city)
+
+    def validate(self) -> Result[Self, ValidationError]:
+        if not self.address:
+            return Error(ValidationError("address required"))
+        return Ok(self)
+
+@dataclass
+class PaymentStep(DataNode):
+    card_token: str
+    shipping: ShippingStep  # depends on previous step!
+
+    @classmethod
+    def __compose__(cls, form: PaymentForm, shipping: ShippingStep) -> Self:
+        return cls(card_token=form.token, shipping=shipping)
+```
+
+**The insight:** Codecs define **what the user declares** and **what the framework does with it**. The more you can express in type signatures and protocols, the more the framework can introspect and automate.
+
+**What you DON'T write:**
+- Polling endpoint boilerplate (JobCodec)
+- SSE connection management (SubscriptionCodec)
+- Step navigation logic (WizardCodec)
+- Progress tracking infrastructure
+- Retry/timeout/fallback wiring
+
+**What you DO write:**
+- Type declarations with protocols
+- `__compose__` signatures that declare dependencies
+- Domain ops (pure, tested once)
+
+The framework reads your declarations, compilers produce framework-native implementations. That's the leverage.
+
+---
+
+### Separation of Concerns
+
+Wire separates **three orthogonal axes**:
+
+```
+Trigger  = WHERE to listen    (HTTP route, CLI subcommand, bot command)
+Codec    = HOW to execute     (request-response, stateful FSM, streaming)
+Compiler = WHAT to produce    (FastAPI app, argparse parser, Dispatch)
+```
+
+**Endpoint** bundles a runner with exposures. Each exposure is a point in Trigger × Codec space:
+
+```python
+endpoint(game_runner).expose(
+    HTTPRouteTrigger("POST", "/bet"),
+    rrc(BetRequest, BetResponse).use(auth_mw).build(),  # middleware is part of codec
+)
+```
+
+**Codec owns execution semantics** — including middleware. When you call `.use(auth_mw)`, the middleware becomes part of the codec. The codec's `execute()` function runs everything: middlewares → `to_domain()` → `runner.run()` → `from_domain()`.
+
+**Compiler claims a region** of Trigger × Codec space and produces a framework artifact:
+
+```python
+app = application().mount(endpoint1, endpoint2, endpoint3)
+
+# Each compiler scans for its trigger type
+fastapi_app = fastapi.from_application(app)   # claims HTTPRouteTrigger
+cli_parser = cli.from_application(app)        # claims CLITrigger
+tg_dispatch = telegrinder.from_application(app)  # claims TelegrindTrigger
+```
+
+---
+
+### Request Types: Transport-Idiomatic
+
+Request types are **different per transport** — each has its idiom, wire lets you use it:
+
+**HTTP — Pydantic models** (body/query parsing, OpenAPI schema):
+
+```python
+class BetRequest(BaseModel):
+    token: str
+    bet: str
+    amount: int
+
+    def to_domain(self) -> PlaceBet:
+        return PlaceBet(bet=self.bet, amount=self.amount)
+
+    def to_auth(self) -> Authenticate:  # middleware protocol
+        return Authenticate(token=self.token)
+```
+
+**CLI — dataclass + cli_field** (argparse) **+ DataNode** (DI via compose):
+
+```python
+@dataclass
+class BetRequest(DataNode):
+    login: str  # composed from CLILogin node, not CLI arg
+    bet: str = cli_field(help="Bet type: red, black, or number")
+    amount: int = cli_field(help="Bet amount")
+
+    @classmethod
+    def __compose__(cls, cli_login: CLILogin, ns: argparse.Namespace) -> BetRequest:
+        return cls(login=cli_login, bet=ns.bet, amount=ns.amount)
+
+    def to_domain(self) -> PlaceBet:
+        return PlaceBet(bet=self.bet, amount=self.amount)
+```
+
+**Telegram — DataNode** (compose from telegrinder nodes):
+
+```python
+@dataclass
+class RegisterRequest(DataNode):
+    login: str
+    password: str
+
+    @classmethod
+    def __compose__(cls, text: Text) -> RegisterRequest:
+        parts = str(text).split()
+        return cls(login=parts[1], password=parts[2])
+
+    def to_domain(self) -> Register:
+        return Register(login=self.login, password=self.password)
+```
+
+**The contract:** `to_domain() → Op`. How you parse input is transport-specific. What you produce is universal.
+
+---
+
+### Response Types: Often Shared
+
+Response types implement `from_domain(Result) → Self` — they're often **shared across transports**:
+
+```python
+@dataclass
+class BetResponse:
+    won: bool | None = None
+    payout: int | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_domain(cls, dom: Result[BetResult, str]) -> BetResponse:
         match dom:
-            case Ok(txt):
-                return cls(summary=txt)
-            case Error(e):
-                return cls(summary=f"Can't build summary: {e}")
+            case Ok(r): return cls(won=r.won, payout=r.payout)
+            case Error(e): return cls(error=e)
 
+    def __str__(self) -> str:  # CLI/Telegram use this
+        return f"{'Won' if self.won else 'Lost'}! Payout: {self.payout}"
+```
 
-# Endpoint → expose runner with HTTP trigger and RRC codec
-endp = W.endpoint(ops_runner).expose(
-    trigger=W.triggers.http.HTTPRouteTrigger(path="/hello", method="GET"),
-    codec=W.codecs.RequestResponseCodec(
-        request=BuildSummaryIn, response=BuildSummaryOut
-    ),
+---
+
+### Program Composition
+
+Same business logic, multiple transports — the roulette example:
+
+```python
+# Domain runners (pure, tested once, reused everywhere)
+auth_runner = O.ops().on(Register, register_op).on(Login, login_op).compile()
+game_runner = O.ops().on(PlaceBet, place_bet_op).compile()
+
+# HTTP: Pydantic requests, token-based auth middleware
+http_app = application().mount(
+    endpoint(auth_runner).expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, RegisterResponse)),
+    endpoint(game_runner).expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).use(http_auth_mw).build()),
 )
 
-# Application → can mount multiple endpoints
-app = W.application().mount(endp)
+# CLI: argparse + session file auth
+cli_app = application().mount(
+    endpoint(auth_runner).expose(CLITrigger("register", "Register user"), rrc(RegisterRequest, RegisterResponse)),
+    endpoint(game_runner).expose(CLITrigger("bet", "Place bet"), rrc(BetRequest, BetResponse).use(cli_auth_mw).build()),
+)
 
-# FastAPI adapter (optional contrib)
+# Telegram: compose from Text/ChatId, chat_id binding auth
+tg_app = application().mount(
+    endpoint(auth_runner).expose(TelegrindTrigger(Command("register")), rrc(RegisterRequest, RegisterResponse)),
+    endpoint(game_runner).expose(TelegrindTrigger(Command("bet")), stateful(BetFlow, BetResponse).key(ChatId).use(tg_auth_mw).build()),
+)
+
+# Compile to framework-native artifacts
+fastapi_app = fastapi.from_application(http_app)    # OpenAPI, async routes
+cli_parser = cli.from_application(cli_app)          # argparse, --help, exit codes
+tg_dispatch = telegrinder.from_application(tg_app)  # Dispatch, keyboard flows
+```
+
+**What compilers give you:**
+- FastAPI: automatic OpenAPI schema from Pydantic, `Annotated[req, Depends()]` for GET, body parsing for POST
+- CLI: `argparse` with `--help`, positional args from `cli_field()`, proper exit codes
+- Telegrinder: handlers on `Dispatch` views, telegrinder's `compose()` for DI
+
+**What you don't write:**
+- Route registration boilerplate
+- Argument parsing setup
+- Framework-specific handler wrappers
+
+---
+
+### Clean Code Through Separation
+
+The architecture enforces clean boundaries:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  PURE ZONE (your domain)                                                  │
+│  ────────────────────────                                                 │
+│  Ops, handlers, runners — no framework imports, no transport knowledge    │
+│  Example: PlaceBet op, place_bet_op handler, game_runner                  │
+└──────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│  WIRE ZONE (your contracts)                                               │
+│  ──────────────────────────                                               │
+│  Request/Response types with protocols — to_domain(), from_domain()       │
+│  Transport-specific parsing, framework-agnostic execution                 │
+│  Example: BetRequest(BaseModel), BetRequest(DataNode)                     │
+└──────────────────────────────────────────────────────────────────────────┘
+                                    ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│  COMPILER ZONE (contrib)                                                  │
+│  ───────────────────────                                                  │
+│  Framework bridges — translate contracts to native constructs             │
+│  You don't write this, you use it                                         │
+│  Example: fastapi.from_application(), cli.from_application()              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Your domain stays pure. Your wiring declares contracts. Compilers handle the framework chaos.
+
+---
+
+### Custom Codecs
+
+Codec = execution semantics. Look at `stateful.py` — it's transport-agnostic. The codec defines **what protocols types must satisfy** and **what the execution lifecycle looks like**. Compilers just configure the scope.
+
+**The pattern:**
+1. Define protocols for user's types (what methods they must have)
+2. Codec dataclass stores types + config (frozen, slots)
+3. Builder validates and constructs
+4. Co-located `execute()` defines the lifecycle
+
+**BatchCodec** — process multiple items with parallel/sequential control:
+
+```python
+# ─── Protocols ────────────────────────────────────────────────────────────────
+
+Item = TypeVar("Item")
+T = TypeVar("T")
+E = TypeVar("E")
+
+class BatchItem(Protocol[T, E]):
+    """Each item in a batch must produce an Op."""
+    def to_domain(self) -> Op[T, E]: ...
+
+class BatchResponse(Protocol[T, E]):
+    """Response built from collected results."""
+    @classmethod
+    def from_batch(cls, results: list[Result[T, E]]) -> Self: ...
+
+# ─── Codec ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class BatchCodec(Generic[Item, T, E]):
+    """Process multiple items as a batch."""
+    item: type[BatchItem[T, E]]      # item.to_domain() → Op
+    response: type[BatchResponse[T, E]]  # response.from_batch(results)
+    parallel: bool = True
+
+# ─── Execute ──────────────────────────────────────────────────────────────────
+
+async def execute(
+    handler: Handler[BatchCodec[Item, T, E]],
+    items: list[BatchItem[T, E]],
+) -> BatchResponse[T, E]:
+    """Batch execution: run all ops, collect results."""
+    ops = [item.to_domain() for item in items]
+
+    if handler.codec.parallel:
+        results = await asyncio.gather(*[handler.runner.run(op) for op in ops])
+    else:
+        results = [await handler.runner.run(op) for op in ops]
+
+    return handler.codec.response.from_batch(results)
+
+# ─── Builder ──────────────────────────────────────────────────────────────────
+
+class BatchBuilder(Generic[Item, T, E]):
+    def __init__(self, item: type[BatchItem[T, E]], response: type[BatchResponse[T, E]]):
+        self._item, self._response, self._parallel = item, response, True
+
+    def sequential(self) -> BatchBuilder[Item, T, E]:
+        self._parallel = False
+        return self
+
+    def build(self) -> BatchCodec[Item, T, E]:
+        return BatchCodec(self._item, self._response, self._parallel)
+
+def batch(item, response) -> BatchBuilder:
+    return BatchBuilder(item, response)
+
+# Usage: batch(OrderItem, BatchOrderResponse).sequential().build()
+```
+
+**QueueCodec** — message processing with acknowledgment semantics:
+
+```python
+# ─── Protocols ────────────────────────────────────────────────────────────────
+
+class QueueMessage(Protocol[T, E]):
+    """Message from queue — parse from bytes, produce Op."""
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> Self: ...
+    def to_domain(self) -> Op[T, E]: ...
+
+class AckPolicy(Enum):
+    BEFORE = "before"          # Ack before processing (at-most-once)
+    AFTER_SUCCESS = "after"    # Ack only on success (at-least-once)
+    MANUAL = "manual"          # Handler controls ack via result
+
+# ─── Codec ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class QueueCodec(Generic[T, E]):
+    """Message queue processing — no response, ack/nack is the result."""
+    message: type[QueueMessage[T, E]]
+    ack_policy: AckPolicy = AckPolicy.AFTER_SUCCESS
+    max_retries: int = 3
+
+# ─── Execute ──────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class QueueResult:
+    """What the compiler should do after processing."""
+    ack: bool
+    requeue: bool = False
+
+async def execute(
+    handler: Handler[QueueCodec[T, E]],
+    payload: bytes,
+) -> QueueResult:
+    """Queue execution: process message, return ack decision."""
+    msg = handler.codec.message.from_bytes(payload)
+
+    if handler.codec.ack_policy == AckPolicy.BEFORE:
+        # At-most-once: ack immediately, then process
+        result = await handler.runner.run(msg.to_domain())
+        return QueueResult(ack=True)
+
+    result = await handler.runner.run(msg.to_domain())
+
+    match result:
+        case Ok(_):
+            return QueueResult(ack=True)
+        case Error(_):
+            return QueueResult(ack=False, requeue=True)
+
+# Compiler bridges this to RabbitMQ/SQS/Kafka acknowledgment APIs
+```
+
+**ConnectionCodec** — persistent connection with lifecycle hooks:
+
+```python
+# ─── Protocols ────────────────────────────────────────────────────────────────
+
+Ctx = TypeVar("Ctx")  # Connection context (managed by codec)
+
+class OnConnect(Protocol[Ctx, T, E]):
+    """Called when connection opens. Can reject via Error."""
+    def to_domain(self) -> Op[T, E]: ...
+
+class OnMessage(Protocol[Ctx, T, E]):
+    """Called for each message. Ctx available via __compose__."""
+    def to_domain(self) -> Op[T, E]: ...
+
+class OnDisconnect(Protocol[Ctx]):
+    """Called when connection closes. Cleanup opportunity."""
+    def to_domain(self) -> Op[None, None]: ...
+
+# ─── Codec ────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class ConnectionCodec(Generic[Ctx, T, E]):
+    """Connection lifecycle with bidirectional messaging."""
+    context: type[Ctx]                      # Connection state type
+    on_connect: type[OnConnect[Ctx, T, E]] | None
+    on_message: type[OnMessage[Ctx, T, E]]
+    on_disconnect: type[OnDisconnect[Ctx]] | None
+    push_response: type | None = None       # Server → client message type
+
+# Compiler implements the lifecycle:
+# 1. Connection opens → on_connect.to_domain() → Ok = accept, Error = reject
+# 2. Message arrives → on_message.to_domain() → result may contain pushes
+# 3. Connection closes → on_disconnect.to_domain() → cleanup
+#
+# Context is injected into scope, so on_message can compose from it:
+#
+#     @dataclass
+#     class ChatMessage(DataNode):
+#         text: str
+#         @classmethod
+#         def __compose__(cls, ctx: ChatContext, raw: RawMessage) -> Self:
+#             return cls(text=raw.text)
+```
+
+The codec is **transport-agnostic**. A WebSocket compiler and an SSE compiler can both use `ConnectionCodec` — they just configure the scope differently and bridge to their framework's connection API.
+
+---
+
+### Custom Compilers
+
+A compiler scans for its trigger type and bridges to a target framework:
+
+```python
+from emergent.wire._scan import scan
+from emergent.wire.codecs.rrc import RequestResponseCodec, execute as rrc_execute
+
+def from_application(app: Application) -> DjangoUrlConf:
+    """Compile wire Application to Django URL configuration."""
+    urls = []
+
+    for trigger, handler in scan(app, DjangoRouteTrigger, RequestResponseCodec):
+        async def view(request, trigger=trigger, handler=handler):
+            # Bridge Django request → wire request
+            wire_request = handler.codec.request(**parse_django_request(request))
+            # Execute the full pipeline (middlewares, to_domain, run, from_domain)
+            response = await rrc_execute(handler, wire_request)
+            # Bridge wire response → Django response
+            return JsonResponse(dataclasses.asdict(response))
+
+        urls.append(path(trigger.route, view))
+
+    return urls
+```
+
+**The pattern:**
+1. `scan(app, YourTrigger, CodecType)` → list of `(trigger, handler)` pairs
+2. For each pair, build a framework-native handler that:
+   - Parses framework input → wire request type
+   - Calls `codec.execute(handler, request)` — this runs the full pipeline
+   - Converts wire response → framework output
+3. Register on the framework artifact
+
+**What you can build:**
+- Django compiler (URL conf from triggers)
+- gRPC compiler (service definitions from triggers)
+- Cron compiler (scheduled jobs from time-based triggers)
+- OpenAPI generator (introspect codecs, produce spec without runtime)
+- Test harness (direct handler invocation, no network)
+- GraphQL compiler (resolvers from triggers)
+
+The codec's `execute()` IS the business logic pipeline. Your compiler just bridges I/O.
+
+---
+
+### AppStack: Hierarchical Composition
+
+For nested command structures (like `git remote add`):
+
+```python
+main_app = application().mount(...)   # top-level commands
+new_app = application().mount(...)    # subcommands under "new"
+
+stack = app_stack().root(main_app).mount("new", new_app)
+
+# CLI compiler produces:
+#   cli scan    (from main_app)
+#   cli new op  (from new_app under "new" prefix)
+```
+
+Compilers that support `AppStack` use `scan_stack()` which returns a tree structure.
+
+---
+
+### Quick Example
+
+```python
+from emergent import wire as W, ops as O
+
+# Domain (pure)
+runner = O.ops().on(GetUser, get_user_handler).compile()
+
+# HTTP wiring
+class GetUserRequest(BaseModel):
+    user_id: int
+    def to_domain(self) -> GetUser:
+        return GetUser(user_id=self.user_id)
+
+app = W.application().mount(
+    W.endpoint(runner).expose(
+        W.HTTPRouteTrigger("GET", "/users/{user_id}"),
+        W.rrc(GetUserRequest, UserResponse).build(),
+    )
+)
+
+# Compile
 fastapi_app = W.contrib.fastapi.from_application(app)
 ```
 
-```
-┌ Request ─ HTTP ───────────┐
-│  HTTPRouteTrigger + RRC    │
-└────────────┬──────────────┘
-             ▼
-         Endpoint ──→ Runner (ops)
-             ▼
-           Response
-```
-
-Notes
-- Triggers: routing and transport (e.g., `HTTPRouteTrigger`).
-- Codecs: request/response conversion (`RequestResponseCodec` expects `to_domain`/`from_domain`).
-- Contrib: `wire.contrib.fastapi` compiles an `Application` to a FastAPI app.
-
-See `examples/wiring.py` for a complete, runnable snippet. To try with FastAPI docs:
-
-```bash
-uvicorn examples.wiring:fastapi_app --reload
-```
+Run with `uvicorn module:fastapi_app --reload` — you get OpenAPI at `/docs` for free.
 
 ---
 
