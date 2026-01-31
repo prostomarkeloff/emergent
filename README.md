@@ -633,24 +633,149 @@ Infra stores (Memory/Redis)
 
 ## wire
 
-Declarative multi-transport wiring — write business logic once, expose it everywhere.
+**Product of Spaces = Leverage.**
+
+Every axis splits into **Semantic × Physical**. The Cartesian product gives you combinatorial power:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              The Leverage                                    │
+│                         Product of Spaces                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   Your domain:    auth_runner, game_runner (pure ops, tested once)          │
-│                              ↓                                               │
-│   Wire programs:  HTTP app, CLI app, Telegram app (idiomatic per transport) │
-│                              ↓                                               │
-│   Compilers:      FastAPI app, argparse parser, Telegrinder Dispatch        │
-│                   (framework-native artifacts with full features)           │
+│   Surface:   Codec × Trigger    →  1 codec, 3 triggers = 3 endpoints        │
+│   Storage:   Pattern × Backend  →  1 pattern, 3 backends = 3 storages       │
+│   Schema:    Dialect × Compiler →  1 schema, 3 compilers = 3 outputs        │
+│   Query:     Expr × Provider    →  1 query, 3 providers = 3 executions      │
+│                                                                              │
+│   You write the LEFT side. Framework multiplies by the RIGHT.               │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**The promise:** Your runners don't know about HTTP, CLI, or Telegram. Your request types are idiomatic to each transport. Compilers translate everything into native framework constructs — FastAPI gets OpenAPI schemas, CLI gets `--help`, Telegram gets keyboard flows.
+**Why this matters:**
+- Write 1 `rrc(Request, Response)` codec → expose via HTTP, CLI, Telegram
+- Write 1 `@dataclass User` with annotations → generate SQLAlchemy, OpenAPI, Pydantic
+- Write 1 `lambda u: u.balance > 0` query → run on SQL, Memory, HTTP API
+
+You don't write N implementations. You write 1 semantic thing, and the product with N physical targets gives you N concrete artifacts.
+
+---
+
+### Wire Axes Architecture
+
+```
+wire/axis/
+├── surface/     # Codec × Trigger = Endpoint
+├── storage/     # Pattern × Backend = Storage
+├── schema/      # Dialect × Compiler = Model
+└── query/       # Expr × Provider = Execution
+```
+
+| Axis | Semantic (what you write) | Physical (framework multiplies) | Product |
+|------|---------------------------|--------------------------------|---------|
+| **Surface** | Codec (rrc, stateful) | Trigger (http, cli, tg) | endpoint |
+| **Storage** | Pattern (KV, Queue) | Backend (memory, redis, sql) | storage |
+| **Schema** | Dialect (annotations) | Compiler (sqlalchemy, openapi) | model |
+| **Query** | Expression AST | Provider (sql, memory, http) | execution |
+
+**The math:** If you have 2 codecs, 3 triggers, 2 patterns, 3 backends — you get 2×3 + 2×3 = 12 concrete artifacts from 4 semantic definitions.
+
+---
+
+### Schema Axis — Multi-Dialect Annotations
+
+**1 dataclass × N compilers = N outputs.**
+
+Each compiler reads its dialect, ignores others:
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+from emergent.wire.axis.schema.dialects import cli, openapi
+
+@dataclass
+class RegisterRequest:
+    """Register new user."""
+    login: Annotated[str,
+        cli.Help("Username"),           # CLI: argparse help text
+        cli.Positional(),               # CLI: positional arg (not --flag)
+        openapi.Description("Username for registration"),  # OpenAPI: schema description
+    ]
+    password: Annotated[str,
+        cli.Help("Password"),
+        cli.Positional(),
+        openapi.Description("Account password"),
+    ]
+
+    def to_domain(self) -> Register:
+        return Register(login=self.login, password=self.password)
+```
+
+**Compiler behavior:**
+- FastAPI compiler → reads `openapi.*`, generates OpenAPI schema
+- CLI compiler → reads `cli.*`, generates argparse args
+- Each ignores unknown dialects (no errors)
+
+**Available dialects:**
+
+| Dialect | Capabilities |
+|---------|--------------|
+| `cli` | `Help`, `Positional`, `Flag`, `Choices`, `Nargs`, `Env` |
+| `openapi` | `Format`, `Description`, `Examples`, `Deprecated`, `ReadOnly` |
+| `sql` | `Index`, `Type`, `ServerDefault`, `ForeignKey`, `PrimaryKey` |
+
+---
+
+### Storage Axis — SQLAlchemy Backend
+
+**1 dataclass × SQLAlchemy compiler = complete storage.**
+
+Same dataclass with schema annotations → generates SQLAlchemy model, KV operations, relational queries. Backend does NOT own transactions — caller commits.
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+from emergent.wire.axis.schema import Identity, Unique, MaxLen
+from emergent.wire.axis.storage.contrib import sqlalchemy
+
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    email: Annotated[str, Unique, MaxLen(255)]
+    balance: int
+
+# Store pattern — configure once, use with any session
+UserStore = sqlalchemy.store(User, "users")
+
+async with session_factory() as session:
+    users = UserStore(session)  # bind to session
+
+    # KV operations
+    await users.set(User(id=1, email="alice@example.com", balance=100))
+    user = await users.get(1)
+
+    # Relational queries with lambda → AST
+    active = await users.find(lambda u: u.balance > 0)
+    alice = await users.find_one(lambda u: u.email == "alice@example.com")
+
+    await session.commit()  # Caller commits!
+```
+
+**What it generates:**
+- SQLAlchemy model class from dataclass + schema annotations
+- `Identity` → `primary_key=True`
+- `Unique` → `unique=True`
+- `MaxLen(n)` → `String(n)`
+- `Ref(Target)` → `ForeignKey`
+
+**Inline usage (no pre-configuration):**
+
+```python
+async with session_factory() as session:
+    users = sqlalchemy.sqlalchemy(session, User, "users")
+    await users.set(user)
+    await session.commit()
+```
 
 ---
 
@@ -906,61 +1031,102 @@ class RegisterRequest(DataNode):
 Response types implement `from_domain(Result) → Self` — they're often **shared across transports**:
 
 ```python
+from kungfu import Result, Ok, Error
+
 @dataclass
 class BetResponse:
     won: bool | None = None
+    number: int | None = None
     payout: int | None = None
+    new_balance: int | None = None
     error: str | None = None
 
     @classmethod
     def from_domain(cls, dom: Result[BetResult, str]) -> BetResponse:
         match dom:
-            case Ok(r): return cls(won=r.won, payout=r.payout)
-            case Error(e): return cls(error=e)
+            case Ok(r):
+                return cls(won=r.won, number=r.number, payout=r.payout, new_balance=r.new_balance)
+            case Error(e):
+                return cls(error=e)
 
     def __str__(self) -> str:  # CLI/Telegram use this
-        return f"{'Won' if self.won else 'Lost'}! Payout: {self.payout}"
+        if self.error:
+            return f"Error: {self.error}"
+        won = "Won" if self.won else "Lost"
+        return f"{won}! Number: {self.number}, Payout: {self.payout}, Balance: {self.new_balance}"
+```
+
+**Middleware rejection response:**
+
+```python
+@dataclass
+class AuthErrorResponse:
+    error: str
+
+    @classmethod
+    def from_domain(cls, dom: Result[AuthUser, str]) -> AuthErrorResponse:
+        match dom:
+            case Error(e): return cls(error=e)
+            case Ok(_): return cls(error="auth failed")
 ```
 
 ---
 
-### Program Composition
+### Program Composition — Product in Action
 
-Same business logic, multiple transports — the roulette example:
+The roulette example (`examples/roulette/`) shows the product:
+
+- **1 runner** × 2 triggers = 2 entry points
+- **1 request type** with 2 dialects = works in HTTP + CLI
+- **1 response type** = shared across all transports
 
 ```python
+from emergent.wire import endpoint, Application, inject
+from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
+from emergent.wire.axis.surface.triggers.cli import CLITrigger
+from emergent.wire.compiler import fastapi_compile, cli_compile
+
 # Domain runners (pure, tested once, reused everywhere)
 auth_runner = O.ops().on(Register, register_op).on(Login, login_op).compile()
 game_runner = O.ops().on(PlaceBet, place_bet_op).compile()
 
-# HTTP: Pydantic requests, token-based auth middleware
-http_app = application().mount(
-    endpoint(auth_runner).expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, RegisterResponse)),
-    endpoint(game_runner).expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).use(http_auth_mw).build()),
+# Middleware — inject AuthUser from request token
+http_auth = (
+    inject(AuthUser)
+        .using(auth_runner)
+        .from_request(HasAuth, lambda req: req.to_auth())
+        .on_reject(AuthErrorResponse.from_domain)
+        .build()
 )
 
-# CLI: argparse + session file auth
-cli_app = application().mount(
-    endpoint(auth_runner).expose(CLITrigger("register", "Register user"), rrc(RegisterRequest, RegisterResponse)),
-    endpoint(game_runner).expose(CLITrigger("bet", "Place bet"), rrc(BetRequest, BetResponse).use(cli_auth_mw).build()),
-)
+# ONE Application — multiple triggers per endpoint
+app = Application().mount(
+    # Register — public, both HTTP and CLI
+    endpoint(auth_runner)
+        .expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, TokenResponse).build())
+        .expose(CLITrigger("register", "Register new user"), rrc(RegisterRequest, TokenResponse).build()),
 
-# Telegram: compose from Text/ChatId, chat_id binding auth
-tg_app = application().mount(
-    endpoint(auth_runner).expose(TelegrindTrigger(Command("register")), rrc(RegisterRequest, RegisterResponse)),
-    endpoint(game_runner).expose(TelegrindTrigger(Command("bet")), stateful(BetFlow, BetResponse).key(ChatId).use(tg_auth_mw).build()),
+    # Login — public
+    endpoint(auth_runner)
+        .expose(HTTPRouteTrigger("POST", "/login"), rrc(LoginRequest, TokenResponse).build())
+        .expose(CLITrigger("login", "Login to account"), rrc(LoginRequest, TokenResponse).build()),
+
+    # Bet — requires auth for HTTP
+    endpoint(game_runner)
+        .expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).use(http_auth).build())
+        .expose(CLITrigger("bet", "Place a bet"), rrc(BetRequest, BetResponse).build()),
 )
 
 # Compile to framework-native artifacts
-fastapi_app = fastapi.from_application(http_app)    # OpenAPI, async routes
-cli_parser = cli.from_application(cli_app)          # argparse, --help, exit codes
-tg_dispatch = telegrinder.from_application(tg_app)  # Dispatch, keyboard flows
+fastapi_app = fastapi_compile(app)         # OpenAPI, async routes
+cli_parser = cli_compile(app, prog="roulette")  # argparse, --help
 ```
 
 **What compilers give you:**
-- FastAPI: automatic OpenAPI schema from Pydantic, `Annotated[req, Depends()]` for GET, body parsing for POST
-- CLI: `argparse` with `--help`, positional args from `cli_field()`, proper exit codes
-- Telegrinder: handlers on `Dispatch` views, telegrinder's `compose()` for DI
+- FastAPI: automatic OpenAPI schema, proper HTTP methods, body/query parsing
+- CLI: `argparse` with `--help`, positional args from `cli.Positional()`, exit codes
+- Telegrinder: handlers on `Dispatch` views, keyboard flows
 
 **What you don't write:**
 - Route registration boilerplate
@@ -1247,26 +1413,36 @@ Compilers that support `AppStack` use `scan_stack()` which returns a tree struct
 ### Quick Example
 
 ```python
-from emergent import wire as W, ops as O
+from dataclasses import dataclass
+from typing import Annotated
+from emergent import ops as O
+from emergent.wire import endpoint, Application
+from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
+from emergent.wire.axis.schema.dialects import openapi
+from emergent.wire.compiler import fastapi_compile
 
 # Domain (pure)
 runner = O.ops().on(GetUser, get_user_handler).compile()
 
-# HTTP wiring
-class GetUserRequest(BaseModel):
-    user_id: int
+# Request with multi-dialect annotations
+@dataclass
+class GetUserRequest:
+    user_id: Annotated[int, openapi.Description("User ID to fetch")]
+
     def to_domain(self) -> GetUser:
         return GetUser(user_id=self.user_id)
 
-app = W.application().mount(
-    W.endpoint(runner).expose(
-        W.HTTPRouteTrigger("GET", "/users/{user_id}"),
-        W.rrc(GetUserRequest, UserResponse).build(),
+# Application
+app = Application().mount(
+    endpoint(runner).expose(
+        HTTPRouteTrigger("GET", "/users/{user_id}"),
+        rrc(GetUserRequest, UserResponse).build(),
     )
 )
 
 # Compile
-fastapi_app = W.contrib.fastapi.from_application(app)
+fastapi_app = fastapi_compile(app)
 ```
 
 Run with `uvicorn module:fastapi_app --reload` — you get OpenAPI at `/docs` for free.
@@ -1350,6 +1526,20 @@ uv add git+https://github.com/prostomarkeloff/emergent.git
 ---
 
 ## Try It
+
+**Roulette example — unified multi-transport app:**
+
+```bash
+# FastAPI (OpenAPI at /docs)
+uvicorn examples.roulette.wiring:fastapi_app --reload
+
+# CLI commands
+python -m examples.roulette register alice secret
+python -m examples.roulette login alice secret
+python -m examples.roulette bet red 100
+```
+
+**Full stack example:**
 
 ```bash
 cd emergent && uv run python -m examples.full_stack.main

@@ -1,4 +1,4 @@
-"""Game handlers — generated via: emergent-meta new handler."""
+"""Game handlers."""
 
 import random
 
@@ -13,46 +13,54 @@ from roulette.game.store import GameStore
 async def handle_get_balance(
     _op: GetBalance, auth_user: AuthUser, game_store: GameStore
 ) -> Result[int, str]:
-    """Handle GetBalance — return current balance for authenticated user."""
-    return Ok(game_store.get_balance(auth_user))
+    """GetBalance → return current balance."""
+    balance = await game_store.get_balance(auth_user)
+    return Ok(balance)
 
 
 async def handle_place_bet(
     op: PlaceBet, auth_user: AuthUser, game_store: GameStore
 ) -> Result[BetResult, str]:
-    """Handle PlaceBet — validate, spin, compute payout."""
+    """PlaceBet → validate, debit, spin, credit if won."""
+    # Parse bet
     try:
         bet = parse_bet(op.bet)
     except ValueError as exc:
         return Error(str(exc))
 
-    balance = game_store.get_balance(auth_user)
     if op.amount <= 0:
         return Error("amount must be positive")
-    if op.amount > balance:
-        return Error(f"insufficient balance: have {balance}, need {op.amount}")
 
+    # Atomic debit (checks balance inside transaction)
+    bet_result = await game_store.place_bet(auth_user, op.amount, op.bet)
+    match bet_result:
+        case Error(e):
+            return Error(e)
+        case Ok(balance_after_bet):
+            pass
+
+    # Spin
     number = random.randint(0, 36)  # noqa: S311
 
+    # Calculate payout
     payout = 0
     if isinstance(bet, str):
-        # color bet
         if bet == "red" and number in REDS:
             payout = op.amount * 2
         elif bet == "black" and number in BLACKS:
             payout = op.amount * 2
     elif bet == number:
-        # exact number bet
         payout = op.amount * 36
 
-    new_balance = balance - op.amount + payout
-    game_store.update_balance(auth_user, new_balance)
+    # Credit winnings
+    if payout > 0:
+        new_balance = await game_store.record_win(auth_user, payout, op.bet)
+    else:
+        new_balance = balance_after_bet
 
-    return Ok(
-        BetResult(
-            won=payout > 0,
-            number=number,
-            payout=payout,
-            new_balance=new_balance,
-        )
-    )
+    return Ok(BetResult(
+        won=payout > 0,
+        number=number,
+        payout=payout,
+        new_balance=new_balance,
+    ))

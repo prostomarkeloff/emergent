@@ -24,22 +24,24 @@ Supports two codec types:
 from typing import Annotated, Any, cast, get_origin, get_args, Union
 
 import fastapi
-from kungfu import Some, Nothing
+from kungfu import Ok, Some, Nothing
 from nodnod import Scope
 from nodnod.agent.base import Agent
 
-from emergent.wire._app import Application
-from emergent.wire._endpoint import Endpoint
+from emergent.wire.axis.surface._app import Application
+from emergent.wire.axis.surface._endpoint import Endpoint
 from emergent.wire._handler import Handler
-from emergent.wire._scan import scan, scan_endpoint
-from emergent.wire.codecs.rrc import RequestResponseCodec, execute as rrc_execute
-from emergent.wire.codecs.resolve import get_transition_params, compose_params
-from emergent.wire.codecs.stateful import (
+from emergent.wire._scan import StackView, scan, scan_endpoint, scan_stack
+from emergent.wire.axis.surface._stack import AppStack
+from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec, execute as rrc_execute
+from emergent.wire.axis.surface.codecs.resolve import get_method_params, resolve_transition
+from emergent.wire.axis.surface.codecs.stateful import (
     StatefulCodec,
     parse_transition_result,
-    run_middlewares,
+    get_transitions,
 )
-from emergent.wire.triggers.http import HTTPRouteTrigger, Path
+from emergent.wire.axis.surface.scope import run_stateful_middlewares
+from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger, Path
 
 
 # ─── Node-like Detection ────────────────────────────────────────────────────
@@ -81,6 +83,15 @@ def _get_pydantic_types(params: dict[str, tuple[type, type]]) -> set[type]:
         for _, compose_type in params.values()
         if _is_pydantic_model(compose_type)
     }
+
+
+def _get_all_pydantic_types(flow: type) -> set[type]:
+    """Find Pydantic models across all transition methods (for pre-injection)."""
+    all_types: set[type] = set()
+    for method in get_transitions(flow):
+        params = get_method_params(method)
+        all_types.update(_get_pydantic_types(params))
+    return all_types
 
 
 def _wrap_handler(
@@ -162,11 +173,14 @@ def _serialize_response(resp: Any) -> Any:
 def _wrap_stateful_handler(handler: Handler[StatefulCodec]) -> Any:
     """Wrap StatefulCodec Handler in FastAPI-compatible route function.
 
+    Supports multiple @transition methods — nodnod routes by node types.
+    First resolvable transition wins (like SequentialEither).
+
     Execution flow:
     1. Compose key_node to get store key (e.g., SessionId from cookie)
     2. Load state from store (or create initial)
-    3. Setup scope, compose __transition__ params
-    4. Call state.__transition__(**params)
+    3. Setup scope, resolve first resolvable transition
+    4. Call resolved transition method
     5. If continue: save state, return intermediate response
     6. If Done:
        a. Run middlewares → scope_extras
@@ -177,8 +191,8 @@ def _wrap_stateful_handler(handler: Handler[StatefulCodec]) -> Any:
     """
     codec = handler.codec
     agent_cls = cast(type[Agent], codec.agent_cls)
-    params = get_transition_params(codec.flow)
-    pydantic_types = _get_pydantic_types(params)
+    transitions = get_transitions(codec.flow)
+    pydantic_types = _get_all_pydantic_types(codec.flow)
 
     async def _route_handler(request: fastapi.Request) -> Any:
         # 1. Compose key_node to get store key
@@ -197,17 +211,26 @@ def _wrap_stateful_handler(handler: Handler[StatefulCodec]) -> Any:
                     )
 
         # 2. Load state from store (or create initial)
-        state = await codec.store.get(store_key)
-        if state is None:
-            state = codec.flow()
+        match await codec.store.get(store_key):
+            case Ok(Some(s)):
+                state = s
+            case _:
+                state = codec.flow()
 
-        # 3. Setup scope, compose __transition__ params
+        # 3. Setup scope, resolve first resolvable transition
         async with Scope() as scope:
             await _setup_scope_fastapi(scope, request, pydantic_types)
-            composed = await compose_params(params, scope, agent_cls)
+            resolved = await resolve_transition(transitions, scope, agent_cls)
 
-        # 4. Call __transition__ and parse result
-        raw_result = await state.__transition__(**composed)
+        # 4. Call resolved transition (or fail if none resolvable)
+        match resolved:
+            case Some((method, composed)):
+                raw_result = await method(state, **composed)
+            case Nothing():
+                return fastapi.Response(
+                    content="No transition resolvable", status_code=400
+                )
+
         result = parse_transition_result(raw_result)
 
         # 5. If continue: save state only if it changed, return intermediate response
@@ -222,7 +245,7 @@ def _wrap_stateful_handler(handler: Handler[StatefulCodec]) -> Any:
                     return fastapi.Response(status_code=200)
 
         # 6. Done — run middlewares, execute Op, format response
-        scope_extras, rejection = await run_middlewares(codec.middlewares, state)
+        scope_extras, rejection = await run_stateful_middlewares(codec.middlewares, state)
         match rejection:
             case Some(resp):
                 await codec.store.delete(store_key)
@@ -262,11 +285,11 @@ def compile_to_fastapi_route(
 
 
 def _register_handler(
-    app: fastapi.FastAPI,
+    app: fastapi.FastAPI | fastapi.APIRouter,
     trigger: HTTPRouteTrigger,
     handler: Handler[Any],
 ) -> None:
-    """Register a single trigger-handler pair on FastAPI app."""
+    """Register a single trigger-handler pair on FastAPI app or router."""
     route_method = getattr(app, trigger.method.lower(), None)
     if route_method is None:
         raise ValueError(f"Unsupported HTTP method: {trigger.method}")
@@ -304,3 +327,48 @@ def from_application(app: Application) -> fastapi.FastAPI:
         _register_handler(f_app, trigger, handler)
 
     return f_app
+
+
+# ─── AppStack Compiler ───────────────────────────────────────────────────────
+
+
+def _build_router_tree(
+    router: fastapi.APIRouter,
+    view: StackView[HTTPRouteTrigger],
+) -> None:
+    """Recursively build APIRouter tree from StackView."""
+    for trigger, handler in view.root:
+        _register_handler(router, trigger, handler)
+
+    for prefix, child in view.mounts.items():
+        nested_router = fastapi.APIRouter()
+
+        if isinstance(child, StackView):
+            _build_router_tree(nested_router, child)
+        else:
+            for trigger, handler in child:
+                _register_handler(nested_router, trigger, handler)
+
+        router.include_router(nested_router, prefix=f"/{prefix}")
+
+
+def from_app_stack(stack: AppStack) -> fastapi.FastAPI:
+    """Compile AppStack to FastAPI app with nested APIRouters."""
+    app = fastapi.FastAPI()
+    view = scan_stack(stack, HTTPRouteTrigger)
+
+    for trigger, handler in view.root:
+        _register_handler(app, trigger, handler)
+
+    for prefix, child in view.mounts.items():
+        nested_router = fastapi.APIRouter()
+
+        if isinstance(child, StackView):
+            _build_router_tree(nested_router, child)
+        else:
+            for trigger, handler in child:
+                _register_handler(nested_router, trigger, handler)
+
+        app.include_router(nested_router, prefix=f"/{prefix}")
+
+    return app

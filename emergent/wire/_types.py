@@ -1,4 +1,4 @@
-from emergent.wire.codecs.rrc import RequestResponseCodec
+from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 
 from typing import Any
 

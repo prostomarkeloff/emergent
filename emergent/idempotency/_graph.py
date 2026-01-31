@@ -29,7 +29,7 @@ nodnod использует type hints в runtime для dependency resolution.
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from nodnod import NodeError, polymorphic, case
 
@@ -43,8 +43,40 @@ from emergent.idempotency._types import (
     IdempotencyError,
     IdempotencyErrorKind,
 )
-from emergent.idempotency._store import StoreError, StoreAny
+from emergent.idempotency._store import (
+    Record,
+    StoreError,
+    set_pending,
+    set_completed,
+    set_failed,
+)
+from emergent.wire.axis.storage import Get, SetWithTTL, Delete, SetNX
+from kungfu import Some, Nothing
 from emergent.idempotency._policy import Policy, OnPending
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Storage Type — What idempotency needs from storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class IdempotencyStorage(
+    Get[str, Record[Any], Any],
+    SetWithTTL[str, Record[Any], Any],
+    Delete[str, Any],
+    SetNX[str, Record[Any], Any],
+    Protocol,
+):
+    """Storage interface for idempotency.
+
+    Combines all required capabilities:
+    - Get: fetch record by key
+    - SetWithTTL: store record with expiration
+    - Delete: remove record
+    - SetNX: atomic set-if-not-exists for locking
+    """
+
+    ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -54,18 +86,16 @@ from emergent.idempotency._policy import Policy, OnPending
 
 @dataclass(frozen=True)
 class IdempotencySpec:
-    """
-    Complete specification for idempotent execution.
+    """Complete specification for idempotent execution.
 
     Note: input_hash is optional fingerprint for collision detection.
     If provided, cached results are only returned if hash matches.
-    Почему: Защита от коллизий ключей — разные inputs с одинаковым key.
     """
 
     key: str
     input_value: Any
     operation: Any
-    store: StoreAny
+    storage: IdempotencyStorage
     policy: Policy
     input_hash: str | None = None
 
@@ -109,13 +139,17 @@ class FetchRecordNode:
     @classmethod
     async def __compose__(cls, spec_node: SpecNode) -> "FetchRecordNode":
         spec = spec_node.spec
-        result = await spec.store.get(spec.key)
+        result = await spec.storage.get(spec.key)
 
         match result:
-            case Ok(record):
+            case Ok(Some(record)):
                 return cls(record, spec)
+            case Ok(Nothing()):
+                return cls(None, spec)
             case Error(err):
-                return cls(None, spec, store_error=err)
+                return cls(None, spec, store_error=StoreError.from_error(err))
+            case _:
+                return cls(None, spec)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,44 +395,41 @@ class IdempotencyOutcome:
             raise NodeError("Policy not FORCE")
 
         # Delete existing pending and execute as new
-        delete_result = await spec.store.delete(spec.key)
-        match delete_result:
+        match await spec.storage.delete(spec.key):
             case Error(err):
+                wrapped = StoreError.from_error(err)
                 return OutcomeError(
                     kind=IdempotencyErrorKind.STORE_ERROR,
-                    message=err.message,
-                    original_error=err.cause,
+                    message=wrapped.message,
+                    original_error=wrapped.cause,
                 )
-            case Ok(_):
+            case _:
                 pass
 
         # Acquire new slot (with input_hash)
-        pending_result = await spec.store.set_pending(
-            spec.key,
-            spec.policy.result_ttl,
-            spec.input_hash,
-        )
-        match pending_result:
+        match await set_pending(spec.storage, spec.key, spec.policy.result_ttl, spec.input_hash):
             case Error(err):
+                wrapped = StoreError.from_error(err)
                 return OutcomeError(
                     kind=IdempotencyErrorKind.STORE_ERROR,
-                    message=err.message,
-                    original_error=err.cause,
+                    message=wrapped.message,
+                    original_error=wrapped.cause,
                 )
-            case Ok(acquired):
-                if not acquired:
-                    return OutcomeError(
-                        kind=IdempotencyErrorKind.CONFLICT,
-                        message="Race conflict during force",
-                        original_error=None,
-                    )
+            case Ok(False):
+                return OutcomeError(
+                    kind=IdempotencyErrorKind.CONFLICT,
+                    message="Race conflict during force",
+                    original_error=None,
+                )
+            case _:
+                pass
 
         # Execute
         try:
             raw_result = await spec.operation(spec.input_value)
             result: Result[Any, Any] = raw_result
         except Exception as e:
-            await spec.store.delete(spec.key)
+            await spec.storage.delete(spec.key)
             return OutcomeError(
                 kind=IdempotencyErrorKind.EXECUTION,
                 message=str(e),
@@ -408,24 +439,22 @@ class IdempotencyOutcome:
         # Store result
         match result:
             case Ok(value):
-                store_result = await spec.store.set_completed(
-                    spec.key, value, spec.policy.result_ttl
-                )
-                match store_result:
+                match await set_completed(spec.storage, spec.key, value, spec.policy.result_ttl):
                     case Error(err):
+                        wrapped = StoreError.from_error(err)
                         return OutcomeError(
                             kind=IdempotencyErrorKind.STORE_ERROR,
-                            message=err.message,
-                            original_error=err.cause,
+                            message=wrapped.message,
+                            original_error=wrapped.cause,
                         )
-                    case Ok(_):
+                    case _:
                         return OutcomeOk(value=value, from_cache=False, key=spec.key)
             case Error(err):
                 if spec.policy.persist_failed:
                     ttl = spec.policy.failed_result_ttl or spec.policy.result_ttl
-                    await spec.store.set_failed(spec.key, err, ttl)
+                    await set_failed(spec.storage, spec.key, err, ttl)
                 else:
-                    await spec.store.delete(spec.key)
+                    await spec.storage.delete(spec.key)
                 return OutcomeError(
                     kind=IdempotencyErrorKind.EXECUTION,
                     message="Operation returned Error",
@@ -447,23 +476,21 @@ class IdempotencyOutcome:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
 
-            get_result = await spec.store.get(spec.key)
-
-            match get_result:
+            match await spec.storage.get(spec.key):
                 case Error(err):
+                    wrapped = StoreError.from_error(err)
                     return OutcomeError(
                         kind=IdempotencyErrorKind.STORE_ERROR,
-                        message=err.message,
-                        original_error=err.cause,
+                        message=wrapped.message,
+                        original_error=wrapped.cause,
                     )
-                case Ok(maybe_record):
-                    if maybe_record is None:
-                        return OutcomeError(
-                            kind=IdempotencyErrorKind.STORE_ERROR,
-                            message="Record disappeared",
-                            original_error=None,
-                        )
-                    new_record = maybe_record
+                case Ok(Nothing()):
+                    return OutcomeError(
+                        kind=IdempotencyErrorKind.STORE_ERROR,
+                        message="Record disappeared",
+                        original_error=None,
+                    )
+                case Ok(Some(new_record)):
                     if new_record.state == RecordState.COMPLETED:
                         return OutcomeOk(
                             value=new_record.value,
@@ -477,6 +504,8 @@ class IdempotencyOutcome:
                             original_error=new_record.error,
                         )
                     # Still pending, continue waiting
+                case _:
+                    pass
 
         return OutcomeError(
             kind=IdempotencyErrorKind.TIMEOUT,
@@ -490,45 +519,38 @@ class IdempotencyOutcome:
         spec = node.spec
 
         # Acquire slot (with input_hash for collision detection)
-        pending_result = await spec.store.set_pending(
-            spec.key,
-            spec.policy.result_ttl,
-            spec.input_hash,
-        )
-
-        match pending_result:
+        match await set_pending(spec.storage, spec.key, spec.policy.result_ttl, spec.input_hash):
             case Error(err):
+                wrapped = StoreError.from_error(err)
                 return OutcomeError(
                     kind=IdempotencyErrorKind.STORE_ERROR,
-                    message=err.message,
-                    original_error=err.cause,
+                    message=wrapped.message,
+                    original_error=wrapped.cause,
                 )
-            case Ok(acquired):
-                if not acquired:
-                    # Race — check if completed
-                    get_result = await spec.store.get(spec.key)
-                    match get_result:
-                        case Ok(rec) if (
-                            rec is not None and rec.state == RecordState.COMPLETED
-                        ):
-                            return OutcomeOk(
-                                value=rec.value,
-                                from_cache=True,
-                                key=spec.key,
-                            )
-                        case _:
-                            return OutcomeError(
-                                kind=IdempotencyErrorKind.CONFLICT,
-                                message="Race conflict",
-                                original_error=None,
-                            )
+            case Ok(False):
+                # Race — check if completed
+                match await spec.storage.get(spec.key):
+                    case Ok(Some(rec)) if rec.state == RecordState.COMPLETED:
+                        return OutcomeOk(
+                            value=rec.value,
+                            from_cache=True,
+                            key=spec.key,
+                        )
+                    case _:
+                        return OutcomeError(
+                            kind=IdempotencyErrorKind.CONFLICT,
+                            message="Race conflict",
+                            original_error=None,
+                        )
+            case _:
+                pass
 
         # Execute
         try:
             raw_result = await spec.operation(spec.input_value)
             result: Result[Any, Any] = raw_result
         except Exception as e:
-            await spec.store.delete(spec.key)
+            await spec.storage.delete(spec.key)
             return OutcomeError(
                 kind=IdempotencyErrorKind.EXECUTION,
                 message=str(e),
@@ -538,24 +560,22 @@ class IdempotencyOutcome:
         # Store result
         match result:
             case Ok(value):
-                store_result = await spec.store.set_completed(
-                    spec.key, value, spec.policy.result_ttl
-                )
-                match store_result:
+                match await set_completed(spec.storage, spec.key, value, spec.policy.result_ttl):
                     case Error(err):
+                        wrapped = StoreError.from_error(err)
                         return OutcomeError(
                             kind=IdempotencyErrorKind.STORE_ERROR,
-                            message=err.message,
-                            original_error=err.cause,
+                            message=wrapped.message,
+                            original_error=wrapped.cause,
                         )
-                    case Ok(_):
+                    case _:
                         return OutcomeOk(value=value, from_cache=False, key=spec.key)
             case Error(err):
                 if spec.policy.persist_failed:
                     ttl = spec.policy.failed_result_ttl or spec.policy.result_ttl
-                    await spec.store.set_failed(spec.key, err, ttl)
+                    await set_failed(spec.storage, spec.key, err, ttl)
                 else:
-                    await spec.store.delete(spec.key)
+                    await spec.storage.delete(spec.key)
                 return OutcomeError(
                     kind=IdempotencyErrorKind.EXECUTION,
                     message="Operation returned Error",
@@ -607,6 +627,7 @@ async def run_idempotent(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 __all__ = (
+    "IdempotencyStorage",
     "IdempotencySpec",
     "Outcome",
     "OutcomeOk",

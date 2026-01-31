@@ -19,19 +19,20 @@ from telegrinder.bot.dispatch.context import Context
 from telegrinder.bot.rules.abc import ABCRule, AndRule, OrRule
 from telegrinder.node.compose import compose  # type: ignore
 
-from emergent.wire._app import Application
-from emergent.wire._endpoint import Endpoint
+from emergent.wire.axis.surface._app import Application
+from emergent.wire.axis.surface._endpoint import Endpoint
 from emergent.wire._handler import Handler
 from emergent.wire._scan import scan, scan_endpoint
-from emergent.wire.codecs.rrc import RequestResponseCodec, execute as rrc_execute
-from emergent.wire.codecs.resolve import get_transition_params, wrap
-from emergent.wire.codecs.stateful import (
+from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec, execute as rrc_execute
+from emergent.wire.axis.surface.codecs.resolve import get_method_params, wrap
+from emergent.wire.axis.surface.codecs.stateful import (
     StatefulCodec,
     StateStore,
     parse_transition_result,
-    run_middlewares,
+    get_transitions,
 )
-from emergent.wire.triggers.telegrinder import TelegrindTrigger
+from emergent.wire.axis.surface.scope import run_stateful_middlewares
+from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
 if TYPE_CHECKING:
     from nodnod.agent.base import Agent
@@ -140,21 +141,64 @@ async def _compose_param(
     return wrap(original_type, success, value)
 
 
-async def _compose_transition_params(
+async def _try_compose_transition_params(
     params: dict[str, tuple[type, type]],
     agent_cls: type[Agent],
     ctx: Context,
-) -> dict[str, Any]:
-    """Compose all __transition__ parameters."""
+) -> tuple[dict[str, Any], bool]:
+    """Try to compose params; return (composed, all_required_satisfied).
+
+    Returns (composed_dict, True) if all required params succeeded.
+    Returns (composed_dict, False) if any required param failed.
+    """
+    from kungfu import Option, Result
+    from typing import get_origin
+
     update_cute = ctx.get("update_cute")
     composed: dict[str, Any] = {}
+    all_satisfied = True
 
     for name, (original_type, compose_type) in params.items():
-        composed[name] = await _compose_param(
+        origin = get_origin(original_type)
+        is_optional = origin is Option or origin is Result
+
+        result = await _compose_param(
             name, original_type, compose_type, agent_cls, ctx, update_cute
         )
+        composed[name] = result
 
-    return composed
+        # For required params, check if composition succeeded
+        if not is_optional:
+            # Check if we got Nothing or Error for a required param
+            if isinstance(result, Nothing):
+                all_satisfied = False
+            elif hasattr(result, "is_error") and result.is_error():
+                all_satisfied = False
+
+    return (composed, all_satisfied)
+
+
+from typing import Callable
+
+async def _resolve_telegrind_transition(
+    transitions: list[Callable[..., Any]],
+    agent_cls: type[Agent],
+    ctx: Context,
+) -> tuple[Callable[..., Any], dict[str, Any]] | None:
+    """Resolve first transition whose required deps are satisfiable.
+
+    Tries each transition in order (like SequentialEither).
+    Returns (method, composed_params) for first resolvable transition,
+    or None if no transition is resolvable.
+    """
+    for method in transitions:
+        params = get_method_params(method)
+        composed, all_satisfied = await _try_compose_transition_params(params, agent_cls, ctx)
+
+        if all_satisfied:
+            return (method, composed)
+
+    return None
 
 
 # ─── State Flow Helpers ────────────────────────────────────────────────────────
@@ -191,7 +235,7 @@ async def _handle_done(
     codec = handler.codec
 
     # Run middlewares
-    scope_extras, rejection = await run_middlewares(codec.middlewares, state)
+    scope_extras, rejection = await run_stateful_middlewares(codec.middlewares, state)
     if isinstance(rejection, Some):
         await store.delete(store_key)
         return str(rejection.unwrap())
@@ -225,8 +269,11 @@ class HasActiveFlowState(ABCRule):
         """Check if user has active state in store."""
         try:
             store_key = await _compose_store_key(self.key_node, self._agent_cls, ctx)
-            state = await self.store.get(store_key)
-            return state is not None
+            match await self.store.get(store_key):
+                case Ok(Some(_)):
+                    return True
+                case _:
+                    return False
         except RuntimeError:
             return False
 
@@ -247,20 +294,33 @@ def _wrap_rrc_handler(handler: Handler[RequestResponseCodec]) -> Any:
 
 
 def _wrap_stateful_handler(handler: Handler[StatefulCodec]) -> Any:
-    """Wrap StatefulCodec Handler in telegrinder-compatible async function."""
+    """Wrap StatefulCodec Handler in telegrinder-compatible async function.
+
+    Supports multiple @transition methods — nodnod routes by node types.
+    First resolvable transition wins (like SequentialEither).
+    """
     codec = handler.codec
-    params = get_transition_params(codec.flow)
+    transitions = get_transitions(codec.flow)
 
     async def _handler(ctx: Context) -> Any:
         # 1. Get store key
         store_key = await _compose_store_key(codec.key_node, codec.agent_cls, ctx)
 
         # 2. Load or create state
-        state = await codec.store.get(store_key) or codec.flow()
+        match await codec.store.get(store_key):
+            case Ok(Some(s)):
+                state = s
+            case _:
+                state = codec.flow()
 
-        # 3. Compose params and call transition
-        composed = await _compose_transition_params(params, codec.agent_cls, ctx)
-        raw_result = await state.__transition__(**composed)
+        # 3. Resolve first resolvable transition
+        resolved = await _resolve_telegrind_transition(transitions, codec.agent_cls, ctx)
+
+        if resolved is None:
+            raise RuntimeError("No transition resolvable")
+
+        method, composed = resolved
+        raw_result = await method(state, **composed)
         result = parse_transition_result(raw_result)
 
         # 4. Handle result

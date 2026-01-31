@@ -22,10 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from emergent.wire._app import Application
-from emergent.wire._endpoint import Endpoint
+from emergent.wire.axis.surface._app import Application
+from emergent.wire.axis.surface._endpoint import Endpoint
 from emergent.wire._handler import Handler
-from emergent.wire._stack import AppStack
+from emergent.wire.axis.surface._stack import AppStack
 
 T = TypeVar("T")
 

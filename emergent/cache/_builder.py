@@ -6,12 +6,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable
-from kungfu import LazyCoroResult, Result, Ok, Error
+from kungfu import LazyCoroResult, Result, Ok, Error, Some
 from emergent.cache._types import (
     Tier,
     CacheResult,
     CacheError,
 )
+
+# Type alias for tier with any error type
+type AnyTier[T] = Tier[T, object]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Key Function Type
@@ -27,8 +30,7 @@ type KeyFn[K] = Callable[[K], str]
 
 @dataclass(slots=True, frozen=True)
 class Cache[K, T, E]:
-    """
-    Fluent cache builder.
+    """Fluent cache builder.
 
     Type parameters:
         K: Key input type
@@ -45,9 +47,9 @@ class Cache[K, T, E]:
 
     _key_fn: KeyFn[K]
     _fetch: Callable[[K], LazyCoroResult[T, E]]
-    _tiers: tuple[Tier[T], ...]
+    _tiers: tuple[AnyTier[T], ...]
 
-    def tier(self, t: Tier[T]) -> Cache[K, T, E]:
+    def tier(self, t: AnyTier[T]) -> Cache[K, T, E]:
         """Add cache tier."""
         return Cache(
             _key_fn=self._key_fn,
@@ -74,12 +76,11 @@ class CacheExecutor[K, T, E]:
     """Compiled cache executor."""
 
     key_fn: KeyFn[K]
-    tiers: tuple[Tier[T], ...]
+    tiers: tuple[AnyTier[T], ...]
     fetch: Callable[[K], LazyCoroResult[T, E]]
 
     def get(self, key: K) -> LazyCoroResult[CacheResult[T], CacheError | E]:
-        """
-        Get value from cache.
+        """Get value from cache.
 
         Tries tiers in order, then falls back to fetch.
         On fetch success, populates all tiers.
@@ -91,9 +92,8 @@ class CacheExecutor[K, T, E]:
         async def execute() -> Result[CacheResult[T], CacheError | E]:
             # Try each tier
             for t in tiers:
-                try:
-                    value = await t.get(cache_key)
-                    if value is not None:
+                match await t.get(cache_key):
+                    case Ok(Some(value)):
                         return Ok(
                             CacheResult(
                                 value=value,
@@ -102,20 +102,15 @@ class CacheExecutor[K, T, E]:
                                 ttl_remaining=None,
                             )
                         )
-                except Exception:
-                    # Tier error - continue to next tier
-                    continue
+                    case _:
+                        continue  # Miss or error — try next tier
 
             # Cache miss — fetch from source
-            result = await fetch_fn(key)
-            match result:
+            match await fetch_fn(key):
                 case Ok(value):
-                    # Populate all tiers
+                    # Populate all tiers (best effort)
                     for t in tiers:
-                        try:
-                            await t.set(cache_key, value)
-                        except Exception:
-                            pass  # Best effort
+                        await t.set(cache_key, value)
 
                     return Ok(
                         CacheResult(
@@ -130,26 +125,22 @@ class CacheExecutor[K, T, E]:
 
         return LazyCoroResult(execute)
 
-    async def invalidate(self, key: K) -> Result[bool, CacheError]:
+    async def invalidate(self, key: K) -> Result[None, CacheError]:
         """Invalidate key in all tiers."""
         cache_key = self.key_fn(key)
-        deleted = False
         for t in self.tiers:
-            try:
-                if await t.delete(cache_key):
-                    deleted = True
-            except Exception:
-                pass
-        return Ok(deleted)
+            await t.delete(cache_key)
+        return Ok(None)
 
     async def invalidate_pattern(self, pattern: str) -> Result[int, CacheError]:
         """Invalidate keys matching pattern in all tiers."""
         total = 0
         for t in self.tiers:
-            try:
-                total += await t.delete_pattern(pattern)
-            except Exception:
-                pass
+            match await t.delete_pattern(pattern):
+                case Ok(count):
+                    total += count
+                case Error(_):
+                    pass  # Best effort
         return Ok(total)
 
 

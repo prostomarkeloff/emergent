@@ -2,26 +2,25 @@
 Wire — expose ops via triggers and codecs.
 
     from emergent import ops as O
-    from emergent.wire import endpoint, Application
+    from emergent.wire import endpoint, Application, inject
     from emergent.wire.triggers.http import HTTPRouteTrigger
-    from emergent.wire.codecs.rrc import RequestResponseCodec
+    from emergent.wire.codecs import rrc
 
     # runner = O.ops() ... .compile()
-    # endp = endpoint(runner).expose(
-    #     HTTPRouteTrigger("GET", "/users/{id}"),
-    #     RequestResponseCodec(Request, Response),
-    # )
+    # auth_mw = inject(AuthUser).using(auth_runner).from_request(fn).on_reject(fn).build()
+    # codec = rrc(Request, Response).use(auth_mw).build()
+    # endp = endpoint(runner).expose(HTTPRouteTrigger("GET", "/users/{id}"), codec)
     # app = Application().mount(endp)
 """
 
-from emergent.wire._endpoint import (
+# Core primitives from surface axis
+from emergent.wire.axis.surface._endpoint import (
     Endpoint,
     endpoint,
 )
-from emergent.wire._app import Application, application
-from emergent.wire._stack import AppStack, app_stack
+from emergent.wire.axis.surface._app import Application, application
+from emergent.wire.axis.surface._stack import AppStack, app_stack
 from emergent.wire._handler import Handler
-from emergent.wire._middleware import Middleware, middleware
 from emergent.wire._scan import scan, scan_endpoint, scan_stack, StackView
 from emergent.wire._types import (
     Trigger,
@@ -29,19 +28,30 @@ from emergent.wire._types import (
     Exposure,
 )
 
-# Common codecs and triggers
-from emergent.wire.codecs.rrc import RequestResponseCodec, RRCBuilder, rrc
-from emergent.wire.triggers.http import (
+# Scope enrichment (middleware)
+from emergent.wire.axis.surface.scope import (
+    inject,
+    Middleware,
+    StatefulMiddleware,
+)
+
+# Common codecs and triggers (from surface axis)
+from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec, RRCBuilder, rrc
+from emergent.wire.axis.surface.triggers.http import (
     HTTPRouteTrigger,
     Method,
     Path,
     Header,
     Headers,
 )
-from emergent.wire.triggers.cli import CLITrigger
+from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
-# Subpackages
-from emergent.wire import codecs, triggers, contrib
+# Subpackages — codecs and triggers are aliases to surface axis
+from emergent.wire.axis.surface import codecs, triggers
+from emergent.wire import contrib, axis
+
+# Axes re-exports
+from emergent.wire.axis import surface, storage
 
 __all__ = (
     # Core API
@@ -52,8 +62,6 @@ __all__ = (
     "AppStack",
     "app_stack",
     "Handler",
-    "Middleware",
-    "middleware",
     "scan",
     "scan_endpoint",
     "scan_stack",
@@ -61,6 +69,10 @@ __all__ = (
     "Trigger",
     "Codec",
     "Exposure",
+    # Scope enrichment (middleware)
+    "inject",
+    "Middleware",
+    "StatefulMiddleware",
     # Built-ins
     "RequestResponseCodec",
     "RRCBuilder",
@@ -75,4 +87,8 @@ __all__ = (
     "codecs",
     "triggers",
     "contrib",
+    "axis",
+    # Axes
+    "surface",
+    "storage",
 )

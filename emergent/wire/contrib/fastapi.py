@@ -9,6 +9,7 @@ try:
     from ._impls._fastapi import (
         add_endpoint_to_app,
         from_application,
+        from_app_stack,
         compile_to_fastapi_route,
     )
 except Exception:  # pragma: no cover - FastAPI not installed
@@ -18,5 +19,6 @@ except Exception:  # pragma: no cover - FastAPI not installed
 __all__ = (
     "add_endpoint_to_app",
     "from_application",
+    "from_app_stack",
     "compile_to_fastapi_route",
 )

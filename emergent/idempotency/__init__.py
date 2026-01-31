@@ -1,14 +1,15 @@
-"""
-Idempotency — enterprise-grade idempotency engine via nodnod graphs.
+"""Idempotency — enterprise-grade idempotency engine via nodnod graphs.
 
     from emergent import idempotency as I
+    from emergent.wire.axis.storage import MemoryStorage
 
     # Graph API
+    storage = MemoryStorage[str, I.Record[str]]()
     spec = I.IdempotencySpec(
         key=f"payment:{order_id}",
         input_value=order_id,
         operation=process_payment,
-        store=I.MemoryStore(),
+        storage=storage,
         policy=I.Policy().with_ttl(seconds=3600),
     )
     result = await I.run_idempotent(spec)
@@ -17,7 +18,7 @@ Idempotency — enterprise-grade idempotency engine via nodnod graphs.
     executor = (
         I.idempotent(process_payment)
         .key(lambda oid: f"payment:{oid}")
-        .store(I.MemoryStore())
+        .storage(storage)  # optional, defaults to MemoryStorage
         .policy(I.Policy().with_ttl(seconds=3600))
         .build()
     )
@@ -54,11 +55,14 @@ from emergent.idempotency._types import (
     IdempotencyErrorKind,
 )
 from emergent.idempotency._store import (
-    Store,
+    Record,
     StoreError,
-    FunctionalStore,
-    store_from,
-    MemoryStore,
+    make_pending_record,
+    make_completed_record,
+    make_failed_record,
+    set_pending,
+    set_completed,
+    set_failed,
 )
 from emergent.idempotency._policy import (
     Policy,
@@ -68,6 +72,7 @@ from emergent.idempotency._policy import (
     FORCE,
 )
 from emergent.idempotency._graph import (
+    IdempotencyStorage,
     IdempotencySpec,
     run_idempotent,
     Outcome,
@@ -90,10 +95,6 @@ from emergent.idempotency._builder import (
     IdempotentExecutor,
 )
 
-# Optional integrations available via contrib subpackage:
-#   from emergent.idempotency.contrib import sqlalchemy
-# See emergent/idempotency/contrib/ for available integrations.
-
 __all__ = (
     # Types
     "RecordState",
@@ -101,12 +102,15 @@ __all__ = (
     "IdempotencyResult",
     "IdempotencyError",
     "IdempotencyErrorKind",
-    # Store
-    "Store",
+    # Storage helpers
+    "Record",
     "StoreError",
-    "FunctionalStore",
-    "store_from",
-    "MemoryStore",
+    "make_pending_record",
+    "make_completed_record",
+    "make_failed_record",
+    "set_pending",
+    "set_completed",
+    "set_failed",
     # Policy
     "Policy",
     "OnPending",
@@ -114,6 +118,7 @@ __all__ = (
     "FAIL",
     "FORCE",
     # Spec & API
+    "IdempotencyStorage",
     "IdempotencySpec",
     "run_idempotent",
     # Outcome

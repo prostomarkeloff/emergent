@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable
+from typing import Any
 
 from kungfu import LazyCoroResult, Result
 
@@ -13,7 +14,9 @@ from emergent.idempotency._types import (
     IdempotencyResult,
     IdempotencyError,
 )
-from emergent.idempotency._store import StoreAny, MemoryStore
+from emergent.idempotency._graph import IdempotencyStorage
+from emergent.idempotency._store import Record
+from emergent.wire.axis.storage import MemoryStorage
 from emergent.idempotency._policy import Policy
 
 
@@ -31,13 +34,11 @@ type KeyFn[K] = Callable[[K], str]
 
 @dataclass(slots=True, frozen=True)
 class Idempotent[K, T, E]:
-    """
-    Fluent idempotency builder.
-    """
+    """Fluent idempotency builder."""
 
     _operation: Callable[[K], LazyCoroResult[T, E]]
     _key_fn: KeyFn[K] | None
-    _store: StoreAny | None
+    _storage: IdempotencyStorage | None
     _policy: Policy
 
     def key(self, fn: KeyFn[K]) -> Idempotent[K, T, E]:
@@ -45,16 +46,16 @@ class Idempotent[K, T, E]:
         return Idempotent(
             _operation=self._operation,
             _key_fn=fn,
-            _store=self._store,
+            _storage=self._storage,
             _policy=self._policy,
         )
 
-    def store(self, s: StoreAny) -> Idempotent[K, T, E]:
+    def storage(self, s: IdempotencyStorage) -> Idempotent[K, T, E]:
         """Set storage backend."""
         return Idempotent(
             _operation=self._operation,
             _key_fn=self._key_fn,
-            _store=s,
+            _storage=s,
             _policy=self._policy,
         )
 
@@ -63,7 +64,7 @@ class Idempotent[K, T, E]:
         return Idempotent(
             _operation=self._operation,
             _key_fn=self._key_fn,
-            _store=self._store,
+            _storage=self._storage,
             _policy=p,
         )
 
@@ -72,12 +73,12 @@ class Idempotent[K, T, E]:
         if self._key_fn is None:
             raise ValueError("key() is required")
 
-        store: StoreAny = self._store if self._store is not None else MemoryStore()
+        storage: IdempotencyStorage = self._storage if self._storage is not None else MemoryStorage[str, Record[Any]]()
 
         return IdempotentExecutor(
             operation=self._operation,
             key_fn=self._key_fn,
-            store=store,
+            storage=storage,
             policy=self._policy,
         )
 
@@ -89,15 +90,14 @@ class Idempotent[K, T, E]:
 
 @dataclass(slots=True, frozen=True)
 class IdempotentExecutor[K, T, E]:
-    """
-    Compiled idempotent executor.
+    """Compiled idempotent executor.
 
     Note: Thin wrapper — creates IdempotencySpec and runs graph.
     """
 
     operation: Callable[[K], LazyCoroResult[T, E]]
     key_fn: KeyFn[K]
-    store: StoreAny
+    storage: IdempotencyStorage
     policy: Policy
 
     def run(
@@ -109,7 +109,7 @@ class IdempotentExecutor[K, T, E]:
 
         key = self.key_fn(input_val)
         operation = self.operation
-        store = self.store
+        storage = self.storage
         policy = self.policy
 
         async def execute() -> Result[IdempotencyResult[T], IdempotencyError[E]]:
@@ -117,7 +117,7 @@ class IdempotentExecutor[K, T, E]:
                 key=key,
                 input_value=input_val,
                 operation=operation,
-                store=store,
+                storage=storage,
                 policy=policy,
             )
             return await run_idempotent(spec)
@@ -129,10 +129,10 @@ class IdempotentExecutor[K, T, E]:
         from kungfu import Ok
 
         key = self.key_fn(input_val)
-        result = await self.store.delete(key)
+        result = await self.storage.delete(key)
         match result:
-            case Ok(deleted):
-                return deleted
+            case Ok(_):
+                return True
             case _:
                 return False
 
@@ -145,14 +145,15 @@ class IdempotentExecutor[K, T, E]:
 def idempotent[K, T, E](
     operation: Callable[[K], LazyCoroResult[T, E]],
 ) -> Idempotent[K, T, E]:
-    """
-    Create idempotent wrapper for an operation.
+    """Create idempotent wrapper for an operation.
 
     Example:
+        from emergent.wire.axis.storage import MemoryStorage
+
         executor = (
             I.idempotent(fetch_user)
             .key(lambda uid: f"fetch_user:{uid.value}")
-            .store(I.MemoryStore())
+            .storage(MemoryStorage())  # optional, defaults to MemoryStorage
             .policy(I.Policy().with_ttl(seconds=3600))
             .build()
         )
@@ -162,7 +163,7 @@ def idempotent[K, T, E](
     return Idempotent(
         _operation=operation,
         _key_fn=None,
-        _store=None,
+        _storage=None,
         _policy=Policy(),
     )
 

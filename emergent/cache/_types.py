@@ -7,18 +7,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum, auto
-from typing import Protocol
+from typing import Never, Protocol
+
+from kungfu import Ok, Option, Result, Some, Nothing
+
+from emergent.wire.axis.storage import Delete, DeletePattern, Get, Set
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier Protocol — Users Implement This
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class Tier[T](Protocol):
-    """
-    Cache tier protocol.
+class Tier[T, E](
+    Get[str, T, E],
+    Set[str, T, E],
+    Delete[str, E],
+    DeletePattern[E],
+    Protocol,
+):
+    """Cache tier protocol — extends storage capabilities with name.
 
-    Implement this for custom backends (Redis, Memcached, etc.)
+    Extends:
+        Get[str, T, E]: get(key) -> Result[Option[T], E]
+        Set[str, T, E]: set(key, value) -> Result[None, E]
+        Delete[str, E]: delete(key) -> Result[None, E]
+        DeletePattern[E]: delete_pattern(pattern) -> Result[int, E]
 
     Example:
         class RedisTier[T]:
@@ -30,43 +43,44 @@ class Tier[T](Protocol):
             def name(self) -> str:
                 return "redis"
 
-            async def get(self, key: str) -> T | None:
-                data = await self.client.get(key)
-                return pickle.loads(data) if data else None
+            async def get(self, key: str) -> Result[Option[T], RedisError]:
+                try:
+                    data = await self.client.get(key)
+                    if data is None:
+                        return Ok(Nothing())
+                    return Ok(Some(pickle.loads(data)))
+                except Exception as e:
+                    return Error(RedisError(...))
 
-            async def set(self, key: str, value: T) -> None:
-                data = pickle.dumps(value)
-                await self.client.set(key, data, ex=self.ttl)
+            async def set(self, key: str, value: T) -> Result[None, RedisError]:
+                try:
+                    data = pickle.dumps(value)
+                    await self.client.set(key, data, ex=self.ttl)
+                    return Ok(None)
+                except Exception as e:
+                    return Error(RedisError(...))
 
-            async def delete(self, key: str) -> bool:
-                return await self.client.delete(key) > 0
+            async def delete(self, key: str) -> Result[None, RedisError]:
+                try:
+                    await self.client.delete(key)
+                    return Ok(None)
+                except Exception as e:
+                    return Error(RedisError(...))
 
-            async def delete_pattern(self, pattern: str) -> int:
-                keys = await self.client.keys(pattern)
-                if keys:
-                    return await self.client.delete(*keys)
-                return 0
+            async def delete_pattern(self, pattern: str) -> Result[int, RedisError]:
+                try:
+                    keys = await self.client.keys(pattern)
+                    if keys:
+                        count = await self.client.delete(*keys)
+                        return Ok(count)
+                    return Ok(0)
+                except Exception as e:
+                    return Error(RedisError(...))
     """
 
     @property
     def name(self) -> str:
         """Tier name for debugging."""
-        ...
-
-    async def get(self, key: str) -> T | None:
-        """Get value. Returns None on miss."""
-        ...
-
-    async def set(self, key: str, value: T) -> None:
-        """Set value."""
-        ...
-
-    async def delete(self, key: str) -> bool:
-        """Delete key. Returns True if existed."""
-        ...
-
-    async def delete_pattern(self, pattern: str) -> int:
-        """Delete keys matching pattern. Returns count."""
         ...
 
 
@@ -76,8 +90,11 @@ class Tier[T](Protocol):
 
 
 class LocalTier[T]:
-    """
-    In-memory LRU cache tier.
+    """In-memory LRU cache tier with eviction.
+
+    Unlike MemoryStorage, this has:
+    - LRU eviction (max_size)
+    - name property for tier identification
 
     Example:
         tier = LocalTier[User](max_size=1000)
@@ -92,15 +109,15 @@ class LocalTier[T]:
     def name(self) -> str:
         return "local"
 
-    async def get(self, key: str) -> T | None:
+    async def get(self, key: str) -> Result[Option[T], Never]:
         if key in self._cache:
             # Move to end (most recent)
             self._order.remove(key)
             self._order.append(key)
-            return self._cache[key]
-        return None
+            return Ok(Some(self._cache[key]))
+        return Ok(Nothing())
 
-    async def set(self, key: str, value: T) -> None:
+    async def set(self, key: str, value: T) -> Result[None, Never]:
         if key in self._cache:
             self._order.remove(key)
         elif len(self._cache) >= self._max_size:
@@ -110,22 +127,22 @@ class LocalTier[T]:
 
         self._cache[key] = value
         self._order.append(key)
+        return Ok(None)
 
-    async def delete(self, key: str) -> bool:
+    async def delete(self, key: str) -> Result[None, Never]:
         if key in self._cache:
             del self._cache[key]
             self._order.remove(key)
-            return True
-        return False
+        return Ok(None)
 
-    async def delete_pattern(self, pattern: str) -> int:
+    async def delete_pattern(self, pattern: str) -> Result[int, Never]:
         import fnmatch
 
         keys_to_delete = [k for k in self._cache if fnmatch.fnmatch(k, pattern)]
         for key in keys_to_delete:
             del self._cache[key]
             self._order.remove(key)
-        return len(keys_to_delete)
+        return Ok(len(keys_to_delete))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

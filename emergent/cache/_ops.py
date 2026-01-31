@@ -4,30 +4,30 @@ Cache operations — standalone utilities.
 
 from __future__ import annotations
 
-from kungfu import LazyCoroResult
-from combinators import lift as L
-from emergent.cache._types import Tier, CacheError, CacheErrorKind
+from kungfu import LazyCoroResult, Result, Ok, Error
+from emergent.cache._types import Tier, CacheError
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # invalidate() — Single Key in Tier
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def invalidate[T](t: Tier[T], key: str) -> LazyCoroResult[bool, CacheError]:
-    """
-    Invalidate single cache key in tier.
+def invalidate[T, E](t: Tier[T, E], key: str) -> LazyCoroResult[None, CacheError | E]:
+    """Invalidate single cache key in tier.
 
     Example:
         result = await C.invalidate(local_tier, f"user:{uid}")
     """
 
-    async def do_invalidate() -> bool:
-        return await t.delete(key)
+    async def do_invalidate() -> Result[None, CacheError | E]:
+        result = await t.delete(key)
+        match result:
+            case Ok(_):
+                return Ok(None)
+            case Error(e):
+                return Error(e)
 
-    return L.catching_async(
-        do_invalidate,
-        on_error=lambda e: CacheError(CacheErrorKind.CONNECTION, str(e)),
-    )
+    return LazyCoroResult(do_invalidate)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -35,9 +35,8 @@ def invalidate[T](t: Tier[T], key: str) -> LazyCoroResult[bool, CacheError]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def invalidate_pattern[T](t: Tier[T], pattern: str) -> LazyCoroResult[int, CacheError]:
-    """
-    Invalidate all keys matching pattern in tier.
+def invalidate_pattern[T, E](t: Tier[T, E], pattern: str) -> LazyCoroResult[int, CacheError | E]:
+    """Invalidate all keys matching pattern in tier.
 
     Example:
         count = await C.invalidate_pattern(local_tier, "user:*")
@@ -46,13 +45,15 @@ def invalidate_pattern[T](t: Tier[T], pattern: str) -> LazyCoroResult[int, Cache
         Number of keys invalidated
     """
 
-    async def do_invalidate() -> int:
-        return await t.delete_pattern(pattern)
+    async def do_invalidate() -> Result[int, CacheError | E]:
+        result = await t.delete_pattern(pattern)
+        match result:
+            case Ok(count):
+                return Ok(count)
+            case Error(e):
+                return Error(e)
 
-    return L.catching_async(
-        do_invalidate,
-        on_error=lambda e: CacheError(CacheErrorKind.CONNECTION, str(e)),
-    )
+    return LazyCoroResult(do_invalidate)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

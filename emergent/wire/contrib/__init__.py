@@ -82,7 +82,7 @@ that call ``scan`` and bridge to the target framework.
 Step 1: scan for your trigger (and codec) type::
 
     from emergent.wire._scan import scan
-    from emergent.wire.codecs.rrc import RequestResponseCodec
+    from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 
     pairs = scan(app, MyTrigger, RequestResponseCodec)
 
