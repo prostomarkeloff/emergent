@@ -118,7 +118,7 @@ uvicorn app:fastapi_app --reload
 
 # CLI
 python app.py greet Alice
-# → {"message": "Hello, Alice!"}
+# → GreetResponse(message='Hello, vasya!', error=None)
 ```
 
 ---
