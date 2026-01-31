@@ -2,7 +2,7 @@
 
 # emergent
 
-**Type-safe, composable DSLs for common patterns**
+**Type-safe DSLs for common patterns**
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -12,387 +12,504 @@
 
 ---
 
-## The Insight
-
-**Semantic × Physical = Pipeline.**
-
-Every system has two orthogonal dimensions:
-- **Semantic** — WHAT you express (the grammar)
-- **Physical** — WHERE it materializes (the target)
-
-You write the semantic side. The framework multiplies by physical targets:
-
-```
-1 codec   × 3 triggers  = 3 endpoints
-1 pattern × 3 backends  = 3 storages
-1 schema  × 3 compilers = 3 outputs
-1 query   × 3 providers = 3 executions
-```
-
----
-
-## The Four Axes
-
-| Axis | Semantic | Physical | Product |
-|------|----------|----------|---------|
-| **Surface** | Codec (execution shape) | Trigger (entry point) | endpoint |
-| **Storage** | Pattern (KV, Queue) | Backend (memory, redis) | storage |
-| **Schema** | Dialect (annotations) | Compiler (sql, openapi) | model |
-| **Query** | Space (operations) | Provider (sql, memory) | store |
-
-```python
-# Same Codec, different Triggers → 3 endpoints
-rrc(Request, Response) × HTTP     → HTTP endpoint
-rrc(Request, Response) × CLI      → CLI command
-rrc(Request, Response) × Telegram → Bot handler
-
-# Same Space, different Providers → 2 stores
-relational(User) × SQLProvider    → SQL repository
-relational(User) × MemoryProvider → In-memory (tests)
-```
-
----
-
-## What's Inside
-
-| Module | Pattern | One-liner |
-|--------|---------|-----------|
-| `ops` | Data-driven dispatch | Op dataclass → handler → runner.run(op) |
-| `saga` | Distributed transactions | Steps + compensators. Failure = auto-rollback. |
-| `cache` | Multi-tier caching | key → tiers → fetch. Miss = fetch + store. |
-| `graph` | Computation graphs | Nodes + deps = parallelization + DI. |
-| `idempotency` | Exactly-once execution | Deduplicate concurrent calls. TTL + stores. |
-| `wire` | Transport-agnostic endpoints | 4 axes compose into production stacks. |
-
----
-
-## ops
-
-Data-driven dispatch — declare ops, register handlers, run:
-
-```python
-from emergent import ops as O
-from kungfu import Result, Ok
-
-@dataclass(frozen=True, slots=True)
-class GetUser(O.Returning[User, NotFound]):
-    user_id: int
-
-async def get_user(req: GetUser, db: Database) -> Result[User, NotFound]:
-    return await db.get(req.user_id)
-
-runner = O.ops().on(GetUser, get_user).compile().inject(Database, db)
-result = await runner.run(GetUser(42))
-```
-
-**Composition** — op fields typed as other ops become dependencies (auto-parallelized):
-
-```python
-@dataclass(frozen=True, slots=True)
-class BuildSummary(O.Returning[str, str]):
-    product_id: int
-    price: GetPrice    # runs in parallel
-    stock: GetStock    # runs in parallel
-
-async def build_summary(req: BuildSummary, price: GetPrice, stock: GetStock) -> Result[str, str]:
-    p, s = await price, await stock  # instant — already computed
-    return Ok(f"${p.unwrap()}, {s.unwrap()} units")
-```
-
----
-
-## saga
-
-Chain operations with compensation on failure:
-
-```python
-from emergent import saga as S
-
-checkout = (
-    S.step(
-        action=lambda: inventory.reserve(items),
-        compensate=lambda res: inventory.release(res),
-    )
-    .then(lambda res: S.step(
-        action=lambda: payment.charge(total),
-        compensate=lambda pay: payment.refund(pay),
-    ))
-)
-
-result = await S.run_chain(checkout)
-# payment fails → inventory.release() runs automatically
-```
-
----
-
-## cache
-
-Multi-tier caching with automatic population:
-
-```python
-from emergent import cache as C
-
-local = C.LocalTier(max_size=10000)
-redis = RedisTier(client, ttl=300)
-
-user_cache = (
-    C.cache(key=lambda uid: f"user:{uid}", fetch=fetch_user)
-    .tier(local)   # L1: in-memory
-    .tier(redis)   # L2: shared
-    .build()
-)
-
-result = await user_cache.get(user_id)
-# Lookup: local → redis → fetch
-# Miss: fetch → store in ALL tiers
-```
-
----
-
-## graph
-
-Declare dependencies. Framework handles parallelization:
-
-```python
-from emergent import graph as G
-
-@G.node
-class FetchUser:
-    def __init__(self, user: User) -> None:
-        self.data = user
-
-    @classmethod
-    async def __compose__(cls, order: OrderInput) -> FetchUser:
-        return cls(await repo.get_user(order.user_id))
-
-@G.node
-class FetchItems:
-    def __init__(self, items: list[Item]) -> None:
-        self.data = items
-
-    @classmethod
-    async def __compose__(cls, order: OrderInput) -> FetchItems:
-        return cls(await repo.get_items(order.item_ids))
-
-@G.node
-class ProcessOrder:
-    @classmethod
-    async def __compose__(
-        cls,
-        user: FetchUser,   # ┐ no dependency between them
-        items: FetchItems, # ┘ → run in parallel
-    ) -> ProcessOrder:
-        return cls(Order(user.data, items.data))
-
-result = await G.compose(ProcessOrder, order)
-```
-
----
-
-## idempotency
-
-Make side-effectful operations run exactly once per key:
-
-```python
-from emergent import idempotency as I
-
-executor = (
-    I.idempotent(charge)
-    .key(lambda req: f"payment:{req.order_id}")
-    .policy(I.Policy().with_ttl(hours=1))
-    .build()
-)
-
-match await executor.run(request):
-    case Ok(r): print(r.value, r.from_cache)  # True on retries
-    case Error(e): print(e.kind.name, e.message)
-```
-
----
-
-## wire
-
-The binding layer. Four axes compose into production stacks.
-
-### Surface Axis: Codec × Trigger = Endpoint
-
-**Codecs** define execution shapes:
-- `rrc` — request → response (classic REST)
-- `stateful` — multi-turn FSM (accumulate → Done → execute)
-
-**Triggers** define entry points:
-- `HTTPRouteTrigger("POST", "/bet")` — REST endpoint
-- `CLITrigger("bet", "Place a bet")` — CLI command
-
-```python
-from emergent.wire import endpoint, Application
-from emergent.wire.axis.surface.codecs.rrc import rrc
-from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
-from emergent.wire.axis.surface.triggers.cli import CLITrigger
-from emergent.wire.contrib import fastapi, cli
-
-# Request with to_domain()
-@dataclass
-class BetRequest:
-    bet: str
-    amount: int
-
-    def to_domain(self) -> PlaceBet:
-        return PlaceBet(bet=self.bet, amount=self.amount)
-
-# Response with from_domain()
-@dataclass
-class BetResponse:
-    won: bool | None = None
-    error: str | None = None
-
-    @classmethod
-    def from_domain(cls, dom: Result[BetResult, str]) -> BetResponse:
-        match dom:
-            case Ok(r): return cls(won=r.won)
-            case Error(e): return cls(error=e)
-
-# ONE runner × multiple triggers
-app = Application().mount(
-    endpoint(game_runner)
-        .expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).build())
-        .expose(CLITrigger("bet", "Place a bet"), rrc(BetRequest, BetResponse).build()),
-)
-
-# Compile to production stacks
-fastapi_app = fastapi.from_application(app)  # OpenAPI at /docs
-cli_parser = cli.from_application(app, prog="game")  # argparse with --help
-```
-
-### Query Axis: Space × Provider = Store
-
-Spaces have their own query languages. Providers execute them:
-
-```python
-from emergent.wire.axis.query import relational, relational_store, MemoryRelationalProvider
-
-# Low-level: QuerySet + Provider separate
-users = relational(User)
-q = users.filter(lambda u: u.balance > 100).order_by(lambda u: u.balance.desc())
-result = await provider.fetch_many(q)
-
-# High-level: Store bundles them
-users = relational_store(User, MemoryRelationalProvider())
-result = await users.filter(lambda u: u.active).fetch_many()
-```
-
-Lambda expressions build typed AST:
-```python
-.filter(lambda u: u.balance > 100)
-# → Filter(Gt(Field("balance"), Const(100)))
-# → SQL: WHERE balance > 100
-# → Memory: [u for u in users if u.balance > 100]
-```
-
-### Storage Axis: Pattern × Backend = Storage
-
-Capabilities are grammar. Patterns are sentences:
-
-```python
-from emergent.wire.axis.storage import kv, MemoryStorage, JsonCodec
-
-# KV pattern = Get + Set + Delete + Codec
-cache = kv(MemoryStorage(), JsonCodec())
-
-await cache.set("user:42", user)
-user = await cache.get("user:42")
-```
-
-### Schema Axis: Dialect × Compiler = Model
-
-One dataclass, multiple outputs via Annotated:
-
-```python
-from emergent.wire.axis.schema.dialects import cli, openapi
-
-@dataclass
-class RegisterRequest:
-    login: Annotated[str,
-        cli.Help("Username"),
-        cli.Positional(),
-        openapi.Description("Username for registration"),
-    ]
-    password: Annotated[str,
-        cli.Help("Password"),
-        openapi.Description("Account password"),
-    ]
-```
-
-Each compiler reads its dialect, ignores others:
-- FastAPI compiler → reads `openapi.*`, generates OpenAPI schema
-- CLI compiler → reads `cli.*`, generates argparse args
-
----
-
-## The Stack
-
-```
-┌──────────────────────────────────────────────────────────┐
-│ Level 5: YOUR CODE      — business logic, invariants     │
-├──────────────────────────────────────────────────────────┤
-│ Level 4: emergent       — saga, cache, graph, wire       │
-├──────────────────────────────────────────────────────────┤
-│ Level 3: nodnod         — dependency graphs              │
-├──────────────────────────────────────────────────────────┤
-│ Level 2: combinators.py — retry, timeout, fallback       │
-├──────────────────────────────────────────────────────────┤
-│ Level 1: kungfu         — Result[T, E]                   │
-├──────────────────────────────────────────────────────────┤
-│ Level 0: Python 3.13    — type unions, Protocol          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Each level does one thing. Use what you need.
-
----
-
-## Installation
+# Quickstart
 
 ```bash
 uv add git+https://github.com/prostomarkeloff/emergent.git
 ```
 
----
+Create `app.py`:
 
-## Dependencies
+```python
+from dataclasses import dataclass
+from typing import Annotated
 
-| Library | Purpose |
-|---------|---------|
-| [kungfu](https://github.com/timoniq/kungfu) | `Result`, `Option`, `LazyCoroResult` |
-| [combinators.py](https://github.com/prostomarkeloff/combinators.py) | `retry`, `timeout`, `fallback` |
-| [nodnod](https://github.com/timoniq/nodnod) | Dependency graphs |
+from kungfu import Result, Ok, Error
 
----
+from emergent import ops as O
+from emergent.wire import endpoint, Application
+from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
+from emergent.wire.axis.surface.triggers.cli import CLITrigger
+from emergent.wire.axis.schema.dialects import cli
+from emergent.wire.compiler import fastapi_compile, cli_compile
 
-## Try It
 
-**Roulette example — unified multi-transport app:**
+# ─── Domain ──────────────────────────────────────────────────────────────────
 
-```bash
-# FastAPI (OpenAPI at /docs)
-uvicorn examples.roulette.wiring:fastapi_app --reload
 
-# CLI commands
-python -m examples.roulette register alice secret
-python -m examples.roulette login alice secret
-python -m examples.roulette bet red 100
+@dataclass(frozen=True, slots=True)
+class GreetResult:
+    message: str
+
+
+# ─── Op ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Greet(O.Returning[GreetResult, str]):
+    name: str
+
+
+# ─── Handler ─────────────────────────────────────────────────────────────────
+
+
+async def handle_greet(op: Greet) -> Result[GreetResult, str]:
+    if not op.name:
+        return Error("name is required")
+    return Ok(GreetResult(message=f"Hello, {op.name}!"))
+
+
+# ─── Runner ──────────────────────────────────────────────────────────────────
+
+
+runner = O.ops().on(Greet, handle_greet).compile()
+
+
+# ─── Request / Response ──────────────────────────────────────────────────────
+
+
+@dataclass
+class GreetRequest:
+    name: Annotated[str, cli.Help("Name to greet"), cli.Positional()]
+
+    def to_domain(self) -> Greet:
+        return Greet(name=self.name)
+
+
+@dataclass
+class GreetResponse:
+    message: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_domain(cls, dom: Result[GreetResult, str]) -> "GreetResponse":
+        match dom:
+            case Ok(r):
+                return cls(message=r.message)
+            case Error(e):
+                return cls(error=e)
+
+
+# ─── Wiring ──────────────────────────────────────────────────────────────────
+
+
+app = Application().mount(
+    endpoint(runner)
+        .expose(HTTPRouteTrigger("POST", "/greet"), rrc(GreetRequest, GreetResponse).build())
+        .expose(CLITrigger("greet", "Greet someone"), rrc(GreetRequest, GreetResponse).build())
+)
+
+fastapi_app = fastapi_compile(app)
+cli_parser = cli_compile(app, prog="app")
+
+
+if __name__ == "__main__":
+    from emergent.wire.compiler import cli_run
+    cli_run(cli_parser)
 ```
 
-**Full stack example:**
+Run:
 
 ```bash
-uv run python -m examples.full_stack.main
+# HTTP
+uvicorn app:fastapi_app --reload
+# Open http://localhost:8000/docs
+
+# CLI
+python app.py greet Alice
+# → {"message": "Hello, Alice!"}
 ```
+
+---
+
+# Part 1: Build
+
+Real examples from `examples/roulette/`.
+
+---
+
+## ops — what your program does
+
+```python
+from dataclasses import dataclass
+from emergent import ops as O
+
+@dataclass(frozen=True, slots=True)
+class PlaceBet(O.Returning[BetResult, str]):
+    bet: str
+    amount: int
+
+@dataclass(frozen=True, slots=True)
+class GetBalance(O.Returning[int, str]):
+    pass
+```
+
+`O.Returning[SuccessType, ErrorType]` — declares what the op returns.
+
+---
+
+## handlers — how it works
+
+```python
+from kungfu import Result, Ok, Error
+
+async def handle_place_bet(op: PlaceBet, game_store: GameStore) -> Result[BetResult, str]:
+    if op.amount <= 0:
+        return Error("amount must be positive")
+    return await game_store.place_bet(op.bet, op.amount)
+
+async def handle_get_balance(_op: GetBalance, auth_user: AuthUser, game_store: GameStore) -> Result[int, str]:
+    balance = await game_store.get_balance(auth_user)
+    return Ok(balance)
+```
+
+Handler signature declares dependencies. Framework injects them.
+
+---
+
+## runner — wire together
+
+```python
+from emergent import ops as O
+
+game_runner = (
+    O.ops()
+    .on(PlaceBet, handle_place_bet)
+    .on(GetBalance, handle_get_balance)
+    .compile()
+    .inject(GameStore, game_store)
+)
+```
+
+---
+
+## requests — boundary in
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+from emergent.wire.axis.schema.dialects import cli, openapi
+
+@dataclass
+class BetRequest:
+    token: Annotated[str, openapi.Description("Auth token")]
+    bet: Annotated[str, cli.Help("red, black, or 0-36"), cli.Positional()]
+    amount: Annotated[int, cli.Help("Bet amount"), cli.Positional()]
+
+    def to_domain(self) -> PlaceBet:
+        return PlaceBet(bet=self.bet, amount=self.amount)
+
+    def to_auth(self) -> Authenticate:
+        return Authenticate(token=self.token)
+```
+
+`to_domain()` converts boundary → op. `to_auth()` extracts auth data.
+
+---
+
+## responses — boundary out
+
+```python
+from dataclasses import dataclass
+from kungfu import Result, Ok, Error
+
+@dataclass
+class BetResponse:
+    won: bool | None = None
+    payout: int | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_domain(cls, dom: Result[BetResult, str]) -> "BetResponse":
+        match dom:
+            case Ok(r):
+                return cls(won=r.won, payout=r.payout)
+            case Error(e):
+                return cls(error=e)
+```
+
+`from_domain()` converts op result → boundary.
+
+---
+
+## wiring — expose everywhere
+
+```python
+from emergent.wire import endpoint, Application, inject
+from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
+from emergent.wire.axis.surface.triggers.cli import CLITrigger
+from emergent.wire.compiler import fastapi_compile, cli_compile
+
+# Auth middleware
+http_auth = (
+    inject(AuthUser)
+        .using(auth_runner)
+        .from_request(HasAuth, lambda req: req.to_auth())
+        .on_reject(AuthErrorResponse.from_domain)
+        .build()
+)
+
+app = Application().mount(
+    # Public
+    endpoint(auth_runner)
+        .expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, TokenResponse).build())
+        .expose(CLITrigger("register", "Register user"), rrc(RegisterRequest, TokenResponse).build()),
+
+    # Protected
+    endpoint(game_runner)
+        .expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).use(http_auth).build())
+        .expose(CLITrigger("bet", "Place bet"), rrc(BetRequest, BetResponse).build()),
+)
+
+fastapi_app = fastapi_compile(app)
+cli_parser = cli_compile(app, prog="roulette")
+```
+
+---
+
+## store — data access
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+from emergent.wire.axis.schema import Identity
+from emergent.wire.axis.query import relational_store, MemoryRelationalProvider
+
+@dataclass
+class Transaction:
+    id: Annotated[str, Identity]
+    login: str
+    amount: int
+
+class GameStore:
+    def __init__(self) -> None:
+        self._provider = MemoryRelationalProvider[Transaction]()
+        self._transactions = relational_store(Transaction, self._provider)
+
+    async def get_history(self, login: str) -> list[Transaction]:
+        return await (
+            self._transactions
+            .filter(lambda t: t.login == login)
+            .order_by(lambda t: t.created_at.desc())
+            .limit(10)
+            .fetch_many()
+        )
+
+    async def insert(self, tx: Transaction) -> None:
+        await self._transactions.insert(tx)
+```
+
+---
+
+## storage — cache/kv
+
+```python
+from emergent.wire.axis.storage import kv, MemoryStorage, JsonCodec
+
+cache = kv(MemoryStorage(), JsonCodec[User]())
+
+await cache.set("alice", user)
+user = await cache.get("alice")
+```
+
+---
+
+# Part 2: Understand
+
+---
+
+## The five axes
+
+| Action | Axis | You write | Swappable target |
+|--------|------|-----------|------------------|
+| **Describe** | schema | `Annotated[str, cli.Help(...)]` | compiler (CLI, OpenAPI, SQL) |
+| **Access** | query | `store.filter(...).fetch_many()` | provider (Memory, SQL, HTTP) |
+| **Persist** | storage | `kv(backend, codec)` | backend (Memory, Redis) |
+| **Execute** | ops | `O.Returning[T, E]` + handler | runner |
+| **Expose** | surface | `endpoint().expose(trigger, codec)` | trigger (HTTP, CLI, Telegram) |
+
+Each axis = **Language × Target**. Swap target, keep code.
+
+---
+
+## schema
+
+Annotated fields. Each compiler reads its dialect.
+
+```python
+from emergent.wire.axis.schema import Identity, Unique, MaxLen
+from emergent.wire.axis.schema.dialects import sql, openapi, cli
+
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    email: Annotated[str,
+        Unique, MaxLen(255),        # universal
+        sql.Index("idx_email"),     # SQL only
+        openapi.Format("email"),    # OpenAPI only
+        cli.Help("User email"),     # CLI only
+    ]
+```
+
+---
+
+## query
+
+QuerySet builds AST. Provider executes.
+
+```python
+from emergent.wire.axis.query import relational_store, MemoryRelationalProvider
+
+users = relational_store(User, MemoryRelationalProvider[User]())
+
+active = await users.filter(lambda u: u.active).fetch_many()
+rich = await users.filter(lambda u: u.balance > 100).limit(10).fetch_many()
+```
+
+Swap `MemoryRelationalProvider` → `SQLProvider`. Same code.
+
+---
+
+## storage
+
+Pattern = capabilities + codec. Backend = implementation.
+
+```python
+from emergent.wire.axis.storage import kv, queue, MemoryStorage, JsonCodec
+
+# KV = Get + Set + Delete
+users = kv(MemoryStorage(), JsonCodec[User]())
+
+# Queue = Push + Pop + Peek
+tasks = queue(backend, JsonCodec[Task]())
+```
+
+---
+
+## ops
+
+Fields typed as ops = parallel dependencies.
+
+```python
+@dataclass(frozen=True, slots=True)
+class GetProfile(O.Returning[Profile, str]):
+    user_id: int
+    user: GetUser      # ↘ parallel
+    posts: GetPosts    # ↗ no dep between them
+```
+
+Framework runs `GetUser` and `GetPosts` in parallel, injects results.
+
+---
+
+## surface
+
+Codec = execution shape. Trigger = where.
+
+- `rrc` — request → response
+- `stateful` — state → ... → Done → execute
+- `HTTPRouteTrigger` — REST endpoint
+- `CLITrigger` — CLI subcommand
+- `TelegrindTrigger` — Telegram bot
+
+---
+
+## Tools
+
+```python
+from emergent import saga as S, cache as C, graph as G, idempotency as I
+
+# saga — rollback on failure
+checkout = S.step(reserve, release).then(lambda _: S.step(charge, refund))
+
+# cache — tiered
+cache = C.cache(key, fetch).tier(l1).tier(l2).build()
+
+# graph — parallel nodes
+@G.node
+class Profile:
+    @classmethod
+    async def __compose__(cls, user: FetchUser, posts: FetchPosts) -> Profile: ...
+
+# idempotency — exactly once
+executor = I.idempotent(charge).key(lambda r: f"pay:{r.id}").build()
+```
+
+---
+
+# Part 3: Extend
+
+---
+
+## Custom dialect
+
+```python
+@dataclass(frozen=True, slots=True)
+class GrpcFieldNumber(Capability):
+    number: int
+
+@dataclass
+class User:
+    id: Annotated[int, Identity, GrpcFieldNumber(1)]
+```
+
+---
+
+## Custom provider
+
+```python
+class SQLProvider(RelationalProvider[T]):
+    async def fetch_many(self, q: RelationalQuerySet[T]) -> list[T]:
+        stmt = select(self.model)
+        for op in q.ops:
+            match op:
+                case Filter(expr): stmt = stmt.where(compile_expr(expr))
+        return await self.session.scalars(stmt)
+```
+
+---
+
+## Custom backend
+
+```python
+class RedisBackend:
+    async def get(self, key: str) -> bytes | None:
+        return await self.client.get(key)
+    async def set(self, key: str, value: bytes) -> None:
+        await self.client.set(key, value)
+```
+
+---
+
+## Custom compiler
+
+```python
+def grpc_compile(app: Application) -> GrpcServer:
+    pairs = scan(app, GrpcTrigger, RequestResponseCodec)
+    for trigger, handler in pairs:
+        server.add_method(trigger.service, trigger.method, make_handler(handler))
+    return server
+```
+
+---
+
+## Stack
+
+| Layer | What |
+|-------|------|
+| emergent | ops, wire, saga, cache, graph, idempotency |
+| [nodnod](https://github.com/timoniq/nodnod) | dependency graphs |
+| [combinators.py](https://github.com/prostomarkeloff/combinators.py) | retry, timeout, fallback |
+| [kungfu](https://github.com/timoniq/kungfu) | Result, Option |
 
 ---
 
 <div align="center">
 
-**Declare topology. Let the framework optimize.**
+**Describe. Access. Persist. Execute. Expose.**
+
+**Plain Python. Portable programs.**
 
 </div>
