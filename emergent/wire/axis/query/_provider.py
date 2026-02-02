@@ -10,7 +10,7 @@ Each space has its own provider protocol.
 from __future__ import annotations
 
 import uuid
-from typing import TypeVar, Protocol, Generic, runtime_checkable
+from typing import Any, TypeVar, Protocol, Generic, runtime_checkable
 
 from emergent.wire.axis.query._relational import RelationalQuerySet
 from emergent.wire.axis.query._kv import KVQuerySet
@@ -44,6 +44,26 @@ class RelationalProvider(Protocol[T]):
 
     async def exists(self, query: RelationalQuerySet[T]) -> bool:
         """Check if any results exist."""
+        ...
+
+    async def aggregate(self, query: RelationalQuerySet[T]) -> dict[str, Any]:
+        """Execute aggregate query.
+
+        Returns dict mapping alias to aggregate value:
+            {"total": 1000, "avg_balance": 100, "user_count": 10}
+
+        Usage:
+            q = (
+                users
+                .filter(lambda u: u.active == True)
+                .aggregate(
+                    total=lambda u: u.balance.sum(),
+                    avg_balance=lambda u: u.balance.avg(),
+                    user_count=lambda u: u.count(),
+                )
+            )
+            result = await provider.aggregate(q)
+        """
         ...
 
 
@@ -179,6 +199,12 @@ class GroupByCapability(Protocol):
 
 
 @runtime_checkable
+class AggregateCapability(Protocol):
+    """Provider supports aggregate operations."""
+    pass
+
+
+@runtime_checkable
 class WindowCapability(Protocol):
     """Provider supports window functions."""
     pass
@@ -271,6 +297,7 @@ __all__ = (
     # Capabilities
     "JoinCapability",
     "GroupByCapability",
+    "AggregateCapability",
     "WindowCapability",
     "TransactionCapability",
     # ID Generation

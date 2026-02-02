@@ -11,9 +11,15 @@ These are IGNORED by other compilers (JSON Schema, Pydantic, etc.).
         created_at: Annotated[datetime, sql.ServerDefault("CURRENT_TIMESTAMP")]
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import Capability
+
+if TYPE_CHECKING:
+    from emergent.wire.axis._capability import SQLAlchemyContext
 
 
 class SQLCapability(Capability):
@@ -37,10 +43,19 @@ class Index(SQLCapability):
     name: str | None = None
     unique: bool = False
 
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        kwargs: dict[str, str | int | bool | None] = {**ctx.column_kwargs, "index": True}
+        if self.unique:
+            kwargs["unique"] = True
+        return replace(ctx, column_kwargs=kwargs)
+
 
 @dataclass(frozen=True, slots=True)
 class FullText(SQLCapability):
-    """Full-text search index (Postgres/MySQL specific)."""
+    """Full-text search index (Postgres/MySQL specific).
+
+    Table-level DDL — no compile_sqlalchemy (read directly by table compiler).
+    """
     pass
 
 
@@ -60,6 +75,9 @@ class Type(SQLCapability):
     """
     sql_type: str
 
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        return replace(ctx, column_kwargs={**ctx.column_kwargs, "type_": self.sql_type})
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Defaults
@@ -77,6 +95,9 @@ class ServerDefault(SQLCapability):
     """
     expression: str
 
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        return replace(ctx, column_kwargs={**ctx.column_kwargs, "server_default": self.expression})
+
 
 @dataclass(frozen=True, slots=True)
 class OnUpdate(SQLCapability):
@@ -86,6 +107,9 @@ class OnUpdate(SQLCapability):
         updated_at: Annotated[datetime, sql.OnUpdate("CURRENT_TIMESTAMP")]
     """
     expression: str
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        return replace(ctx, column_kwargs={**ctx.column_kwargs, "onupdate": self.expression})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -99,6 +123,8 @@ class Check(SQLCapability):
 
     Example:
         age: Annotated[int, sql.Check("age >= 0 AND age <= 150")]
+
+    Table-level DDL — no compile_sqlalchemy (read directly by table compiler).
     """
     expression: str
     name: str | None = None
@@ -108,6 +134,13 @@ class Check(SQLCapability):
 class PrimaryKey(SQLCapability):
     """Explicit primary key (usually inferred from Identity)."""
     autoincrement: bool = True
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        return replace(ctx, column_kwargs={
+            **ctx.column_kwargs,
+            "primary_key": True,
+            "autoincrement": self.autoincrement,
+        })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -126,6 +159,15 @@ class ForeignKey(SQLCapability):
     ondelete: str = "CASCADE"
     onupdate: str = "CASCADE"
 
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        # Store FK config in kwargs - compiler builds sqlalchemy.ForeignKey from these
+        return replace(ctx, column_kwargs={
+            **ctx.column_kwargs,
+            "fk_target": self.target,
+            "fk_ondelete": self.ondelete,
+            "fk_onupdate": self.onupdate,
+        })
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Table-Level
@@ -134,13 +176,19 @@ class ForeignKey(SQLCapability):
 
 @dataclass(frozen=True, slots=True)
 class TableName(SQLCapability):
-    """Override table name."""
+    """Override table name.
+
+    Table-level — no compile_sqlalchemy (read directly by table compiler).
+    """
     name: str
 
 
 @dataclass(frozen=True, slots=True)
 class CompositeIndex(SQLCapability):
-    """Index across multiple columns."""
+    """Index across multiple columns.
+
+    Table-level — no compile_sqlalchemy (read directly by table compiler).
+    """
     columns: tuple[str, ...]
     name: str | None = None
     unique: bool = False
@@ -148,7 +196,10 @@ class CompositeIndex(SQLCapability):
 
 @dataclass(frozen=True, slots=True)
 class CompositeUnique(SQLCapability):
-    """Unique constraint across multiple columns."""
+    """Unique constraint across multiple columns.
+
+    Table-level — no compile_sqlalchemy (read directly by table compiler).
+    """
     columns: tuple[str, ...]
     name: str | None = None
 

@@ -33,6 +33,32 @@ from emergent.wire.axis.query._expr import (
     EndsWith,
     IsNull,
     IsNotNull,
+    # Range
+    Between,
+    # Pattern matching
+    Like,
+    ILike,
+    Regex,
+    # Array operators
+    ArrayContains,
+    ArrayAny,
+    ArrayAll,
+    ArrayOverlap,
+    # JSON operators
+    JsonExtract,
+    JsonContains,
+    JsonHasKey,
+)
+
+from emergent.wire.axis.query._aggregate import (
+    AggregateExpr,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    ArrayAgg,
+    StringAgg,
 )
 
 
@@ -56,13 +82,22 @@ class FieldProxy:
         return Field(self.name)
 
     @staticmethod
-    def _wrap(value: Any) -> Expr:
-        """Wrap value as Expr if not already."""
+    def wrap(value: Any) -> Expr:
+        """Wrap value as Expr if not already.
+
+        Converts:
+        - FieldProxy → Field expression
+        - Expr → unchanged
+        - other → Const(value)
+        """
         if isinstance(value, FieldProxy):
             return value._to_expr()
         if isinstance(value, Expr):
             return value
         return Const(value)
+
+    # Alias for internal use
+    _wrap = wrap
 
     # Comparison operators
 
@@ -133,6 +168,143 @@ class FieldProxy:
         """Descending order: u.balance.desc()"""
         return OrderSpec(self.name, ascending=False)
 
+    # ─── Range ──────────────────────────────────────────────────────────────────
+
+    def between(self, low: Any, high: Any) -> Expr:
+        """Range check: u.balance.between(100, 1000)"""
+        return Between(self._to_expr(), self._wrap(low), self._wrap(high))
+
+    # ─── Pattern Matching ───────────────────────────────────────────────────────
+
+    def like(self, pattern: str) -> Expr:
+        """SQL LIKE: u.email.like('%@gmail.com')
+
+        Pattern: % = any chars, _ = single char.
+        """
+        return Like(self._to_expr(), pattern)
+
+    def ilike(self, pattern: str) -> Expr:
+        """Case-insensitive LIKE: u.email.ilike('%@GMAIL.COM')"""
+        return ILike(self._to_expr(), pattern)
+
+    def regex(self, pattern: str) -> Expr:
+        """Regex match: u.email.regex(r'^\\w+@\\w+\\.\\w+$')"""
+        return Regex(self._to_expr(), pattern)
+
+    # ─── Array Operators ────────────────────────────────────────────────────────
+
+    def array_contains(self, value: Any) -> Expr:
+        """Array contains value: u.tags.array_contains('vip')"""
+        return ArrayContains(self._to_expr(), value)
+
+    def array_any(self, *values: Any) -> Expr:
+        """Array contains any of values: u.tags.array_any('vip', 'admin')"""
+        return ArrayAny(self._to_expr(), values)
+
+    def array_all(self, *values: Any) -> Expr:
+        """Array contains all values: u.tags.array_all('vip', 'verified')"""
+        return ArrayAll(self._to_expr(), values)
+
+    def array_overlap(self, *values: Any) -> Expr:
+        """Arrays have overlap: u.tags.array_overlap('a', 'b')"""
+        return ArrayOverlap(self._to_expr(), values)
+
+    # ─── JSON Operators ─────────────────────────────────────────────────────────
+
+    def json(self, path: str) -> "JsonFieldProxy":
+        """JSON path access: u.metadata.json('profile.name') == 'alice'
+
+        Path is dot-separated: "profile.name" or "users.0.name"
+        Returns a JsonFieldProxy that supports comparison operators.
+        """
+        return JsonFieldProxy(self._to_expr(), path)
+
+    def json_contains(self, value: Any) -> Expr:
+        """JSON contains value/structure: u.metadata.json_contains({'role': 'admin'})"""
+        return JsonContains(self._to_expr(), value)
+
+    def json_has_key(self, key: str) -> Expr:
+        """JSON has key: u.metadata.json_has_key('profile')"""
+        return JsonHasKey(self._to_expr(), key)
+
+    # ─── Aggregates ─────────────────────────────────────────────────────────────
+
+    def sum(self) -> AggregateExpr:
+        """SUM(field): u.balance.sum()"""
+        return AggregateExpr(Sum(), self.name)
+
+    def avg(self) -> AggregateExpr:
+        """AVG(field): u.balance.avg()"""
+        return AggregateExpr(Avg(), self.name)
+
+    def min(self) -> AggregateExpr:
+        """MIN(field): u.balance.min()"""
+        return AggregateExpr(Min(), self.name)
+
+    def max(self) -> AggregateExpr:
+        """MAX(field): u.balance.max()"""
+        return AggregateExpr(Max(), self.name)
+
+    def count(self) -> AggregateExpr:
+        """COUNT(field): u.id.count()"""
+        return AggregateExpr(Count(), self.name)
+
+    def array_agg(self) -> AggregateExpr:
+        """ARRAY_AGG(field): u.tags.array_agg()"""
+        return AggregateExpr(ArrayAgg(), self.name)
+
+    def string_agg(self, separator: str = ",") -> AggregateExpr:
+        """STRING_AGG(field, sep): u.name.string_agg(', ')"""
+        return AggregateExpr(StringAgg(separator), self.name)
+
+
+class JsonFieldProxy:
+    """Proxy for JSON path that supports comparison operators.
+
+    Created by FieldProxy.json():
+        u.metadata.json('profile.name') == 'alice'
+        # → Eq(JsonExtract(Field("metadata"), "profile.name"), Const("alice"))
+    """
+
+    __slots__ = ("_base", "_path")
+
+    def __init__(self, base: Expr, path: str) -> None:
+        self._base = base
+        self._path = path
+
+    def _to_expr(self) -> JsonExtract:
+        return JsonExtract(self._base, self._path)
+
+    # Comparison operators
+
+    def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
+        return Eq(self._to_expr(), FieldProxy.wrap(other))
+
+    def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
+        return Ne(self._to_expr(), FieldProxy.wrap(other))
+
+    def __lt__(self, other: Any) -> Expr:
+        return Lt(self._to_expr(), FieldProxy.wrap(other))
+
+    def __le__(self, other: Any) -> Expr:
+        return Le(self._to_expr(), FieldProxy.wrap(other))
+
+    def __gt__(self, other: Any) -> Expr:
+        return Gt(self._to_expr(), FieldProxy.wrap(other))
+
+    def __ge__(self, other: Any) -> Expr:
+        return Ge(self._to_expr(), FieldProxy.wrap(other))
+
+    # Null checks
+
+    def is_null(self) -> Expr:
+        """JSON path value is null."""
+        return IsNull(self._to_expr())
+
+    def is_not_null(self) -> Expr:
+        """JSON path value is not null."""
+        return IsNotNull(self._to_expr())
+
 
 @dataclass(frozen=True, slots=True)
 class OrderSpec:
@@ -159,6 +331,14 @@ class EntityProxy(Generic[T]):
         # Validate field exists on entity
         # For now, just create proxy
         return FieldProxy(name)
+
+    def count(self) -> AggregateExpr:
+        """COUNT(*) without field reference.
+
+        Usage:
+            .aggregate(user_count=lambda u: u.count())
+        """
+        return AggregateExpr(Count(), None)
 
 
 def build_expr(entity: type[T], predicate: Callable[[EntityProxy[T]], Expr]) -> Expr:
@@ -195,6 +375,7 @@ def build_order(
 
 __all__ = (
     "FieldProxy",
+    "JsonFieldProxy",
     "OrderSpec",
     "EntityProxy",
     "build_expr",

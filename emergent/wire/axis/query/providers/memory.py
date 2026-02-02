@@ -18,12 +18,23 @@ from emergent.wire.axis.query._relational import (
     Limit,
     Offset,
     Distinct,
+    Aggregate,
+    AggregateSpec,
+)
+from emergent.wire.axis.query._aggregate import (
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    ArrayAgg,
+    StringAgg,
 )
 from emergent.wire.axis.query._kv import (
     KVQuerySet,
-    Get,
-    Set,
-    Delete,
+    KVGet,
+    KVSet,
+    KVDelete,
     Exists,
     Scan,
     Keys,
@@ -212,6 +223,130 @@ class MemoryRelationalProvider(Generic[T]):
         self._data = [item for item in self._data if id(item) not in to_delete]
         return original_len - len(self._data)
 
+    # ─── Aggregation ──────────────────────────────────────────────────────
+
+    async def aggregate(self, query: RelationalQuerySet[T]) -> dict[str, Any]:
+        """Execute aggregate query.
+
+        Usage:
+            q = (
+                users
+                .filter(lambda u: u.active == True)
+                .aggregate(
+                    total=lambda u: u.balance.sum(),
+                    avg_balance=lambda u: u.balance.avg(),
+                    user_count=lambda u: u.count(),
+                )
+            )
+            result = await provider.aggregate(q)
+            # {"total": 1000, "avg_balance": 100.0, "user_count": 10}
+        """
+        # Get filtered data (exclude Aggregate ops for data collection)
+        filter_query = RelationalQuerySet(
+            entity=query.entity,
+            ops=tuple(op for op in query.ops if not isinstance(op, Aggregate)),
+        )
+        data = self._execute(filter_query)
+
+        # Collect all aggregate specs
+        agg_specs: list[AggregateSpec] = []
+        for op in query.ops:
+            if isinstance(op, Aggregate):
+                agg_specs.extend(op.specs)
+
+        # Compute aggregates using pattern matching on typed AggregateFunc
+        result: dict[str, Any] = {}
+        for spec in agg_specs:
+            match spec.func:
+                case Count():
+                    if spec.field is None:
+                        # COUNT(*) - count all rows
+                        result[spec.alias] = len(data)
+                    else:
+                        # COUNT(field) - count non-null values
+                        result[spec.alias] = sum(
+                            1 for item in data
+                            if getattr(item, spec.field, None) is not None
+                        )
+
+                case Sum():
+                    if spec.field is None:
+                        result[spec.alias] = None
+                    else:
+                        values = [
+                            getattr(item, spec.field)
+                            for item in data
+                            if hasattr(item, spec.field)
+                            and getattr(item, spec.field) is not None
+                        ]
+                        result[spec.alias] = sum(values) if values else None
+
+                case Avg():
+                    if spec.field is None:
+                        result[spec.alias] = None
+                    else:
+                        values = [
+                            getattr(item, spec.field)
+                            for item in data
+                            if hasattr(item, spec.field)
+                            and getattr(item, spec.field) is not None
+                        ]
+                        result[spec.alias] = (
+                            sum(values) / len(values) if values else None
+                        )
+
+                case Min():
+                    if spec.field is None:
+                        result[spec.alias] = None
+                    else:
+                        values = [
+                            getattr(item, spec.field)
+                            for item in data
+                            if hasattr(item, spec.field)
+                            and getattr(item, spec.field) is not None
+                        ]
+                        result[spec.alias] = min(values) if values else None
+
+                case Max():
+                    if spec.field is None:
+                        result[spec.alias] = None
+                    else:
+                        values = [
+                            getattr(item, spec.field)
+                            for item in data
+                            if hasattr(item, spec.field)
+                            and getattr(item, spec.field) is not None
+                        ]
+                        result[spec.alias] = max(values) if values else None
+
+                case ArrayAgg():
+                    if spec.field is None:
+                        result[spec.alias] = []
+                    else:
+                        result[spec.alias] = [
+                            getattr(item, spec.field)
+                            for item in data
+                            if hasattr(item, spec.field)
+                        ]
+
+                case StringAgg(separator=sep):
+                    if spec.field is None:
+                        result[spec.alias] = ""
+                    else:
+                        values = [
+                            str(getattr(item, spec.field))
+                            for item in data
+                            if hasattr(item, spec.field)
+                            and getattr(item, spec.field) is not None
+                        ]
+                        result[spec.alias] = sep.join(values)
+
+                case _:
+                    # Unknown aggregate function - skip
+                    pass
+
+        return result
+
 
 # ─── Memory KV Provider ───────────────────────────────────────────────────────
 
@@ -244,21 +379,21 @@ class MemoryKVProvider(Generic[T]):
 
     async def get(self, query: KVQuerySet[T]) -> T | None:
         """Get by key."""
-        if not isinstance(query.op, Get):
-            raise TypeError(f"Expected Get op, got {type(query.op)}")
+        if not isinstance(query.op, KVGet):
+            raise TypeError(f"Expected KVGet op, got {type(query.op)}")
         return self._data.get(str(query.op.key))
 
     async def set(self, query: KVQuerySet[T]) -> None:
         """Set value."""
-        if not isinstance(query.op, Set):
-            raise TypeError(f"Expected Set op, got {type(query.op)}")
+        if not isinstance(query.op, KVSet):
+            raise TypeError(f"Expected KVSet op, got {type(query.op)}")
         self._data[str(query.op.key)] = query.op.value
         # TTL ignored in memory provider
 
     async def delete(self, query: KVQuerySet[T]) -> bool:
         """Delete by key."""
-        if not isinstance(query.op, Delete):
-            raise TypeError(f"Expected Delete op, got {type(query.op)}")
+        if not isinstance(query.op, KVDelete):
+            raise TypeError(f"Expected KVDelete op, got {type(query.op)}")
         key = str(query.op.key)
         if key in self._data:
             del self._data[key]

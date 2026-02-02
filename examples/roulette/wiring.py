@@ -14,21 +14,39 @@ Run:
 
 from __future__ import annotations
 
-from emergent.wire import endpoint, Application, inject
+from dataclasses import dataclass
+from typing import Protocol
+
+from nodnod import Scope
+
+from emergent.wire.axis.surface import endpoint, Application, empty_runner
+from emergent.wire.axis.surface.capabilities._base import ScopeEnricher
 from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.codecs import immediate_factory
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
-from emergent.wire.compiler import fastapi_compile, cli_compile, cli_run
+from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
+from emergent.wire.axis.surface.capabilities import SurfaceCapability, EnricherNext
+from emergent.wire.compile.targets import fastapi, cli
+from emergent.wire.compile.targets.cli import cli_run
 
-from roulette.auth.ops import Authenticate, AuthUser
+from kungfu import Result, Ok, Error
+
+from telegrinder.bot.rules import Command
+
+from roulette.auth.ops import Authenticate, TelegramIdentity, AuthUser
 from roulette.auth.runner import auth_runner
 from roulette.game.runner import game_runner
+from roulette.bot.runner import bot_runner, StartBot, BotStarted
+from roulette.help import HelpResponse
 
 from roulette.requests import (
     RegisterRequest,
     LoginRequest,
     BetRequest,
     BalanceRequest,
+    TelegramBalanceRequest,
+    TelegramBetRequest,
 )
 from roulette.responses import (
     TokenResponse,
@@ -38,81 +56,186 @@ from roulette.responses import (
 )
 
 
-# ─── Middleware ───────────────────────────────────────────────────────────────
-
-
-from typing import Protocol
+# ─── Auth Protocol ───────────────────────────────────────────────────────────
 
 
 class HasAuth(Protocol):
-    """Request that can provide auth token."""
-    def to_auth(self) -> Authenticate: ...
+    """Request that can provide auth op."""
+    def to_auth(self) -> Authenticate | TelegramIdentity: ...
 
 
-# HTTP auth middleware: inject AuthUser from request's token
-http_auth = (
-    inject(AuthUser)
-        .using(auth_runner)
-        .from_request(HasAuth, lambda req: req.to_auth())
-        .on_reject(AuthErrorResponse.from_domain)
-        .build()
+# ─── Auth Enricher ───────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class Auth(SurfaceCapability, ScopeEnricher):
+    """Auth enricher — extracts auth op from request via HasAuth protocol.
+
+    Usage:
+        endpoint(runner).expose(
+            trigger,
+            rrc(BalanceRequest, BalanceResponse),
+            Auth(BalanceRequest),
+        )
+    """
+    request_cls: type[HasAuth]
+
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | AuthErrorResponse:
+        # Get request from scope
+        req_value = scope.get(self.request_cls)
+        if req_value is None:
+            return AuthErrorResponse(error="request not in scope")
+
+        # Extract auth op via protocol
+        req: HasAuth = req_value.value
+        auth_op: Authenticate | TelegramIdentity = req.to_auth()
+
+        # Run auth
+        result: Result[AuthUser, str] = await auth_runner.run(auth_op)
+
+        match result:
+            case Ok(user):
+                scope.inject(AuthUser, user)
+                return await call(scope)
+            case Error(e):
+                return AuthErrorResponse(error=e)
+
+
+# ─── Application ─────────────────────────────────────────────────────────────
+
+
+def _build_endpoints():
+    """Build endpoints list."""
+    endpoints = [
+        # Register — public
+        endpoint(auth_runner)
+            .expose(
+                HTTPRouteTrigger("POST", "/register"),
+                rrc(RegisterRequest, TokenResponse),
+            )
+            .expose(
+                CLITrigger("register", "Register new user"),
+                rrc(RegisterRequest, TokenResponse),
+            ),
+
+        # Login — public
+        endpoint(auth_runner)
+            .expose(
+                HTTPRouteTrigger("POST", "/login"),
+                rrc(LoginRequest, TokenResponse),
+            )
+            .expose(
+                CLITrigger("login", "Login to account"),
+                rrc(LoginRequest, TokenResponse),
+            ),
+
+        # Balance — requires auth
+        endpoint(game_runner)
+            .expose(
+                HTTPRouteTrigger("GET", "/balance"),
+                rrc(BalanceRequest, BalanceResponse),
+                Auth(BalanceRequest),
+            ),
+
+        # Bet — requires auth
+        endpoint(game_runner)
+            .expose(
+                HTTPRouteTrigger("POST", "/bet"),
+                rrc(BetRequest, BetResponse),
+                Auth(BetRequest),
+            )
+            .expose(
+                CLITrigger("bet", "Place a bet"),
+                rrc(BetRequest, BetResponse),
+            ),
+    ]
+
+    # Telegram endpoints
+    endpoints.extend([
+        endpoint(auth_runner)
+            .expose(
+                TelegrindTrigger(Command("register")),
+                rrc(RegisterRequest, TokenResponse),
+            ),
+        endpoint(auth_runner)
+            .expose(
+                TelegrindTrigger(Command("login")),
+                rrc(LoginRequest, TokenResponse),
+            ),
+        endpoint(game_runner)
+            .expose(
+                TelegrindTrigger(Command("balance")),
+                rrc(TelegramBalanceRequest, BalanceResponse),
+                Auth(TelegramBalanceRequest),
+            ),
+        endpoint(game_runner)
+            .expose(
+                TelegrindTrigger(Command("bet")),
+                rrc(TelegramBetRequest, BetResponse),
+                Auth(TelegramBetRequest),
+            ),
+    ])
+
+    # Bot CLI command
+    endpoints.append(
+        endpoint(bot_runner)
+            .expose(
+                CLITrigger("bot", "Start Telegram bot"),
+                rrc(StartBot, BotStarted),
+            )
+    )
+
+    return endpoints
+
+
+# Build app without help first
+_base_app = Application().mount(*_build_endpoints())
+
+
+# ─── Help Generation ─────────────────────────────────────────────────────────
+
+
+from emergent.wire.compile.targets.telegrinder import generate_help_from_command_rules
+
+# Descriptions — callable for i18n support
+_descriptions: dict[type, str] = {
+    RegisterRequest: "Register new account",
+    LoginRequest: "Login to your account",
+    TelegramBalanceRequest: "Check your balance",
+    TelegramBetRequest: "Place a bet",
+}
+
+_help_text = generate_help_from_command_rules(
+    _base_app,
+    get_description=lambda cls: _descriptions.get(cls, ""),
+    order=[RegisterRequest, LoginRequest, TelegramBalanceRequest, TelegramBetRequest],
+    template="/{name} {args} — {description}",
+    header="Roulette Bot\n\nCommands:",
+    footer="\nGood luck!",
+)
+
+# Add help endpoint with generated text
+app = _base_app.mount(
+    endpoint(empty_runner())
+        .expose(
+            TelegrindTrigger(Command("help")),
+            immediate_factory(lambda: HelpResponse(text=_help_text)),
+        )
 )
 
 
-# ─── Application ──────────────────────────────────────────────────────────────
+# ─── Compilers ───────────────────────────────────────────────────────────────
 
 
-app = Application().mount(
-    # Register — public
-    endpoint(auth_runner)
-        .expose(
-            HTTPRouteTrigger("POST", "/register"),
-            rrc(RegisterRequest, TokenResponse).build(),
-        )
-        .expose(
-            CLITrigger("register", "Register new user"),
-            rrc(RegisterRequest, TokenResponse).build(),
-        ),
+fastapi_app = fastapi.compile(app)
+cli_parser = cli.compile(app, prog="roulette")
 
-    # Login — public
-    endpoint(auth_runner)
-        .expose(
-            HTTPRouteTrigger("POST", "/login"),
-            rrc(LoginRequest, TokenResponse).build(),
-        )
-        .expose(
-            CLITrigger("login", "Login to account"),
-            rrc(LoginRequest, TokenResponse).build(),
-        ),
+from emergent.wire.compile.targets import telegrinder as tg_compile
 
-    # Balance — requires auth
-    endpoint(game_runner)
-        .expose(
-            HTTPRouteTrigger("GET", "/balance"),
-            rrc(BalanceRequest, BalanceResponse).use(http_auth).build(),
-        ),
-
-    # Bet — requires auth
-    endpoint(game_runner)
-        .expose(
-            HTTPRouteTrigger("POST", "/bet"),
-            rrc(BetRequest, BetResponse).use(http_auth).build(),
-        )
-        .expose(
-            CLITrigger("bet", "Place a bet"),
-            rrc(BetRequest, BetResponse).build(),  # CLI uses local session
-        ),
-)
+telegram_dp = tg_compile.compile(app)
 
 
-# ─── Compilers ────────────────────────────────────────────────────────────────
-
-
-fastapi_app = fastapi_compile(app)
-cli_parser = cli_compile(app, prog="roulette")
-
-
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+# ─── Entry Point ─────────────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":

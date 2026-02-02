@@ -4,40 +4,62 @@ Where endpoints live. The visible boundary between
 internal domain logic and external clients.
 
     from emergent.wire.axis import surface
+    from emergent.wire.axis.surface import capabilities as C
 
     # Primitives
     app = surface.application()
-    endpoint = surface.endpoint(runner).expose(trigger, codec)
+    endpoint = surface.endpoint(runner)
     stack = surface.app_stack().root(app).mount("sub", other_app)
+
+    # Scan
+    pairs = surface.scan(app, HTTPRouteTrigger)
 
     # Codecs (how to execute)
     from emergent.wire.axis.surface import codecs
-    codec = codecs.rrc(Request, Response).build()
+    codec = codecs.rrc(Request, Response)
 
     # Triggers (where to attach)
     from emergent.wire.axis.surface import triggers
     trigger = triggers.http.HTTPRouteTrigger("GET", "/users")
 
-    # Scope (middleware — what context to inject)
-    from emergent.wire.axis.surface import scope
-    auth_mw = scope.inject(AuthUser).using(runner).from_request(fn).on_reject(fn).build()
-
-    # Capabilities (modifiers for Trigger × Codec space)
-    from emergent.wire.axis.surface import capabilities as C
-    C.Prefix.of("api", "v1")
-    C.Tag.of("auth")
-    C.Timeout.seconds(30)
+    # Capabilities (modifiers) — all behavior via capabilities
+    endpoint = surface.endpoint(runner).expose(
+        trigger,
+        codec,
+        C.enricher.Provide(type=AuthUser, ...),  # auth
+        C.enricher.Timeout(seconds=5.0),         # timeout
+    )
 """
 
 from emergent.wire.axis.surface._endpoint import Endpoint, endpoint
 from emergent.wire.axis.surface._app import Application, application
 from emergent.wire.axis.surface._stack import AppStack, app_stack
-from emergent.wire._handler import Handler
+from emergent.wire.axis.surface._handler import Handler
+from emergent.wire.axis.surface._scan import scan, scan_endpoint, scan_stack, StackView
+from emergent.wire.axis.surface._types import Trigger, Codec, Exposure
 
 # Submodules
-from emergent.wire.axis.surface import codecs, triggers, scope, capabilities
+from emergent.wire.axis.surface import codecs, triggers, capabilities
+
+# Empty runner for immediate codecs
+from emergent.ops import ops as _ops, Runner as _Runner
+
+
+def empty_runner() -> _Runner:
+    """Create empty runner for immediate codecs.
+
+    Example::
+
+        endpoint(empty_runner()).expose(
+            TelegrindTrigger(Command("help")),
+            immediate(HelpResponse),
+        )
+    """
+    return _ops().compile()
+
 
 __all__ = (
+    # Core
     "Endpoint",
     "endpoint",
     "Application",
@@ -45,8 +67,19 @@ __all__ = (
     "AppStack",
     "app_stack",
     "Handler",
+    # Scan
+    "scan",
+    "scan_endpoint",
+    "scan_stack",
+    "StackView",
+    # Types
+    "Trigger",
+    "Codec",
+    "Exposure",
+    # Submodules
     "codecs",
     "triggers",
-    "scope",
     "capabilities",
+    # Helper
+    "empty_runner",
 )

@@ -22,6 +22,9 @@ from emergent.wire.axis.schema.dialects.sql import SQLCapability
 from emergent.wire.axis.schema.dialects.openapi import OpenAPICapability
 from emergent.wire.axis.schema.dialects.pydantic import PydanticCapability
 from emergent.wire.axis.schema.dialects.cli import CLICapability
+from emergent.wire.axis.schema.dialects.tg import TelegramCapability
+from emergent.wire.axis.schema.dialects.compose import ComposeCapability
+from emergent.wire.axis.schema.dialects.api import APICapability
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -34,6 +37,9 @@ DIALECT_BASES: dict[str, type[Capability]] = {
     "openapi": OpenAPICapability,
     "pydantic": PydanticCapability,
     "cli": CLICapability,
+    "tg": TelegramCapability,
+    "compose": ComposeCapability,
+    "api": APICapability,
 }
 
 

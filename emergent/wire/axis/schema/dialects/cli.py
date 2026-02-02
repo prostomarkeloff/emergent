@@ -11,9 +11,16 @@ These are IGNORED by other compilers (FastAPI, Pydantic, etc.)
         output: Annotated[str, cli.Choices("json", "yaml", "text")]
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import Capability
+
+if TYPE_CHECKING:
+    from emergent.wire.axis._capability import ArgparseContext
 
 
 class CLICapability(Capability):
@@ -35,6 +42,9 @@ class Help(CLICapability):
     """
     text: str
 
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "help": self.text})
+
 
 @dataclass(frozen=True, slots=True)
 class Metavar(CLICapability):
@@ -45,6 +55,9 @@ class Metavar(CLICapability):
         # Shows: --file FILE
     """
     name: str
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "metavar": self.name})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -93,6 +106,9 @@ class Choices(CLICapability):
     def __init__(self, *values: str) -> None:
         object.__setattr__(self, "values", values)
 
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "choices": list(self.values)})
+
 
 @dataclass(frozen=True, slots=True)
 class Nargs(CLICapability):
@@ -104,6 +120,9 @@ class Nargs(CLICapability):
         pair: Annotated[list[str], cli.Nargs(2)]     # exactly 2
     """
     count: str | int  # "+", "*", "?", or int
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "nargs": self.count})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,6 +140,9 @@ class Action(CLICapability):
     """
     action: str
 
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "action": self.action})
+
 
 @dataclass(frozen=True, slots=True)
 class Append(CLICapability):
@@ -130,7 +152,9 @@ class Append(CLICapability):
         includes: Annotated[list[str], cli.Append()]
         # --include foo --include bar → ["foo", "bar"]
     """
-    pass
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "action": "append"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +165,9 @@ class Count(CLICapability):
         verbose: Annotated[int, cli.Count()]
         # -v -v -v → 3
     """
-    pass
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "action": "count", "default": 0})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -158,6 +184,12 @@ class Env(CLICapability):
     """
     var: str
 
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        env_val = os.environ.get(self.var)
+        if env_val is not None:
+            return replace(ctx, kwargs={**ctx.kwargs, "default": env_val})
+        return ctx
+
 
 @dataclass(frozen=True, slots=True)
 class Required(CLICapability):
@@ -166,7 +198,9 @@ class Required(CLICapability):
     Example:
         config: Annotated[str, cli.Flag("--config"), cli.Required()]
     """
-    pass
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, kwargs={**ctx.kwargs, "required": True})
 
 
 __all__ = (

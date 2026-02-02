@@ -19,6 +19,7 @@ from typing import Any, Callable, Generic, TypeVar
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import EntityProxy, FieldProxy, OrderSpec
 from emergent.wire.axis.query._relational import RelationalQuerySet, relational
+from emergent.wire.axis.query._aggregate import AggregateExpr
 from emergent.wire.axis.query._kv import kv
 from emergent.wire.axis.query._provider import (
     RelationalProvider,
@@ -159,6 +160,20 @@ class BoundRelationalQuerySet(Generic[T]):
     def distinct(self) -> BoundRelationalQuerySet[T]:
         return BoundRelationalQuerySet(self._query.distinct(), self._provider)
 
+    def aggregate(
+        self,
+        **aggregates: Callable[[EntityProxy[T]], AggregateExpr],
+    ) -> BoundRelationalQuerySet[T]:
+        """Add aggregates (chainable).
+
+        Usage:
+            result = await users.filter(...).aggregate(
+                total=lambda u: u.balance.sum(),
+                count=lambda u: u.count(),
+            ).fetch_aggregates()
+        """
+        return BoundRelationalQuerySet(self._query.aggregate(**aggregates), self._provider)
+
     # ─── Terminal (executes) ──────────────────────────────────────────────
 
     async def fetch_one(self) -> T | None:
@@ -180,6 +195,19 @@ class BoundRelationalQuerySet(Generic[T]):
     async def first(self) -> T | None:
         """Fetch first result."""
         return await self.limit(1).fetch_one()
+
+    async def fetch_aggregates(self) -> dict[str, Any]:
+        """Execute aggregate query.
+
+        Usage:
+            result = await users.filter(lambda u: u.active).aggregate(
+                total=lambda u: u.balance.sum(),
+                avg_balance=lambda u: u.balance.avg(),
+                user_count=lambda u: u.count(),
+            ).fetch_aggregates()
+            # {"total": 1000, "avg_balance": 100.0, "user_count": 10}
+        """
+        return await self._provider.aggregate(self._query)
 
     # ─── Access raw query ─────────────────────────────────────────────────
 

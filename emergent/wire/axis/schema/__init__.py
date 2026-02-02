@@ -1,40 +1,30 @@
 """Schema axis — dataclass annotations that compile to multiple backends.
 
-Dataclasses with Annotated fields carry semantic metadata that compilers translate
-to backend-specific constructs (SQLAlchemy models, OpenAPI schemas, Pydantic models).
-
     from emergent.wire.axis.schema import (
-        # Universal capabilities (all compilers understand)
-        Identity, Unique, Ref, Min, Max, MinLen, MaxLen, Pattern, OneOf, Either,
-        # Common patterns (pre-built capability tuples)
-        Id, Email, Slug, Username,
-        # Introspection
-        inspect_dataclass, FieldInfo,
+        Identity, Unique, Min, Max, MinLen, MaxLen, Pattern, Doc,
+        PydanticContext, OpenAPIContext, openapi_schema,
     )
-    from emergent.wire.axis.schema.dialects import sql, openapi, pydantic
 
     @dataclass
     class User:
-        id: Annotated[int, Id]
-        email: Annotated[str,
-            Email,                       # Pattern: Unique + MaxLen(255)
-            sql.Index("idx_email"),      # SQL only
-            openapi.Format("email"),     # OpenAPI only
-            pydantic.Strict(),           # Pydantic only
-        ]
-
-Each compiler takes what it understands and ignores the rest.
+        email: Annotated[str, Unique, MaxLen(255), Doc("User email")]
 """
 
-# Universal capabilities
 from emergent.wire.axis.schema._universal import (
     Capability,
     UniversalCapability,
+    SchemaCapability,
+    schema_meta,
+    get_schema_meta,
+    get_schema_capability,
     Identity,
     Unique,
     Ref,
     Min,
     Max,
+    ExclusiveMin,
+    ExclusiveMax,
+    MultipleOf,
     MinLen,
     MaxLen,
     Pattern,
@@ -45,19 +35,27 @@ from emergent.wire.axis.schema._universal import (
     Deprecated,
 )
 
-# Compilation protocols (for custom capabilities)
-from emergent.wire.axis.schema._compilable import (
-    OpenAPICompilable,
-    SQLAlchemyCompilable,
+from emergent.wire.axis._capability import (
+    PydanticContext,
+    OpenAPIContext,
+    ArgparseContext,
+    SQLAlchemyContext,
     PydanticCompilable,
-    CLICompilable,
-    ProtobufCompilable,
-    compile_openapi,
-    compile_pydantic,
-    compile_cli,
+    OpenAPICompilable,
+    ArgparseCompilable,
+    SQLAlchemyCompilable,
+    openapi_schema,
+    argparse_arg,
+    sqlalchemy_column,
+    combine,
 )
 
-# Patterns (common capability compositions)
+from emergent.wire.axis.schema._compilable import (
+    OpenAPISchema,
+    SQLAlchemyConfig,
+    ProtobufSchema,
+)
+
 from emergent.wire.axis.schema._patterns import (
     Id,
     Email,
@@ -72,7 +70,6 @@ from emergent.wire.axis.schema._patterns import (
     UniqueValue,
 )
 
-# Introspection
 from emergent.wire.axis.schema._inspect import (
     FieldInfo,
     inspect_field,
@@ -81,19 +78,25 @@ from emergent.wire.axis.schema._inspect import (
     DIALECT_BASES,
 )
 
-# Dialects namespace
 from emergent.wire.axis.schema import dialects
 
 __all__ = (
     # Base
     "Capability",
     "UniversalCapability",
-    # Universal capabilities
+    "SchemaCapability",
+    "schema_meta",
+    "get_schema_meta",
+    "get_schema_capability",
+    # Universal
     "Identity",
     "Unique",
     "Ref",
     "Min",
     "Max",
+    "ExclusiveMin",
+    "ExclusiveMax",
+    "MultipleOf",
     "MinLen",
     "MaxLen",
     "Pattern",
@@ -102,15 +105,25 @@ __all__ = (
     "Embedded",
     "Doc",
     "Deprecated",
-    # Compilation protocols
-    "OpenAPICompilable",
-    "SQLAlchemyCompilable",
+    # Contexts
+    "PydanticContext",
+    "OpenAPIContext",
+    "ArgparseContext",
+    "SQLAlchemyContext",
+    # Protocols
     "PydanticCompilable",
-    "CLICompilable",
-    "ProtobufCompilable",
-    "compile_openapi",
-    "compile_pydantic",
-    "compile_cli",
+    "OpenAPICompilable",
+    "ArgparseCompilable",
+    "SQLAlchemyCompilable",
+    # Helpers (pydantic uses FieldInfo.merge_field_infos directly)
+    "openapi_schema",
+    "argparse_arg",
+    "sqlalchemy_column",
+    "combine",
+    # TypedDicts
+    "OpenAPISchema",
+    "SQLAlchemyConfig",
+    "ProtobufSchema",
     # Patterns
     "Id",
     "Email",

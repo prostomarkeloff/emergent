@@ -26,13 +26,13 @@ T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
-class Get:
+class KVGet:
     """Get by key."""
     key: Any
 
 
 @dataclass(frozen=True, slots=True)
-class Set:
+class KVSet:
     """Set key-value."""
     key: Any
     value: Any
@@ -40,7 +40,7 @@ class Set:
 
 
 @dataclass(frozen=True, slots=True)
-class Delete:
+class KVDelete:
     """Delete by key."""
     key: Any
 
@@ -64,7 +64,12 @@ class Keys:
 
 
 # Union type
-KVOp = Get | Set | Delete | Exists | Scan | Keys
+KVOp = KVGet | KVSet | KVDelete | Exists | Scan | Keys
+
+# Backward compatibility aliases
+Get = KVGet
+Set = KVSet
+Delete = KVDelete
 
 
 # ─── QuerySet ─────────────────────────────────────────────────────────────────
@@ -88,7 +93,7 @@ class KVQuerySet(Generic[T]):
             users.get("alice")
             users.get(123)
         """
-        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Get(key))
+        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVGet(key))
 
     def set(self, key: Any, value: T, ttl: int | None = None) -> KVQuerySet[T]:
         """Set key-value with optional TTL.
@@ -97,7 +102,7 @@ class KVQuerySet(Generic[T]):
             users.set("alice", user)
             users.set("alice", user, ttl=3600)  # expires in 1 hour
         """
-        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Set(key, value, ttl))
+        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVSet(key, value, ttl))
 
     def delete(self, key: Any) -> KVQuerySet[T]:
         """Delete by key.
@@ -105,7 +110,7 @@ class KVQuerySet(Generic[T]):
         Usage:
             users.delete("alice")
         """
-        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Delete(key))
+        return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVDelete(key))
 
     def exists(self, key: Any) -> KVQuerySet[T]:
         """Check if key exists.
@@ -160,14 +165,18 @@ def kv(entity: type[T], key: Callable[[T], Any]) -> KVQuerySet[T]:
 
 
 __all__ = (
-    # Operations
-    "Get",
-    "Set",
-    "Delete",
+    # Operations (new names)
+    "KVGet",
+    "KVSet",
+    "KVDelete",
     "Exists",
     "Scan",
     "Keys",
     "KVOp",
+    # Backward compat aliases
+    "Get",
+    "Set",
+    "Delete",
     # QuerySet
     "KVQuerySet",
     "kv",

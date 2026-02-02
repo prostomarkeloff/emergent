@@ -6,10 +6,12 @@ Axes are orthogonal dimensions of composition:
 - schema: dataclass annotations → backend-specific models
 - query: typed query building (relational, kv, document, api spaces)
 
-Fundamentals (codecs, triggers) define WHAT.
-Axes define HOW to compose and WHERE to put.
+    from emergent.wire.axis import surface, storage, schema, query
 """
 
 from emergent.wire.axis import surface, storage, schema, query
 
-__all__ = ("surface", "storage", "schema", "query")
+# Root capability re-export
+from emergent.wire.axis._capability import Capability
+
+__all__ = ("surface", "storage", "schema", "query", "Capability")

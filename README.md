@@ -27,12 +27,13 @@ from typing import Annotated
 from kungfu import Result, Ok, Error
 
 from emergent import ops as O
-from emergent.wire import endpoint, Application
+from emergent.wire.axis.surface import endpoint, Application
 from emergent.wire.axis.surface.codecs.rrc import rrc
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.schema.dialects import cli
-from emergent.wire.compiler import fastapi_compile, cli_compile
+from emergent.wire.compile.targets import fastapi, cli as cli_target
+from emergent.wire.compile.targets.cli import cli_run
 
 
 # ─── Domain ──────────────────────────────────────────────────────────────────
@@ -96,16 +97,15 @@ class GreetResponse:
 
 app = Application().mount(
     endpoint(runner)
-        .expose(HTTPRouteTrigger("POST", "/greet"), rrc(GreetRequest, GreetResponse).build())
-        .expose(CLITrigger("greet", "Greet someone"), rrc(GreetRequest, GreetResponse).build())
+        .expose(HTTPRouteTrigger("POST", "/greet"), rrc(GreetRequest, GreetResponse))
+        .expose(CLITrigger("greet", "Greet someone"), rrc(GreetRequest, GreetResponse))
 )
 
-fastapi_app = fastapi_compile(app)
-cli_parser = cli_compile(app, prog="app")
+fastapi_app = fastapi.compile(app)
+cli_parser = cli_target.compile(app, prog="app")
 
 
 if __name__ == "__main__":
-    from emergent.wire.compiler import cli_run
     cli_run(cli_parser)
 ```
 
@@ -118,7 +118,7 @@ uvicorn app:fastapi_app --reload
 
 # CLI
 python app.py greet Alice
-# → GreetResponse(message='Hello, vasya!', error=None)
+# → GreetResponse(message='Hello, Alice!', error=None)
 ```
 
 ---
@@ -189,13 +189,13 @@ game_runner = (
 ```python
 from dataclasses import dataclass
 from typing import Annotated
-from emergent.wire.axis.schema.dialects import cli, openapi
+from emergent.wire.axis.schema.dialects import cli, openapi, tg
 
 @dataclass
 class BetRequest:
     token: Annotated[str, openapi.Description("Auth token")]
-    bet: Annotated[str, cli.Help("red, black, or 0-36"), cli.Positional()]
-    amount: Annotated[int, cli.Help("Bet amount"), cli.Positional()]
+    bet: Annotated[str, cli.Help("red, black, or 0-36"), cli.Positional(), tg.CommandArg()]
+    amount: Annotated[int, cli.Help("Bet amount"), cli.Positional(), tg.CommandArg()]
 
     def to_domain(self) -> PlaceBet:
         return PlaceBet(bet=self.bet, amount=self.amount)
@@ -212,19 +212,21 @@ class BetRequest:
 
 ```python
 from dataclasses import dataclass
+from typing import Annotated
 from kungfu import Result, Ok, Error
+from emergent.wire.axis.schema.dialects import tg
 
 @dataclass
 class BetResponse:
-    won: bool | None = None
-    payout: int | None = None
+    result: Annotated[str | None, tg.Bold()] = None
+    payout: Annotated[int | None, tg.Bold()] = None
     error: str | None = None
 
     @classmethod
     def from_domain(cls, dom: Result[BetResult, str]) -> "BetResponse":
         match dom:
             case Ok(r):
-                return cls(won=r.won, payout=r.payout)
+                return cls(result="Won!" if r.won else "Lost", payout=r.payout)
             case Error(e):
                 return cls(error=e)
 ```
@@ -236,35 +238,53 @@ class BetResponse:
 ## wiring — expose everywhere
 
 ```python
-from emergent.wire import endpoint, Application, inject
+from nodnod import Scope
+
+from emergent.wire.axis.surface import endpoint, Application
 from emergent.wire.axis.surface.codecs.rrc import rrc
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
-from emergent.wire.compiler import fastapi_compile, cli_compile
+from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
+from emergent.wire.axis.surface.capabilities import SurfaceCapability, ScopeEnricher, EnricherNext
+from emergent.wire.compile.targets import fastapi, cli
 
-# Auth middleware
-http_auth = (
-    inject(AuthUser)
-        .using(auth_runner)
-        .from_request(HasAuth, lambda req: req.to_auth())
-        .on_reject(AuthErrorResponse.from_domain)
-        .build()
-)
+from telegrinder.bot.rules import Command
+
+
+# Custom auth enricher
+@dataclass(frozen=True, slots=True)
+class Auth(SurfaceCapability, ScopeEnricher):
+    request_cls: type[HasAuth]
+
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | AuthErrorResponse:
+        req: HasAuth = scope.get(self.request_cls).value
+        result = await auth_runner.run(req.to_auth())
+        match result:
+            case Ok(user):
+                scope.inject(AuthUser, user)
+                return await call(scope)
+            case Error(e):
+                return AuthErrorResponse(error=e)
+
 
 app = Application().mount(
     # Public
     endpoint(auth_runner)
-        .expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, TokenResponse).build())
-        .expose(CLITrigger("register", "Register user"), rrc(RegisterRequest, TokenResponse).build()),
+        .expose(HTTPRouteTrigger("POST", "/register"), rrc(RegisterRequest, TokenResponse))
+        .expose(CLITrigger("register", "Register user"), rrc(RegisterRequest, TokenResponse)),
 
     # Protected
     endpoint(game_runner)
-        .expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse).use(http_auth).build())
-        .expose(CLITrigger("bet", "Place bet"), rrc(BetRequest, BetResponse).build()),
+        .expose(HTTPRouteTrigger("POST", "/bet"), rrc(BetRequest, BetResponse), Auth(BetRequest))
+        .expose(CLITrigger("bet", "Place bet"), rrc(BetRequest, BetResponse)),
+
+    # Telegram
+    endpoint(game_runner)
+        .expose(TelegrindTrigger(Command("bet")), rrc(TelegramBetRequest, BetResponse), Auth(TelegramBetRequest)),
 )
 
-fastapi_app = fastapi_compile(app)
-cli_parser = cli_compile(app, prog="roulette")
+fastapi_app = fastapi.compile(app)
+cli_parser = cli.compile(app, prog="roulette")
 ```
 
 ---
@@ -320,17 +340,133 @@ user = await cache.get("alice")
 
 ---
 
-## The five axes
+## The four axes
 
 | Action | Axis | You write | Swappable target |
 |--------|------|-----------|------------------|
 | **Describe** | schema | `Annotated[str, cli.Help(...)]` | compiler (CLI, OpenAPI, SQL) |
 | **Access** | query | `store.filter(...).fetch_many()` | provider (Memory, SQL, HTTP) |
 | **Persist** | storage | `kv(backend, codec)` | backend (Memory, Redis) |
-| **Execute** | ops | `O.Returning[T, E]` + handler | runner |
 | **Expose** | surface | `endpoint().expose(trigger, codec)` | trigger (HTTP, CLI, Telegram) |
 
 Each axis = **Language × Target**. Swap target, keep code.
+
+---
+
+## Wire architecture
+
+```
+emergent/wire/
+├── axis/                          # FOUR AXES
+│   ├── _capability.py             # ROOT Capability + compilation contexts
+│   ├── surface/                   # WHERE + HOW to execute (API surface)
+│   │   ├── codecs/                # rrc, stateful, immediate
+│   │   ├── triggers/              # http, cli, telegrinder
+│   │   └── capabilities/          # enrichers, transforms
+│   ├── storage/                   # HOW to persist (KV, Queue, PubSub)
+│   ├── schema/                    # WHAT shape data takes (annotations)
+│   │   └── dialects/              # cli, openapi, sql, pydantic, tg, compose
+│   └── query/                     # HOW to access data (QuerySets)
+│       └── providers/             # memory, sql
+└── compile/                       # Application → Framework artifacts
+    └── targets/                   # fastapi, cli, telegrinder
+```
+
+---
+
+## Capability system — self-contained compiler plugins
+
+**Capabilities are self-contained.** Compiler calls `compile_*()` methods and collects results.
+
+```python
+from dataclasses import dataclass, replace
+from emergent.wire.axis._capability import (
+    Capability,
+    OpenAPIContext, ArgparseContext, SQLAlchemyContext,
+    openapi_schema, argparse_arg, sqlalchemy_column,
+)
+
+@dataclass(frozen=True, slots=True)
+class MaxLen(Capability):
+    value: int
+
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
+        return openapi_schema(ctx, maxLength=self.value)
+
+    def compile_argparse(self, ctx: ArgparseContext) -> ArgparseContext:
+        # No effect on argparse — DON'T implement no-op methods
+        ...  # Just don't implement this method
+
+    def compile_sqlalchemy(self, ctx: SQLAlchemyContext) -> SQLAlchemyContext:
+        return sqlalchemy_column(ctx, length=self.value)
+```
+
+### Compilation contexts per axis
+
+**Schema axis** (field-level):
+- `PydanticContext` — holds `FieldInfo` directly
+- `OpenAPIContext` — holds JSON Schema dict
+- `ArgparseContext` — holds `add_argument` kwargs
+- `SQLAlchemyContext` — holds Column config
+
+**Schema axis** (class-level):
+- `PydanticModelContext` — model title, description
+- `OpenAPISchemaContext` — schema-level JSON Schema
+- `SQLAlchemyTableContext` — table name, constraints, indexes
+
+**Surface axis** (route-level):
+- `FastAPIRouteContext` — path, method, tags, security
+- `TelegrinderHandlerContext` — edit_message, answer_callback
+- `CLICommandContext` — name, help, description
+
+### Helper functions
+
+```python
+# Schema axis field-level
+openapi_schema(ctx, maxLength=255)      # → OpenAPIContext with merged schema
+argparse_arg(ctx, help="Username")      # → ArgparseContext with merged kwargs
+sqlalchemy_column(ctx, index=True)      # → SQLAlchemyContext with merged kwargs
+
+# Schema axis class-level
+pydantic_model(ctx, title="User")
+openapi_schema_level(ctx, description="User entity")
+sqlalchemy_table(ctx, table_name="users")
+
+# Surface axis
+fastapi_route(ctx, tags=("users",), deprecated=True)
+telegrinder_handler(ctx, edit_message=True)
+cli_command(ctx, help="List users")
+```
+
+### Compilable protocols
+
+Each protocol declares what a capability can compile to:
+
+```python
+# Field-level
+class PydanticCompilable(Protocol):
+    def compile_pydantic(self, ctx: PydanticContext) -> PydanticContext: ...
+
+class OpenAPICompilable(Protocol):
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext: ...
+
+class ArgparseCompilable(Protocol):
+    def compile_argparse(self, ctx: ArgparseContext) -> ArgparseContext: ...
+
+class SQLAlchemyCompilable(Protocol):
+    def compile_sqlalchemy(self, ctx: SQLAlchemyContext) -> SQLAlchemyContext: ...
+
+# Class-level
+class PydanticModelCompilable(Protocol):
+    def compile_pydantic_model(self, ctx: PydanticModelContext) -> PydanticModelContext: ...
+
+# Surface-level
+class FastAPICompilable(Protocol):
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext: ...
+
+class TelegrinderCompilable(Protocol):
+    def compile_telegrinder(self, ctx: TelegrinderHandlerContext) -> TelegrinderHandlerContext: ...
+```
 
 ---
 
@@ -340,17 +476,31 @@ Annotated fields. Each compiler reads its dialect.
 
 ```python
 from emergent.wire.axis.schema import Identity, Unique, MaxLen
-from emergent.wire.axis.schema.dialects import sql, openapi, cli
+from emergent.wire.axis.schema.dialects import sql, openapi, cli, tg
 
 @dataclass
 class User:
     id: Annotated[int, Identity]
     email: Annotated[str,
-        Unique, MaxLen(255),        # universal
-        sql.Index("idx_email"),     # SQL only
-        openapi.Format("email"),    # OpenAPI only
-        cli.Help("User email"),     # CLI only
+        Unique, MaxLen(255),           # universal — all compilers
+        sql.Index("idx_email"),        # SQL only
+        openapi.Format("email"),       # OpenAPI only
+        cli.Help("User email"),        # CLI only
     ]
+```
+
+### compose dialect — nodnod node composition
+
+```python
+from emergent.wire.axis.schema.dialects import compose
+from telegrinder.node import ChatId
+
+@dataclass
+class TelegramRequest:
+    chat_id: Annotated[int, compose.Node(ChatId)]  # Compose from nodnod node
+
+    def to_domain(self) -> GetBalance:
+        return GetBalance()
 ```
 
 ---
@@ -388,6 +538,35 @@ tasks = queue(backend, JsonCodec[Task]())
 
 ---
 
+## surface
+
+Codec = execution shape. Trigger = where.
+
+**Codecs:**
+- `rrc` — request → response
+- `stateful` — state → ... → Done → execute
+- `immediate` — return value directly
+
+**Triggers:**
+- `HTTPRouteTrigger` — REST endpoint
+- `CLITrigger` — CLI subcommand
+- `TelegrindTrigger` — Telegram bot
+
+**Capabilities (enrichers):**
+```python
+from emergent.wire.axis.surface import capabilities as C
+
+endpoint(runner).expose(
+    trigger,
+    rrc(Request, Response),
+    C.enricher.Provide(type=AuthUser, ...),    # Auth via Provide
+    C.enricher.Timeout(seconds=5.0),           # Timeout
+    C.enricher.Retry(policy=RetryPolicy(...)), # Retry
+)
+```
+
+---
+
 ## ops
 
 Fields typed as ops = parallel dependencies.
@@ -401,18 +580,6 @@ class GetProfile(O.Returning[Profile, str]):
 ```
 
 Framework runs `GetUser` and `GetPosts` in parallel, injects results.
-
----
-
-## surface
-
-Codec = execution shape. Trigger = where.
-
-- `rrc` — request → response
-- `stateful` — state → ... → Done → execute
-- `HTTPRouteTrigger` — REST endpoint
-- `CLITrigger` — CLI subcommand
-- `TelegrindTrigger` — Telegram bot
 
 ---
 
@@ -443,16 +610,33 @@ executor = I.idempotent(charge).key(lambda r: f"pay:{r.id}").build()
 
 ---
 
-## Custom dialect
+## Custom capability
 
 ```python
 @dataclass(frozen=True, slots=True)
 class GrpcFieldNumber(Capability):
     number: int
 
+    def compile_protobuf(self, ctx: ProtobufContext) -> ProtobufContext:
+        return replace(ctx, field_number=self.number)
+
 @dataclass
 class User:
     id: Annotated[int, Identity, GrpcFieldNumber(1)]
+```
+
+---
+
+## Custom enricher
+
+```python
+@dataclass(frozen=True, slots=True)
+class RateLimit(SurfaceCapability, ScopeEnricher):
+    requests_per_minute: int
+
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+        # Check rate limit...
+        return await call(scope)
 ```
 
 ---
@@ -483,13 +667,21 @@ class RedisBackend:
 
 ---
 
-## Custom compiler
+## Custom compiler target
 
 ```python
+from emergent.wire.compile import execute_rrc_unified
+
 def grpc_compile(app: Application) -> GrpcServer:
-    pairs = scan(app, GrpcTrigger, RequestResponseCodec)
+    pairs = scan(app, GrpcTrigger)
     for trigger, handler in pairs:
-        server.add_method(trigger.service, trigger.method, make_handler(handler))
+        async def route(request):
+            return await execute_rrc_unified(
+                handler=handler,
+                get_value=lambda name: getattr(request, name),
+                inject_scope=lambda scope: scope.inject(GrpcRequest, request),
+            )
+        server.add_method(trigger.service, trigger.method, route)
     return server
 ```
 

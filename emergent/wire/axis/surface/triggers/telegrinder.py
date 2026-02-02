@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class TelegrindTrigger:
+class TelegrinderTrigger:
     """Trigger for telegrinder bot handler.
 
     Rules filter which Telegram updates match this endpoint.
@@ -19,7 +19,7 @@ class TelegrindTrigger:
 
         from telegrinder.bot.rules import Command
 
-        trigger = TelegrindTrigger(Command("start"), view="message")
+        trigger = TelegrinderTrigger(Command("start"), view="message")
 
     Rules are variadic to match telegrinder's decorator syntax::
 
@@ -28,7 +28,7 @@ class TelegrindTrigger:
         async def handler(...): ...
 
         # wire equivalent:
-        TelegrindTrigger(Command("start"), Text("/hello"), view="message")
+        TelegrinderTrigger(Command("start"), Text("/hello"), view="message")
     """
 
     rules: tuple["ABCRule", ...]
@@ -37,3 +37,7 @@ class TelegrindTrigger:
     def __init__(self, *rules: "ABCRule", view: str = "message") -> None:
         object.__setattr__(self, "rules", rules)
         object.__setattr__(self, "view", view)
+
+
+# Backward compatibility alias
+TelegrindTrigger = TelegrinderTrigger

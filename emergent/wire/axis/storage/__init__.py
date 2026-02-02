@@ -55,6 +55,9 @@ from emergent.wire.axis.storage._capabilities import (
 # Memory implementation
 from emergent.wire.axis.storage._memory import MemoryStorage
 
+# File implementation (persistent)
+from emergent.wire.axis.storage._file import FileStorage
+
 # Codecs — serialization
 from emergent.wire.axis.storage._codec import (
     Codec,
@@ -114,6 +117,8 @@ __all__ = (
     "DeletePattern",
     # Memory
     "MemoryStorage",
+    # File (persistent)
+    "FileStorage",
     # Codecs
     "Codec",
     "PickleCodec",

@@ -85,5 +85,16 @@ class MemoryStorage(Generic[K, V]):
             del self._data[key]
         return Ok(len(keys_to_delete))
 
+    # Keys
+    async def keys(self, pattern: str = "*") -> Result[list[K], Never]:
+        """Get keys matching pattern."""
+        if pattern == "*":
+            return Ok(list(self._data.keys()))
+        matching = [
+            k for k in self._data.keys()
+            if isinstance(k, str) and fnmatch.fnmatch(k, pattern)
+        ]
+        return Ok(matching)  # type: ignore[return-value]
+
 
 __all__ = ("MemoryStorage",)

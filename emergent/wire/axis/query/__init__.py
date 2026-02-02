@@ -44,15 +44,44 @@ from emergent.wire.axis.query._expr import (
     EndsWith,
     IsNull,
     IsNotNull,
+    # Range
+    Between,
+    # Pattern matching
+    Like,
+    ILike,
+    Regex,
+    # Array operators
+    ArrayContains,
+    ArrayAny,
+    ArrayAll,
+    ArrayOverlap,
+    # JSON operators
+    JsonExtract,
+    JsonContains,
+    JsonHasKey,
 )
 
 # Proxy (for building expressions from lambdas)
 from emergent.wire.axis.query._proxy import (
     FieldProxy,
+    JsonFieldProxy,
     OrderSpec,
     EntityProxy,
     build_expr,
     build_order,
+)
+
+# Aggregates (typed, no strings)
+from emergent.wire.axis.query._aggregate import (
+    AggregateFunc,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    ArrayAgg,
+    StringAgg,
+    AggregateExpr,
 )
 
 # Spaces
@@ -78,19 +107,25 @@ from emergent.wire.axis.query._relational import (
     GroupBy,
     Having,
     Distinct,
+    AggregateSpec,
+    Aggregate,
 )
 
 # KV QuerySet
 from emergent.wire.axis.query._kv import (
     KVQuerySet,
     kv,
-    # Ops
-    Get,
-    Set,
-    Delete,
+    # Ops (new names)
+    KVGet,
+    KVSet,
+    KVDelete,
     Exists,
     Scan,
     Keys,
+    # Backward compat aliases
+    Get,
+    Set,
+    Delete,
 )
 
 # API QuerySet
@@ -126,6 +161,7 @@ from emergent.wire.axis.query._provider import (
     PaginatedAPIProvider,
     JoinCapability,
     GroupByCapability,
+    AggregateCapability,
     WindowCapability,
     TransactionCapability,
     # ID Generation
@@ -152,20 +188,38 @@ from emergent.wire.axis.query.providers import (
 
 
 __all__ = (
-    # Expressions
+    # Expressions — base
     "Expr",
     "Field",
     "Const",
+    # Expressions — comparison
     "Eq", "Ne", "Lt", "Le", "Gt", "Ge",
+    # Expressions — logical
     "And", "Or", "Not",
+    # Expressions — collection
     "In", "Contains", "StartsWith", "EndsWith",
+    # Expressions — null checks
     "IsNull", "IsNotNull",
+    # Expressions — range
+    "Between",
+    # Expressions — pattern matching
+    "Like", "ILike", "Regex",
+    # Expressions — array
+    "ArrayContains", "ArrayAny", "ArrayAll", "ArrayOverlap",
+    # Expressions — JSON
+    "JsonExtract", "JsonContains", "JsonHasKey",
     # Proxy
     "FieldProxy",
+    "JsonFieldProxy",
     "OrderSpec",
     "EntityProxy",
     "build_expr",
     "build_order",
+    # Aggregates (typed, no strings!)
+    "AggregateFunc",
+    "Count", "Sum", "Avg", "Min", "Max",
+    "ArrayAgg", "StringAgg",
+    "AggregateExpr",
     # Spaces
     "Space",
     "RelationalSpace",
@@ -177,10 +231,13 @@ __all__ = (
     "relational",
     "Filter", "OrderBy", "Limit", "Offset", "Select",
     "Join", "GroupBy", "Having", "Distinct",
+    "AggregateSpec", "Aggregate",
     # KV
     "KVQuerySet",
     "kv",
-    "Get", "Set", "Delete", "Exists", "Scan", "Keys",
+    "KVGet", "KVSet", "KVDelete", "Exists", "Scan", "Keys",
+    # KV backward compat
+    "Get", "Set", "Delete",
     # API
     "APIQuerySet",
     "api",
@@ -196,6 +253,7 @@ __all__ = (
     "PaginatedAPIProvider",
     "JoinCapability",
     "GroupByCapability",
+    "AggregateCapability",
     "WindowCapability",
     "TransactionCapability",
     # ID Generation

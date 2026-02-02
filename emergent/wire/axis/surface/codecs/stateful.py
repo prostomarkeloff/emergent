@@ -123,7 +123,6 @@ from typing import Any, Callable, Generic, Never, Protocol, TypeVar, TYPE_CHECKI
 from kungfu import Option, Some, Nothing
 
 from emergent.wire.axis.storage import Get, Set, Delete, MemoryStorage
-from emergent.wire.axis.surface.scope import StatefulMiddleware
 
 if TYPE_CHECKING:
     from nodnod.agent.base import Agent
@@ -276,7 +275,9 @@ class StatefulCodec:
         store: StateStore for state persistence.
         key_node: Node-like for session routing.
         agent_cls: nodnod Agent class.
-        middlewares: Run when Done, before Op execution.
+
+    All behavior (auth, timeout, retry) lives in Handler.capabilities,
+    not in the codec itself. Enrichers run when Done, before Op execution.
     """
 
     flow: type  # Dataclass with __transition__ + to_domain
@@ -284,7 +285,6 @@ class StatefulCodec:
     store: StateStore[Any]
     key_node: type  # Node-like for store key
     agent_cls: type  # nodnod Agent class
-    middlewares: tuple[StatefulMiddleware[Any, Any, Any, Any], ...]
 
 
 # ─── Builder ────────────────────────────────────────────────────────────────
@@ -297,16 +297,16 @@ class StatefulBuilder:
 
         codec = stateful(BetFlow, BetResponse).key(ChatId).build()
 
-        # With middleware:
-        codec = (
-            stateful(BetFlow, BetResponse)
-            .key(ChatId)
-            .use(auth_mw)
-            .build()
+    All behavior (auth, timeout, retry) lives in Handler.capabilities:
+
+        endpoint(runner).expose(
+            trigger,
+            stateful(BetFlow, BetResponse).key(ChatId).build(),
+            C.enricher.Provide(type=AuthUser, ...),  # runs when Done
         )
     """
 
-    __slots__ = ("_flow", "_response", "_store", "_key_node", "_agent_cls", "_middlewares")
+    __slots__ = ("_flow", "_response", "_store", "_key_node", "_agent_cls")
 
     def __init__(self, flow: type, response: type | types.UnionType) -> None:
         self._flow = flow
@@ -314,7 +314,6 @@ class StatefulBuilder:
         self._store: StateStore[Any] | None = None
         self._key_node: type | None = None
         self._agent_cls: type[Agent] | None = None
-        self._middlewares: list[StatefulMiddleware[Any, Any, Any, Any]] = []
 
     def store(self, store: StateStore[Any]) -> StatefulBuilder:
         """Set state store (default: MemoryStorage from storage axis)."""
@@ -329,11 +328,6 @@ class StatefulBuilder:
     def agent(self, agent_cls: type[Agent]) -> StatefulBuilder:
         """Set nodnod agent class (default: EventLoopAgent)."""
         self._agent_cls = agent_cls
-        return self
-
-    def use(self, mw: StatefulMiddleware[Any, Any, Any, Any]) -> StatefulBuilder:
-        """Add middleware (runs when Done, before Op execution)."""
-        self._middlewares.append(mw)
         return self
 
     def build(self) -> StatefulCodec:
@@ -357,7 +351,6 @@ class StatefulBuilder:
             store=self._store if self._store is not None else MemoryStorage[str, Any](),
             key_node=self._key_node,
             agent_cls=self._agent_cls or EventLoopAgent,
-            middlewares=tuple(self._middlewares),
         )
 
 

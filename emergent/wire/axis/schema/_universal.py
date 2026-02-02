@@ -1,51 +1,54 @@
 """Universal schema capabilities — understood by ALL compilers.
 
-These describe data semantics, not backend-specific implementation details.
-Compilers translate universal capabilities to backend-specific constructs.
-
-    # Universal (all compilers understand)
     email: Annotated[str, Unique, MaxLen(255)]
 
     # Compiler translates:
-    # - SQLAlchemy: Column(String(255), unique=True)
-    # - JSON Schema: {"type": "string", "maxLength": 255}
     # - Pydantic: Field(max_length=255)
+    # - OpenAPI: {"maxLength": 255}
+    # - SQLAlchemy: Column(String(255), unique=True)
 
-## Extension
+## Custom Capabilities
 
-Custom capabilities can implement compilation protocols for specific targets:
-
-    from emergent.wire.axis.schema import Capability
-    from emergent.wire.axis.schema._compilable import OpenAPICompilable
+    from emergent.wire.axis._capability import PydanticContext, OpenAPIContext, openapi_schema
+    import copy
 
     @dataclass(frozen=True, slots=True)
-    class Encrypted(Capability):
-        algorithm: str = "AES-256"
+    class Sensitive(UniversalCapability):
+        def compile_pydantic(self, ctx: PydanticContext) -> PydanticContext:
+            from dataclasses import replace
+            fi = copy.deepcopy(ctx.field_info)
+            fi.json_schema_extra = {"writeOnly": True}
+            return replace(ctx, field_info=fi)
 
-        # Implement protocol for OpenAPI target
-        def to_openapi(self) -> dict:
-            return {"format": "encrypted", "x-algorithm": self.algorithm}
-
-        # Implement protocol for SQLAlchemy target
-        def to_sqlalchemy(self, field_name: str, field_type: type) -> TypeDecorator:
-            return EncryptedType(self.algorithm)
-
-See `_compilable.py` for available protocols:
-- OpenAPICompilable (to_openapi)
-- SQLAlchemyCompilable (to_sqlalchemy)
-- PydanticCompilable (to_pydantic)
-- CLICompilable (to_cli)
-- ProtobufCompilable (to_protobuf)
+        def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
+            return openapi_schema(ctx, writeOnly=True)
 """
 
-from dataclasses import dataclass
-from typing import Any
+from __future__ import annotations
 
-from emergent.wire.axis.schema._compilable import (
-    OpenAPISchema,
-    PydanticSchema,
-    CLISchema,
-)
+import copy
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+from emergent.wire.axis._capability import Capability as RootCapability
+
+# Type for enum values (JSON-compatible primitives)
+EnumValue = str | int | float | bool | None
+
+if TYPE_CHECKING:
+    from emergent.wire.axis._capability import (
+        # Field-level
+        PydanticContext,
+        OpenAPIContext,
+        ArgparseContext,
+        SQLAlchemyContext,
+        # Schema-level
+        PydanticModelContext,
+        OpenAPISchemaContext,
+        SQLAlchemyTableContext,
+        # Types
+        JsonSchemaValue,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -53,23 +56,186 @@ from emergent.wire.axis.schema._compilable import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class Capability:
-    """Base for all schema capabilities (universal and dialect-specific).
-
-    Capabilities are pure data describing constraints/metadata.
-    To customize compilation for specific targets, implement protocols
-    from `_compilable.py` (e.g., OpenAPICompilable, PydanticCompilable).
-    """
+class Capability(RootCapability):
+    """Base for all schema capabilities."""
     pass
 
 
 class UniversalCapability(Capability):
-    """Base for universal capabilities — all compilers understand these.
-
-    Built-in universal capabilities implement compilation protocols
-    for common targets (OpenAPI, Pydantic, etc.).
-    """
+    """Base for universal capabilities — all compilers understand."""
     pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Schema-Level
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+_SCHEMA_META_ATTR = "__schema_capabilities__"
+
+
+class SchemaCapability(Capability):
+    """Schema-level capability — applied to whole class via @schema_meta."""
+    pass
+
+
+def schema_meta(*capabilities: SchemaCapability):
+    """Attach schema-level capabilities to a class."""
+    def decorator(cls: type) -> type:
+        existing = getattr(cls, _SCHEMA_META_ATTR, ())
+        setattr(cls, _SCHEMA_META_ATTR, (*existing, *capabilities))
+        return cls
+    return decorator
+
+
+def get_schema_meta(cls: type) -> tuple[SchemaCapability, ...]:
+    """Get all schema-level capabilities from a class."""
+    return getattr(cls, _SCHEMA_META_ATTR, ())
+
+
+def get_schema_capability(cls: type, cap_type: type[SchemaCapability]) -> SchemaCapability | None:
+    """Get specific schema capability by type."""
+    for cap in get_schema_meta(cls):
+        if isinstance(cap, cap_type):
+            return cap
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Universal Schema-Level Capabilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaName(SchemaCapability):
+    """Override model/table/schema name.
+
+    Example:
+        @schema_meta(SchemaName("users"))
+        @dataclass
+        class User: ...
+
+    SQL: __tablename__ = "users"
+    Pydantic: model title
+    OpenAPI: schema title
+    """
+    value: str
+
+    def compile_pydantic_model(self, ctx: "PydanticModelContext") -> "PydanticModelContext":
+        return replace(ctx, title=self.value)
+
+    def compile_openapi_schema(self, ctx: "OpenAPISchemaContext") -> "OpenAPISchemaContext":
+        return replace(ctx, schema={**ctx.schema, "title": self.value})
+
+    def compile_sqlalchemy_table(self, ctx: "SQLAlchemyTableContext") -> "SQLAlchemyTableContext":
+        return replace(ctx, table_name=self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaDoc(SchemaCapability):
+    """Schema-level description.
+
+    Example:
+        @schema_meta(SchemaDoc("Represents a user in the system"))
+        @dataclass
+        class User: ...
+    """
+    description: str
+
+    def compile_pydantic_model(self, ctx: "PydanticModelContext") -> "PydanticModelContext":
+        return replace(ctx, description=self.description)
+
+    def compile_openapi_schema(self, ctx: "OpenAPISchemaContext") -> "OpenAPISchemaContext":
+        return replace(ctx, schema={**ctx.schema, "description": self.description})
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeUnique(SchemaCapability):
+    """Unique constraint across multiple fields.
+
+    Example:
+        @schema_meta(CompositeUnique("email", "tenant_id"))
+        @dataclass
+        class User: ...
+
+    SQL: UNIQUE(email, tenant_id)
+    """
+    fields: tuple[str, ...]
+    name: str | None = None
+
+    def __init__(self, *fields: str, name: str | None = None) -> None:
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "name", name)
+
+    def compile_sqlalchemy_table(self, ctx: "SQLAlchemyTableContext") -> "SQLAlchemyTableContext":
+        return replace(ctx, constraints=(*ctx.constraints, self.fields))
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeIndex(SchemaCapability):
+    """Index across multiple fields.
+
+    Example:
+        @schema_meta(CompositeIndex("status", "created_at", name="idx_status_date"))
+        @dataclass
+        class Order: ...
+
+    SQL: CREATE INDEX
+    """
+    fields: tuple[str, ...]
+    name: str | None = None
+    unique: bool = False
+
+    def __init__(self, *fields: str, name: str | None = None, unique: bool = False) -> None:
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "unique", unique)
+
+    def compile_sqlalchemy_table(self, ctx: "SQLAlchemyTableContext") -> "SQLAlchemyTableContext":
+        return replace(ctx, indexes=(*ctx.indexes, self.fields))
+
+
+@dataclass(frozen=True, slots=True)
+class Discriminator(SchemaCapability):
+    """Polymorphism discriminator for inheritance.
+
+    Example:
+        @schema_meta(Discriminator("type", {"dog": Dog, "cat": Cat}))
+        @dataclass
+        class Pet: ...
+
+    SQL: discriminator column
+    Pydantic: tagged union discriminator
+    OpenAPI: discriminator object
+    """
+    field: str
+    mapping: dict[str, type]
+
+    def compile_openapi_schema(self, ctx: "OpenAPISchemaContext") -> "OpenAPISchemaContext":
+        disc: dict[str, JsonSchemaValue] = {"propertyName": self.field}
+        if self.mapping:
+            disc["mapping"] = {k: v.__name__ for k, v in self.mapping.items()}
+        return replace(ctx, schema={**ctx.schema, "discriminator": disc})
+
+
+@dataclass(frozen=True, slots=True)
+class Abstract(SchemaCapability):
+    """Mark schema as abstract (no direct instantiation).
+
+    Example:
+        @schema_meta(Abstract())
+        @dataclass
+        class BaseEntity: ...
+
+    SQL: no table created
+    Pydantic: cannot instantiate directly
+    """
+
+    def compile_pydantic_model(self, ctx: "PydanticModelContext") -> "PydanticModelContext":
+        return replace(ctx, is_abstract=True)
+
+    def compile_sqlalchemy_table(self, ctx: "SQLAlchemyTableContext") -> "SQLAlchemyTableContext":
+        return replace(ctx, is_abstract=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,26 +245,20 @@ class UniversalCapability(Capability):
 
 @dataclass(frozen=True, slots=True)
 class Identity(UniversalCapability):
-    """This field is the entity identifier.
+    """Entity identifier → SQL PRIMARY KEY."""
 
-    Compilers translate to:
-    - SQL: PRIMARY KEY (+ AUTOINCREMENT for int)
-    - JSON Schema: (no direct equivalent, informational)
-    - Protobuf: (field ordering hint)
-    """
-    pass
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        from emergent.wire.axis._capability import sqlalchemy_column
+        return sqlalchemy_column(ctx, primary_key=True)
 
 
 @dataclass(frozen=True, slots=True)
 class Unique(UniversalCapability):
-    """Field value must be unique across all entities.
+    """Unique constraint → SQL UNIQUE."""
 
-    Compilers translate to:
-    - SQL: UNIQUE constraint (+ INDEX typically)
-    - JSON Schema: (via uniqueItems in array context)
-    - Pydantic: (custom validator)
-    """
-    pass
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        from emergent.wire.axis._capability import sqlalchemy_column
+        return sqlalchemy_column(ctx, unique=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -108,20 +268,14 @@ class Unique(UniversalCapability):
 
 @dataclass(frozen=True, slots=True)
 class Ref(UniversalCapability):
-    """Reference to another entity.
-
-    Compilers translate to:
-    - SQL: FOREIGN KEY + INDEX
-    - JSON Schema: $ref
-    - Protobuf: message field
-    """
+    """Reference to another entity → SQL FOREIGN KEY."""
     target: type | str
-    on_delete: str = "CASCADE"  # CASCADE, SET_NULL, RESTRICT
+    on_delete: str = "CASCADE"
     on_update: str = "CASCADE"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Value Constraints — Numbers
+# Numbers
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -130,11 +284,15 @@ class Min(UniversalCapability):
     """Minimum value (inclusive)."""
     value: int | float
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"minimum": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import Ge
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(Ge(ge=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"ge": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, minimum=self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,11 +300,15 @@ class Max(UniversalCapability):
     """Maximum value (inclusive)."""
     value: int | float
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"maximum": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import Le
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(Le(le=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"le": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, maximum=self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +316,15 @@ class ExclusiveMin(UniversalCapability):
     """Minimum value (exclusive)."""
     value: int | float
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"exclusiveMinimum": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import Gt
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(Gt(gt=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"gt": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, exclusiveMinimum=self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,11 +332,15 @@ class ExclusiveMax(UniversalCapability):
     """Maximum value (exclusive)."""
     value: int | float
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"exclusiveMaximum": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import Lt
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(Lt(lt=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"lt": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, exclusiveMaximum=self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,52 +348,69 @@ class MultipleOf(UniversalCapability):
     """Value must be multiple of n."""
     value: int | float
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"multipleOf": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import MultipleOf as ATMultipleOf
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(ATMultipleOf(multiple_of=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"multiple_of": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, multipleOf=self.value)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Value Constraints — Strings/Collections
+# Strings/Collections
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True, slots=True)
 class MinLen(UniversalCapability):
-    """Minimum length for strings/arrays."""
+    """Minimum length."""
     value: int
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"minLength": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import MinLen as ATMinLen
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(ATMinLen(min_length=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"min_length": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, minLength=self.value)
 
 
 @dataclass(frozen=True, slots=True)
 class MaxLen(UniversalCapability):
-    """Maximum length for strings/arrays."""
+    """Maximum length."""
     value: int
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"maxLength": self.value}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from annotated_types import MaxLen as ATMaxLen
+        fi = copy.deepcopy(ctx.field_info)
+        fi.metadata.append(ATMaxLen(max_length=self.value))
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"max_length": self.value}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, maxLength=self.value)
 
 
 @dataclass(frozen=True, slots=True)
 class Pattern(UniversalCapability):
-    """String must match regex pattern."""
+    """Regex pattern."""
     regex: str
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"pattern": self.regex}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from pydantic.fields import FieldInfo
+        fi = copy.deepcopy(ctx.field_info)
+        # Pattern is stored in metadata as _PydanticGeneralMetadata
+        fi.metadata.extend(FieldInfo(pattern=self.regex).metadata)
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"pattern": self.regex}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, pattern=self.regex)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -233,53 +420,30 @@ class Pattern(UniversalCapability):
 
 @dataclass(frozen=True, slots=True)
 class OneOf(UniversalCapability):
-    """Value must be one of specified literals (enum).
+    """Enum values."""
+    values: tuple[EnumValue, ...]
 
-    Usage:
-        status: Annotated[str, OneOf("pending", "active", "done")]
-    """
-    values: tuple[Any, ...]
-
-    def __init__(self, *values: Any) -> None:
+    def __init__(self, *values: EnumValue) -> None:
         object.__setattr__(self, "values", values)
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"enum": list(self.values)}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, enum=list(self.values))
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        from emergent.wire.axis._capability import argparse_arg
+        return argparse_arg(ctx, choices=list(self.values))
 
 
 @dataclass(frozen=True, slots=True)
 class Either(UniversalCapability):
-    """Tagged union — value is one of specified types.
-
-    Usage:
-        result: Annotated[Success | Failure, Either(discriminator="type")]
-
-    Compilers translate to:
-    - SQL: JSON with discriminator or separate tables
-    - JSON Schema: oneOf with discriminator
-    - Pydantic: discriminated union
-    - Protobuf: oneof
-    """
+    """Tagged union."""
     discriminator: str = "type"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Composition
-# ═══════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True, slots=True)
 class Embedded(UniversalCapability):
-    """Nested structure should be embedded inline, not normalized.
-
-    Usage:
-        address: Annotated[Address, Embedded]
-
-    Compilers translate to:
-    - SQL: JSON column (not separate table)
-    - JSON Schema: inline object definition
-    - Pydantic: nested model
-    """
+    """Embedded inline (not normalized)."""
     pass
 
 
@@ -290,56 +454,67 @@ class Embedded(UniversalCapability):
 
 @dataclass(frozen=True, slots=True)
 class Doc(UniversalCapability):
-    """Human-readable description."""
+    """Description."""
     text: str
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"description": self.text}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        fi = copy.deepcopy(ctx.field_info)
+        fi.description = self.text
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"description": self.text}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, description=self.text)
 
-    def to_cli(self) -> CLISchema:
-        return {"help": self.text}
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        from emergent.wire.axis._capability import argparse_arg
+        return argparse_arg(ctx, help=self.text)
 
 
 @dataclass(frozen=True, slots=True)
 class Deprecated(UniversalCapability):
-    """Mark field as deprecated."""
+    """Mark as deprecated."""
     reason: str | None = None
 
-    def to_openapi(self) -> OpenAPISchema:
-        return {"deprecated": True}
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        fi = copy.deepcopy(ctx.field_info)
+        fi.deprecated = self.reason or True
+        return replace(ctx, field_info=fi)
 
-    def to_pydantic(self) -> PydanticSchema:
-        return {"deprecated": self.reason or True}
+    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
+        from emergent.wire.axis._capability import openapi_schema
+        return openapi_schema(ctx, deprecated=True)
 
 
 __all__ = (
-    # Base
     "Capability",
     "UniversalCapability",
-    # Identity & Uniqueness
+    # Schema-level
+    "SchemaCapability",
+    "schema_meta",
+    "get_schema_meta",
+    "get_schema_capability",
+    "SchemaName",
+    "SchemaDoc",
+    "CompositeUnique",
+    "CompositeIndex",
+    "Discriminator",
+    "Abstract",
+    # Field-level
     "Identity",
     "Unique",
-    # References
     "Ref",
-    # Value Constraints — Numbers
     "Min",
     "Max",
     "ExclusiveMin",
     "ExclusiveMax",
     "MultipleOf",
-    # Value Constraints — Strings/Collections
     "MinLen",
     "MaxLen",
     "Pattern",
-    # Enums & Unions
     "OneOf",
     "Either",
-    # Composition
     "Embedded",
-    # Documentation
     "Doc",
     "Deprecated",
 )

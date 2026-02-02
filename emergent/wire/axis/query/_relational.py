@@ -28,6 +28,7 @@ from emergent.wire.axis.query._proxy import (
     build_expr,
     build_order,
 )
+from emergent.wire.axis.query._aggregate import AggregateExpr, AggregateFunc
 
 
 T = TypeVar("T")
@@ -93,8 +94,32 @@ class Distinct:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class AggregateSpec:
+    """Single aggregate specification.
+
+    Created by lambda in aggregate():
+        .aggregate(total=lambda u: u.balance.sum())
+        # → AggregateSpec(func=Sum(), field="balance", alias="total")
+    """
+
+    func: AggregateFunc  # Typed! Not string
+    field: str | None  # None for COUNT(*)
+    alias: str
+
+
+@dataclass(frozen=True, slots=True)
+class Aggregate:
+    """Aggregate operation.
+
+    Contains multiple aggregate specs to compute.
+    """
+
+    specs: tuple[AggregateSpec, ...]
+
+
 # Union type for all relational ops
-RelationalOp = Filter | OrderBy | Limit | Offset | Select | Join | GroupBy | Having | Distinct
+RelationalOp = Filter | OrderBy | Limit | Offset | Select | Join | GroupBy | Having | Distinct | Aggregate
 
 
 # ─── QuerySet ─────────────────────────────────────────────────────────────────
@@ -217,6 +242,42 @@ class RelationalQuerySet(Generic[T]):
         expr = build_expr(self.entity, predicate)
         return self._append(Having(expr))
 
+    # ─── Aggregation ───────────────────────────────────────────────────────
+
+    def aggregate(
+        self,
+        **aggregates: Callable[[EntityProxy[T]], AggregateExpr],
+    ) -> RelationalQuerySet[T]:
+        """Add aggregates.
+
+        Usage:
+            .aggregate(
+                total=lambda u: u.balance.sum(),
+                avg_balance=lambda u: u.balance.avg(),
+                user_count=lambda u: u.count(),  # COUNT(*)
+            )
+
+        All aggregate functions are typed (no strings):
+            u.balance.sum()  → AggregateExpr(Sum(), "balance")
+            u.balance.avg()  → AggregateExpr(Avg(), "balance")
+            u.balance.min_() → AggregateExpr(Min(), "balance")
+            u.balance.max_() → AggregateExpr(Max(), "balance")
+            u.id.count()     → AggregateExpr(Count(), "id")
+            u.count()        → AggregateExpr(Count(), None)  # COUNT(*)
+        """
+        proxy = EntityProxy(self.entity)
+        specs: list[AggregateSpec] = []
+
+        for alias, agg_fn in aggregates.items():
+            expr = agg_fn(proxy)
+            specs.append(AggregateSpec(
+                func=expr.func,
+                field=expr.field,
+                alias=alias,
+            ))
+
+        return self._append(Aggregate(tuple(specs)))
+
     # ─── Introspection ────────────────────────────────────────────────────
 
     @property
@@ -247,6 +308,20 @@ class RelationalQuerySet(Generic[T]):
                 return op.count
         return None
 
+    @property
+    def has_aggregates(self) -> bool:
+        """Check if query has aggregates."""
+        return any(isinstance(op, Aggregate) for op in self.ops)
+
+    @property
+    def aggregates(self) -> list[AggregateSpec]:
+        """All aggregate specs."""
+        result: list[AggregateSpec] = []
+        for op in self.ops:
+            if isinstance(op, Aggregate):
+                result.extend(op.specs)
+        return result
+
 
 def relational(entity: type[T]) -> RelationalQuerySet[T]:
     """Create relational QuerySet for entity.
@@ -269,6 +344,8 @@ __all__ = (
     "GroupBy",
     "Having",
     "Distinct",
+    "AggregateSpec",
+    "Aggregate",
     "RelationalOp",
     # QuerySet
     "RelationalQuerySet",

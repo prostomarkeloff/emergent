@@ -1,13 +1,27 @@
-"""OpenAPI capabilities — requires fastapi.
+"""OpenAPI capabilities — compile to FastAPI route configuration.
 
-These capabilities produce typed FastAPI OpenAPI models.
+These capabilities use the compile_fastapi() pattern for consistency
+with the schema axis capabilities.
+
+    from emergent.wire.axis.surface import capabilities as C
+
+    endpoint(runner).expose(
+        trigger, codec,
+        C.Tag.of("users"),
+        C.Summary.of("List all users"),
+        C.BearerAuth.jwt(),
+    )
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from emergent.wire.axis._capability import (
+    FastAPIRouteContext,
+    fastapi_route,
+)
 from ._base import SurfaceCapability
 
 if TYPE_CHECKING:
@@ -19,7 +33,7 @@ if TYPE_CHECKING:
     )
 
 
-def _get_fastapi_models() -> dict[str, Any]:
+def _get_fastapi_models() -> dict[str, type]:
     """Import FastAPI models at runtime."""
     try:
         from fastapi.openapi.models import (
@@ -69,11 +83,12 @@ class Tag(SurfaceCapability):
     def of(cls, name: str, description: str | None = None) -> Tag:
         """Create tag from name and optional description."""
         models = _get_fastapi_models()
-        return cls(models["Tag"](name=name, description=description))
+        tag_cls = models["Tag"]
+        return cls(tag_cls(name=name, description=description))
 
-    def to_openapi(self) -> FATag:
-        """Return the OpenAPI tag model."""
-        return self.model
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Add tag to route configuration."""
+        return fastapi_route(ctx, tags=(self.model.name,))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -97,21 +112,23 @@ class BearerAuth(SurfaceCapability):
     def jwt(cls, description: str | None = None) -> BearerAuth:
         """Create JWT bearer auth scheme."""
         models = _get_fastapi_models()
+        bearer_cls = models["HTTPBearer"]
         return cls(
-            model=models["HTTPBearer"](bearerFormat="JWT", description=description),
+            model=bearer_cls(bearerFormat="JWT", description=description),
         )
 
     @classmethod
     def opaque(cls, description: str | None = None) -> BearerAuth:
         """Create opaque token bearer auth scheme."""
         models = _get_fastapi_models()
+        bearer_cls = models["HTTPBearer"]
         return cls(
-            model=models["HTTPBearer"](description=description),
+            model=bearer_cls(description=description),
         )
 
-    def to_openapi(self) -> FAHTTPBearer:
-        """Return the OpenAPI security scheme model."""
-        return self.model
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Add bearer auth security requirement."""
+        return fastapi_route(ctx, security=({self.scheme_name: []},))
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,22 +147,24 @@ class ApiKeyAuth(SurfaceCapability):
     def header(cls, name: str = "X-API-Key", description: str | None = None) -> ApiKeyAuth:
         """Create API key in header."""
         models = _get_fastapi_models()
+        apikey_cls = models["APIKey"]
         # Use **{} to pass 'in' as keyword (reserved word in Python)
         return cls(
-            model=models["APIKey"](**{"in": "header", "name": name, "description": description}),
+            model=apikey_cls(**{"in": "header", "name": name, "description": description}),
         )
 
     @classmethod
     def query(cls, name: str = "api_key", description: str | None = None) -> ApiKeyAuth:
         """Create API key in query parameter."""
         models = _get_fastapi_models()
+        apikey_cls = models["APIKey"]
         return cls(
-            model=models["APIKey"](**{"in": "query", "name": name, "description": description}),
+            model=apikey_cls(**{"in": "query", "name": name, "description": description}),
         )
 
-    def to_openapi(self) -> FAAPIKey:
-        """Return the OpenAPI security scheme model."""
-        return self.model
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Add API key security requirement."""
+        return fastapi_route(ctx, security=({self.scheme_name: []},))
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +181,7 @@ class OAuth2Auth(SurfaceCapability):
 
     model: FAOAuth2
     scheme_name: str = "oauth2"
+    required_scopes: tuple[str, ...] = ()
 
     @classmethod
     def authorization_code(
@@ -171,20 +191,26 @@ class OAuth2Auth(SurfaceCapability):
         scopes: dict[str, str],
         refresh_url: str | None = None,
         description: str | None = None,
+        required_scopes: tuple[str, ...] = (),
     ) -> OAuth2Auth:
         """Create OAuth2 authorization code flow."""
         models = _get_fastapi_models()
-        flow = models["OAuthFlowAuthorizationCode"](
+        flow_cls = models["OAuthFlowAuthorizationCode"]
+        flows_cls = models["OAuthFlows"]
+        oauth2_cls = models["OAuth2"]
+
+        flow = flow_cls(
             authorizationUrl=authorization_url,
             tokenUrl=token_url,
             refreshUrl=refresh_url,
             scopes=scopes,
         )
         return cls(
-            model=models["OAuth2"](
-                flows=models["OAuthFlows"](authorizationCode=flow),
+            model=oauth2_cls(
+                flows=flows_cls(authorizationCode=flow),
                 description=description,
             ),
+            required_scopes=required_scopes,
         )
 
     @classmethod
@@ -194,19 +220,25 @@ class OAuth2Auth(SurfaceCapability):
         scopes: dict[str, str],
         refresh_url: str | None = None,
         description: str | None = None,
+        required_scopes: tuple[str, ...] = (),
     ) -> OAuth2Auth:
         """Create OAuth2 client credentials flow."""
         models = _get_fastapi_models()
-        flow = models["OAuthFlowClientCredentials"](
+        flow_cls = models["OAuthFlowClientCredentials"]
+        flows_cls = models["OAuthFlows"]
+        oauth2_cls = models["OAuth2"]
+
+        flow = flow_cls(
             tokenUrl=token_url,
             refreshUrl=refresh_url,
             scopes=scopes,
         )
         return cls(
-            model=models["OAuth2"](
-                flows=models["OAuthFlows"](clientCredentials=flow),
+            model=oauth2_cls(
+                flows=flows_cls(clientCredentials=flow),
                 description=description,
             ),
+            required_scopes=required_scopes,
         )
 
     @classmethod
@@ -216,24 +248,30 @@ class OAuth2Auth(SurfaceCapability):
         scopes: dict[str, str],
         refresh_url: str | None = None,
         description: str | None = None,
+        required_scopes: tuple[str, ...] = (),
     ) -> OAuth2Auth:
         """Create OAuth2 password flow."""
         models = _get_fastapi_models()
-        flow = models["OAuthFlowPassword"](
+        flow_cls = models["OAuthFlowPassword"]
+        flows_cls = models["OAuthFlows"]
+        oauth2_cls = models["OAuth2"]
+
+        flow = flow_cls(
             tokenUrl=token_url,
             refreshUrl=refresh_url,
             scopes=scopes,
         )
         return cls(
-            model=models["OAuth2"](
-                flows=models["OAuthFlows"](password=flow),
+            model=oauth2_cls(
+                flows=flows_cls(password=flow),
                 description=description,
             ),
+            required_scopes=required_scopes,
         )
 
-    def to_openapi(self) -> FAOAuth2:
-        """Return the OpenAPI security scheme model."""
-        return self.model
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Add OAuth2 security requirement."""
+        return fastapi_route(ctx, security=({self.scheme_name: list(self.required_scopes)},))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -258,6 +296,10 @@ class Summary(SurfaceCapability):
         """Create summary with optional description."""
         return cls(text=text, description=description)
 
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Add summary and description to route."""
+        return fastapi_route(ctx, summary=self.text, description=self.description)
+
 
 @dataclass(frozen=True, slots=True)
 class OperationId(SurfaceCapability):
@@ -273,6 +315,10 @@ class OperationId(SurfaceCapability):
     def of(cls, value: str) -> OperationId:
         """Create operation ID."""
         return cls(value=value)
+
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Set operation ID."""
+        return fastapi_route(ctx, operation_id=self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +342,10 @@ class Deprecated(SurfaceCapability):
     def until(cls, sunset_date: str, reason: str) -> Deprecated:
         """Mark as deprecated with sunset date."""
         return cls(reason=reason, sunset_date=sunset_date)
+
+    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+        """Mark route as deprecated."""
+        return fastapi_route(ctx, deprecated=True)
 
 
 __all__ = (

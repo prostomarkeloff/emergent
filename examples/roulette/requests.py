@@ -12,9 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-from emergent.wire.axis.schema.dialects import cli, openapi
+from emergent.wire.axis.schema.dialects import cli, openapi, tg, compose
+from telegrinder.node import ChatId
 
-from roulette.auth.ops import Register, Login, Authenticate, LinkTelegram
+from roulette.auth.ops import Register, Login, Authenticate, TelegramIdentity, LinkTelegram
 from roulette.game.ops import GetBalance, PlaceBet
 
 
@@ -28,11 +29,13 @@ class RegisterRequest:
         cli.Help("Username"),
         cli.Positional(),
         openapi.Description("Username for registration"),
+        tg.CommandArg(),
     ]
     password: Annotated[str,
         cli.Help("Password"),
         cli.Positional(),
         openapi.Description("Account password"),
+        tg.CommandArg(),
     ]
 
     def to_domain(self) -> Register:
@@ -42,8 +45,8 @@ class RegisterRequest:
 @dataclass
 class LoginRequest:
     """Login to existing account."""
-    login: Annotated[str, cli.Help("Username"), cli.Positional()]
-    password: Annotated[str, cli.Help("Password"), cli.Positional()]
+    login: Annotated[str, cli.Help("Username"), cli.Positional(), tg.CommandArg()]
+    password: Annotated[str, cli.Help("Password"), cli.Positional(), tg.CommandArg()]
 
     def to_domain(self) -> Login:
         return Login(login=self.login, password=self.password)
@@ -89,6 +92,18 @@ class BalanceRequest:
 
 
 @dataclass
+class TelegramBalanceRequest:
+    """Get balance via Telegram (auth via chat_id binding)."""
+    chat_id: Annotated[int, compose.Node(ChatId)]
+
+    def to_domain(self) -> GetBalance:
+        return GetBalance()
+
+    def to_auth(self) -> TelegramIdentity:
+        return TelegramIdentity(chat_id=self.chat_id)
+
+
+@dataclass
 class BetRequest:
     """Place a bet (with auth token)."""
     token: Annotated[str, openapi.Description("Auth token from login")]
@@ -96,11 +111,13 @@ class BetRequest:
         cli.Help("Bet type: red, black, or 0-36"),
         cli.Positional(),
         openapi.Description("Bet type: 'red', 'black', or number 0-36"),
+        tg.CommandArg(),
     ]
     amount: Annotated[int,
         cli.Help("Bet amount"),
         cli.Positional(),
         openapi.Description("Amount to bet"),
+        tg.CommandArg(),
     ]
 
     def to_domain(self) -> PlaceBet:
@@ -110,11 +127,27 @@ class BetRequest:
         return Authenticate(token=self.token)
 
 
+@dataclass
+class TelegramBetRequest:
+    """Place bet via Telegram (auth via chat_id binding)."""
+    chat_id: Annotated[int, compose.Node(ChatId)]
+    bet: Annotated[str, tg.CommandArg()]
+    amount: Annotated[int, tg.CommandArg()]
+
+    def to_domain(self) -> PlaceBet:
+        return PlaceBet(bet=self.bet, amount=self.amount)
+
+    def to_auth(self) -> TelegramIdentity:
+        return TelegramIdentity(chat_id=self.chat_id)
+
+
 __all__ = (
     "RegisterRequest",
     "LoginRequest",
     "AuthenticatedRequest",
     "LinkTelegramRequest",
     "BalanceRequest",
+    "TelegramBalanceRequest",
     "BetRequest",
+    "TelegramBetRequest",
 )

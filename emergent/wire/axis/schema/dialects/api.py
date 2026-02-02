@@ -24,15 +24,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
+from emergent.wire.axis.schema._universal import Capability
+
 
 P = TypeVar("P")  # Profile type
+
+
+class APICapability(Capability):
+    """Base for API-specific capabilities."""
+    pass
 
 
 # ─── Profile-Scoped Annotations ──────────────────────────────────────────────
 
 
 @dataclass(frozen=True, slots=True)
-class ProfileConfig:
+class ProfileConfig(APICapability):
     """Configuration for a specific API profile.
 
     Created via api.profile(ProfileType).method() chain.
@@ -127,7 +134,7 @@ def profile(profile_type: type[P]) -> ProfileBuilder:
 
 
 @dataclass(frozen=True, slots=True)
-class PathParam:
+class PathParam(APICapability):
     """Field used in URL path: /users/{id}
 
     Profile-agnostic version. Use api.profile(X).path_param() for multi-API.
@@ -136,7 +143,7 @@ class PathParam:
 
 
 @dataclass(frozen=True, slots=True)
-class QueryParam:
+class QueryParam(APICapability):
     """Field used as query parameter.
 
     Profile-agnostic version.
@@ -145,7 +152,7 @@ class QueryParam:
 
 
 @dataclass(frozen=True, slots=True)
-class Filterable:
+class Filterable(APICapability):
     """Field can be filtered on.
 
     Profile-agnostic version.
@@ -154,7 +161,7 @@ class Filterable:
 
 
 @dataclass(frozen=True, slots=True)
-class Sortable:
+class Sortable(APICapability):
     """Field can be sorted on.
 
     Profile-agnostic version.
@@ -163,7 +170,7 @@ class Sortable:
 
 
 @dataclass(frozen=True, slots=True)
-class Selectable:
+class Selectable(APICapability):
     """Field can be selected (sparse fieldsets).
 
     Profile-agnostic version.
@@ -172,7 +179,7 @@ class Selectable:
 
 
 @dataclass(frozen=True, slots=True)
-class Searchable:
+class Searchable(APICapability):
     """Field participates in full-text search.
 
     Profile-agnostic version.
@@ -184,7 +191,7 @@ class Searchable:
 
 
 @dataclass(frozen=True, slots=True)
-class ResponseData:
+class ResponseData(APICapability):
     """Path to data array in response JSON.
 
     Usage at class level (not field):
@@ -195,14 +202,14 @@ class ResponseData:
 
 
 @dataclass(frozen=True, slots=True)
-class ResponseTotal:
+class ResponseTotal(APICapability):
     """Path to total count in response JSON."""
     path: str
     profile: type | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class ResponseCursor:
+class ResponseCursor(APICapability):
     """Path to pagination cursor in response JSON."""
     path: str
     profile: type | None = None
@@ -235,6 +242,8 @@ def get_any_config(annotations: tuple[Any, ...]) -> ProfileConfig | None:
 
 
 __all__ = (
+    # Base
+    "APICapability",
     # Profile-scoped
     "ProfileConfig",
     "ProfileBuilder",

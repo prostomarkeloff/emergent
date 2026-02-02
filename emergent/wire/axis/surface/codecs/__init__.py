@@ -1,13 +1,21 @@
 """
 Codecs — convert transport payloads to domain ops and back.
 
-    from emergent.wire.axis.surface import codecs
+    from emergent.wire.axis.surface import codecs, capabilities as C
 
-    # RRC: Request/Response pattern
-    codec = codecs.rrc(RegisterRequest, RegisterResponse).use(auth_mw).build()
+    # RRC: Request/Response pattern (pure types)
+    endpoint(runner).expose(
+        trigger,
+        codecs.rrc(Request, Response),
+        C.enricher.Provide(type=AuthUser, ...),  # auth via capability
+    )
 
     # Stateful: FSM-based conversations
-    codec = codecs.stateful(BetFlow, BetStart).key(ChatId).build()
+    endpoint(runner).expose(
+        trigger,
+        codecs.stateful(BetFlow, BetResponse).key(ChatId).build(),
+        C.enricher.Provide(type=AuthUser, ...),  # runs when Done
+    )
 
     # Multi-transport stateful: multiple @transition methods
     from emergent.wire.axis.surface.codecs import transition
@@ -23,7 +31,6 @@ Codecs — convert transport payloads to domain ops and back.
 
 from emergent.wire.axis.surface.codecs.rrc import (
     RequestResponseCodec,
-    RRCBuilder,
     ToDomain,
     FromDomain,
     rrc,
@@ -38,11 +45,17 @@ from emergent.wire.axis.surface.codecs.stateful import (
     get_transitions,
     has_transitions,
 )
+from emergent.wire.axis.surface.codecs.immediate import (
+    ImmediateCodec,
+    ImmediateFactoryCodec,
+    Producing,
+    immediate,
+    immediate_factory,
+)
 
 __all__ = (
     # RRC
     "RequestResponseCodec",
-    "RRCBuilder",
     "ToDomain",
     "FromDomain",
     "rrc",
@@ -56,4 +69,10 @@ __all__ = (
     "transition",
     "get_transitions",
     "has_transitions",
+    # Immediate
+    "ImmediateCodec",
+    "ImmediateFactoryCodec",
+    "Producing",
+    "immediate",
+    "immediate_factory",
 )

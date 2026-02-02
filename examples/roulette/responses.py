@@ -1,15 +1,18 @@
-"""Response types — generic helpers to reduce boilerplate.
+"""Response types — multi-target UI annotations.
 
-Instead of writing separate RegisterResponse, LoginResponse, etc.
-with the same Ok→data, Error→error pattern, use generic helpers.
+UI annotations per target:
+- tg.* — Telegram formatting
+
+Text/i18n is in the data, not annotations.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, TypeVar, TYPE_CHECKING
+from typing import Generic, TypeVar, TYPE_CHECKING, Annotated
 
 from kungfu import Result, Ok, Error
+from emergent.wire.axis.schema.dialects import tg
 
 if TYPE_CHECKING:
     from roulette.game.domain import BetResult
@@ -36,7 +39,7 @@ class SuccessResponse(Generic[T]):
 @dataclass
 class TokenResponse:
     """Token response for auth operations."""
-    token: str | None = None
+    token: Annotated[str | None, tg.Code()] = None
     error: str | None = None
 
     @classmethod
@@ -55,8 +58,8 @@ class TokenResponse:
 
 @dataclass
 class BalanceResponse:
-    """Balance response."""
-    balance: int | None = None
+    """Balance response with UI annotations."""
+    balance: Annotated[int | None, tg.Bold()] = None
     error: str | None = None
 
     @classmethod
@@ -75,19 +78,22 @@ class BalanceResponse:
 
 @dataclass
 class BetResponse:
-    """Bet result response."""
-    won: bool | None = None
-    number: int | None = None
-    payout: int | None = None
-    new_balance: int | None = None
+    """Bet result response — text in data, formatting in annotations."""
+    # Text already includes emoji/i18n — done in from_domain
+    result: Annotated[str | None, tg.Bold()] = None
+    number: Annotated[int | None, tg.Code()] = None
+    payout: Annotated[int | None, tg.Bold()] = None
+    new_balance: Annotated[int | None, tg.Bold()] = None
     error: str | None = None
 
     @classmethod
     def from_domain(cls, dom: Result[BetResult, str]) -> BetResponse:
         match dom:
             case Ok(r):
+                # i18n/text done HERE, not in annotations
+                result = "✅ Won!" if r.won else "❌ Lost"
                 return cls(
-                    won=r.won,
+                    result=result,
                     number=r.number,
                     payout=r.payout,
                     new_balance=r.new_balance,
@@ -98,8 +104,7 @@ class BetResponse:
     def __str__(self) -> str:
         if self.error:
             return f"Error: {self.error}"
-        won = "Won" if self.won else "Lost"
-        return f"{won}! Number: {self.number}, Payout: {self.payout}, Balance: {self.new_balance}"
+        return f"{self.result} Number: {self.number}, Payout: {self.payout}, Balance: {self.new_balance}"
 
 
 @dataclass
