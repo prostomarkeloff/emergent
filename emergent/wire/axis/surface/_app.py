@@ -12,6 +12,17 @@ class Application:
     def mount(self, *endps: Endpoint) -> Application:
         return Application(endpoints=[*self.endpoints, *endps])
 
+    def __add__(self, other: Application) -> Application:
+        """Combine two applications — sum their endpoints."""
+        return Application(endpoints=[*self.endpoints, *other.endpoints])
+
+    def merge(self, *others: Application) -> Application:
+        """Merge multiple applications into one."""
+        all_endpoints = list(self.endpoints)
+        for other in others:
+            all_endpoints.extend(other.endpoints)
+        return Application(endpoints=all_endpoints)
+
 
 def application() -> Application:
     return Application()

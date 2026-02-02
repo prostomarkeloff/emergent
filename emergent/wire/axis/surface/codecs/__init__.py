@@ -52,6 +52,10 @@ from emergent.wire.axis.surface.codecs.immediate import (
     immediate,
     immediate_factory,
 )
+from emergent.wire.axis.surface.codecs.delegate import (
+    DelegateCodec,
+    delegate,
+)
 
 __all__ = (
     # RRC
@@ -75,4 +79,7 @@ __all__ = (
     "Producing",
     "immediate",
     "immediate_factory",
+    # Delegate
+    "DelegateCodec",
+    "delegate",
 )

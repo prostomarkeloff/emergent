@@ -86,7 +86,7 @@ class Tag(SurfaceCapability):
         tag_cls = models["Tag"]
         return cls(tag_cls(name=name, description=description))
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add tag to route configuration."""
         return fastapi_route(ctx, tags=(self.model.name,))
 
@@ -126,7 +126,7 @@ class BearerAuth(SurfaceCapability):
             model=bearer_cls(description=description),
         )
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add bearer auth security requirement."""
         return fastapi_route(ctx, security=({self.scheme_name: []},))
 
@@ -162,7 +162,7 @@ class ApiKeyAuth(SurfaceCapability):
             model=apikey_cls(**{"in": "query", "name": name, "description": description}),
         )
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add API key security requirement."""
         return fastapi_route(ctx, security=({self.scheme_name: []},))
 
@@ -269,7 +269,7 @@ class OAuth2Auth(SurfaceCapability):
             required_scopes=required_scopes,
         )
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add OAuth2 security requirement."""
         return fastapi_route(ctx, security=({self.scheme_name: list(self.required_scopes)},))
 
@@ -296,7 +296,7 @@ class Summary(SurfaceCapability):
         """Create summary with optional description."""
         return cls(text=text, description=description)
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add summary and description to route."""
         return fastapi_route(ctx, summary=self.text, description=self.description)
 
@@ -316,7 +316,7 @@ class OperationId(SurfaceCapability):
         """Create operation ID."""
         return cls(value=value)
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Set operation ID."""
         return fastapi_route(ctx, operation_id=self.value)
 
@@ -343,7 +343,7 @@ class Deprecated(SurfaceCapability):
         """Mark as deprecated with sunset date."""
         return cls(reason=reason, sunset_date=sunset_date)
 
-    def compile_fastapi(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
+    def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Mark route as deprecated."""
         return fastapi_route(ctx, deprecated=True)
 

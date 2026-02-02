@@ -210,12 +210,14 @@ def scan_all_codecs[T](
         ImmediateCodec,
         ImmediateFactoryCodec,
     )
+    from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 
     codec_types = (
         RequestResponseCodec,
         StatefulCodec,
         ImmediateCodec,
         ImmediateFactoryCodec,
+        DelegateCodec,
     )
 
     for codec_type in codec_types:

@@ -67,6 +67,10 @@ from emergent.wire.axis.surface.capabilities._response import (
     AsStr,
 )
 
+from emergent.wire.axis.surface.capabilities._delegate import (
+    resolve_handler_params,
+)
+
 from emergent.wire.axis.surface.capabilities._openapi import (
     # Tags
     Tag,
@@ -102,6 +106,8 @@ __all__ = (
     # Response transforms
     "AsDict",
     "AsStr",
+    # Delegate support
+    "resolve_handler_params",
     # OpenAPI
     "Tag",
     "BearerAuth",

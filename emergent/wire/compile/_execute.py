@@ -226,6 +226,81 @@ def execute_immediate_unified(
     return response
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Delegate Execution
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def execute_delegate_unified(
+    handler: Handler[Any],
+    inject_scope: ScopeInjector,
+    agent_cls: type[Agent] | None = None,
+    format_response: ResponseFormatter | None = None,
+) -> Any:
+    """Unified delegate execution — compose dialect works by default.
+
+    Compose dialect (compose.Node, compose.Inject, compose.Optional) is
+    resolved automatically on handler params. No capability needed.
+
+    Args:
+        handler: DelegateCodec handler
+        inject_scope: Inject framework types into scope
+        agent_cls: nodnod Agent class (default: EventLoopAgent)
+        format_response: Optional response formatter
+
+    Returns:
+        Formatted response
+    """
+    from emergent.wire.axis.surface.capabilities._base import ScopeEnricher
+    from emergent.wire.axis.surface.capabilities._delegate import resolve_handler_params
+    from emergent.wire.compile._rrc import chain_enrichers
+
+    _agent_cls = agent_cls or EventLoopAgent
+    original = handler.codec.handler
+
+    # Collect enrichers
+    enrichers = tuple(
+        cap for cap in handler.capabilities if isinstance(cap, ScopeEnricher)
+    )
+
+    async with Scope() as scope:
+        # 1. Inject framework context
+        result = inject_scope(scope)
+        if result is not None and hasattr(result, "__await__"):
+            await result
+
+        # 2. Core execution — resolve params via compose dialect
+        async def core(s: Scope) -> Any:
+            kwargs = await resolve_handler_params(original, s, _agent_cls)
+            return await _call_delegate(original, **kwargs)
+
+        # 3. Execute with enrichers
+        if enrichers:
+            response = await chain_enrichers(enrichers, core)(scope)
+        else:
+            response = await core(scope)
+
+    # 4. Apply response capabilities
+    response = apply_response_capabilities(response, handler.capabilities)
+
+    # 5. Format response
+    if format_response is not None:
+        response = format_response(response)
+
+    return response
+
+
+async def _call_delegate(handler: Callable[..., Any], **kwargs: Any) -> Any:
+    """Call delegate handler (sync or async)."""
+    import asyncio
+    import inspect
+
+    if inspect.iscoroutinefunction(handler):
+        return await handler(**kwargs)
+    else:
+        return await asyncio.to_thread(handler, **kwargs)
+
+
 __all__ = (
     "ValueGetter",
     "ScopeInjector",
@@ -233,4 +308,5 @@ __all__ = (
     "execute_rrc_unified",
     "execute_stateful_unified",
     "execute_immediate_unified",
+    "execute_delegate_unified",
 )
