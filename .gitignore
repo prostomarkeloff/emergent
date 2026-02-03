@@ -10,3 +10,6 @@ wheels/
 .venv
 
 _sematest
+emergent_meta
+_semman_test
+examples/tictactoe/data/

@@ -1,28 +1,98 @@
+"""Application — collection of endpoints with optional global capabilities.
+
+    app = application(
+        capabilities=(CORS(origins=("*",)), RequestIdInjector()),
+    ).mount(
+        endpoint(runner).expose(...),
+        endpoint(runner).expose(...),
+    )
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis.surface._endpoint import Endpoint
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.surface.capabilities import SurfaceCapability
+
+
+def _empty_caps() -> tuple[SurfaceCapability, ...]:
+    return ()
 
 
 @dataclass(slots=True)
 class Application:
+    """Wire application — endpoints + global capabilities.
+
+    Attributes:
+        endpoints: List of mounted endpoints.
+        capabilities: Global capabilities applied to all endpoints (middleware).
+
+    Example::
+
+        app = application(
+            capabilities=(
+                CORS(origins=("*",)),
+                GlobalTimeout(seconds=30),
+            ),
+        ).mount(
+            endpoint(auth_runner).expose(...),
+            endpoint(game_runner).expose(...),
+        )
+    """
+
     endpoints: list[Endpoint] = field(default_factory=list[Endpoint])
+    capabilities: tuple[SurfaceCapability, ...] = field(default_factory=_empty_caps)
 
     def mount(self, *endps: Endpoint) -> Application:
-        return Application(endpoints=[*self.endpoints, *endps])
+        """Mount endpoints to application."""
+        return Application(
+            endpoints=[*self.endpoints, *endps],
+            capabilities=self.capabilities,
+        )
+
+    def with_capabilities(self, *caps: SurfaceCapability) -> Application:
+        """Add global capabilities."""
+        return Application(
+            endpoints=self.endpoints,
+            capabilities=(*self.capabilities, *caps),
+        )
 
     def __add__(self, other: Application) -> Application:
-        """Combine two applications — sum their endpoints."""
-        return Application(endpoints=[*self.endpoints, *other.endpoints])
+        """Combine two applications — sum endpoints and capabilities."""
+        return Application(
+            endpoints=[*self.endpoints, *other.endpoints],
+            capabilities=(*self.capabilities, *other.capabilities),
+        )
 
     def merge(self, *others: Application) -> Application:
         """Merge multiple applications into one."""
         all_endpoints = list(self.endpoints)
+        all_capabilities: list[SurfaceCapability] = list(self.capabilities)
         for other in others:
             all_endpoints.extend(other.endpoints)
-        return Application(endpoints=all_endpoints)
+            all_capabilities.extend(other.capabilities)
+        return Application(
+            endpoints=all_endpoints,
+            capabilities=tuple(all_capabilities),
+        )
 
 
-def application() -> Application:
-    return Application()
+def application(
+    capabilities: tuple[SurfaceCapability, ...] = (),
+) -> Application:
+    """Create new application with optional global capabilities.
+
+    Args:
+        capabilities: Global capabilities (middleware) applied to all endpoints.
+
+    Example::
+
+        app = application(
+            capabilities=(CORS(origins=("*",)),),
+        ).mount(...)
+    """
+    return Application(capabilities=capabilities)

@@ -687,6 +687,62 @@ def grpc_compile(app: Application) -> GrpcServer:
 
 ---
 
+## Bridge — legacy framework → wire
+
+Symmetric to compile. Extract handlers from existing frameworks into wire Application.
+
+```
+compile: Application → Framework (OUT)
+bridge:  Framework → Application (IN)
+```
+
+```python
+from emergent.wire.bridge import WrapAsDelegate, IsolateGlobal, AddTrigger
+from emergent.wire.bridge.bridgers import fastapi
+from emergent.wire.axis.surface.triggers.cli import CLITrigger
+from emergent.wire.compile.targets import cli
+
+from my_legacy_app import fastapi_app
+
+# Extract FastAPI → wire Application
+wire_app = fastapi.extract(
+    fastapi_app,
+    capabilities=(
+        # Preserve handler signatures
+        WrapAsDelegate(),
+
+        # Symbol rewriting: replace global with wire storage
+        IsolateGlobal(
+            module_path="my_legacy_app.routes",
+            attr_name="_cache",
+            factory=lambda: create_storage(),
+        ),
+
+        # Add CLI triggers for cross-compilation
+        AddTrigger(
+            trigger_type=CLITrigger,
+            builder=lambda h: CLITrigger(h.name or "cmd", h.description),
+        ),
+    ),
+)
+
+# Compile to CLI (uses CLITrigger added above)
+cli_parser = cli.compile(wire_app, prog="my-tool")
+```
+
+**Capabilities:**
+
+| Capability | Purpose |
+|------------|---------|
+| `WrapAsDelegate()` | Preserve handler signature as DelegateCodec |
+| `IsolateGlobal(module, attr, factory)` | Replace module global with fresh instance per call |
+| `AddTrigger(type, builder)` | Add trigger for cross-compilation |
+| `MapDepends(depends_map)` | Resolve FastAPI `Depends()` parameters |
+| `SkipByName(names)` | Skip handlers by name |
+| `CatchErrors(on_error)` | Wrap handler with error boundary |
+
+---
+
 ## Stack
 
 | Layer | What |

@@ -134,13 +134,18 @@ def to_argparse_args(
     axes: Axes,
     handlers: Mapping[type[Capability], ArgparseHandler] | None = None,
 ) -> list[ArgSpec]:
-    """Generate argparse specs from dataclass + capabilities."""
+    """Generate argparse specs from dataclass or Pydantic model + capabilities."""
+    import dataclasses
     from emergent.wire.axis.schema.dialects import cli as cli_dialect
     from emergent.wire.axis._capability import argparse_arg
 
     fields_dict = axes.schema(cls)
-    original_fields = {f.name: f for f in dc_fields(cls)}
     result: list[ArgSpec] = []
+
+    # Get original dataclass fields if available (for defaults)
+    original_fields: dict[str, dataclasses.Field[object]] = {}
+    if dataclasses.is_dataclass(cls):
+        original_fields = {f.name: f for f in dc_fields(cls)}
 
     for name, field_info in fields_dict.items():
         ctx = ArgparseContext(field_name=name, field_type=field_info.base_type)
@@ -176,9 +181,10 @@ def to_argparse_args(
         kwargs = dict(ctx.kwargs)
         orig_field = original_fields.get(name)
 
-        has_default = orig_field and (
-            orig_field.default is not MISSING or orig_field.default_factory is not MISSING
-        )
+        # Check for defaults (dataclass fields or optional via schema)
+        has_default = field_info.is_optional
+        if orig_field and (orig_field.default is not MISSING or orig_field.default_factory is not MISSING):
+            has_default = True
 
         cli_caps = field_info.dialect("cli")
         flag_cap = next((c for c in cli_caps if isinstance(c, cli_dialect.Flag)), None)
@@ -192,18 +198,21 @@ def to_argparse_args(
             if len(flag_cap.names) > 1:
                 kwargs["aliases"] = list(flag_cap.names[1:])
             if orig_field and orig_field.default is not MISSING:
-                kwargs["default"] = orig_field.default
+                default_val: ArgparseKwargValue = orig_field.default  # type: ignore[assignment]
+                kwargs["default"] = default_val
             result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=False))
-        elif ctx.field_type is bool and orig_field and orig_field.default is False:
+        elif ctx.field_type is bool and has_default:
             arg_name = f"--{name.replace('_', '-')}"
             kwargs.update(action="store_true", default=False)
             result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=False))
         elif has_default:
             arg_name = f"--{name.replace('_', '-')}"
             if orig_field and orig_field.default is not MISSING:
-                kwargs["default"] = orig_field.default
+                default_val = orig_field.default  # type: ignore[assignment]
+                kwargs["default"] = default_val
             result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=False))
         else:
+            # Required field — positional argument
             result.append(ArgSpec(name=name, dest=name, kwargs=kwargs, is_positional=True))
 
     return result

@@ -16,14 +16,15 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import SQLAlchemyContext
 
 
-class SQLCapability(Capability):
+class SQLCapability(SchemaAxisCapability):
     """Base for SQL-specific capabilities."""
+
     pass
 
 

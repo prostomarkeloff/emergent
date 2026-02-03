@@ -56,13 +56,19 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class Capability(RootCapability):
-    """Base for all schema capabilities."""
+class SchemaAxisCapability(RootCapability):
+    """Base for all schema axis capabilities.
+
+    Inherits from root Capability to maintain the capability hierarchy.
+    All dialect capabilities (sql, openapi, pydantic, cli, etc.) inherit from this.
+    """
+
     pass
 
 
-class UniversalCapability(Capability):
+class UniversalCapability(SchemaAxisCapability):
     """Base for universal capabilities — all compilers understand."""
+
     pass
 
 
@@ -74,8 +80,9 @@ class UniversalCapability(Capability):
 _SCHEMA_META_ATTR = "__schema_capabilities__"
 
 
-class SchemaCapability(Capability):
+class SchemaCapability(SchemaAxisCapability):
     """Schema-level capability — applied to whole class via @schema_meta."""
+
     pass
 
 
@@ -487,9 +494,9 @@ class Deprecated(UniversalCapability):
 
 
 __all__ = (
-    "Capability",
+    "SchemaAxisCapability",
     "UniversalCapability",
-    # Schema-level
+    # Schema-level (class-level)
     "SchemaCapability",
     "schema_meta",
     "get_schema_meta",

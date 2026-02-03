@@ -8,6 +8,7 @@ app = fastapi_compile(wire_app, axes)
 
 from __future__ import annotations
 
+from collections.abc import Coroutine
 from typing import Any, Callable, cast
 
 import fastapi
@@ -425,6 +426,13 @@ def fastapi_compile_endpoint(
 def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastAPI:
     """Compile wire Application to FastAPI app.
 
+    Handles:
+    - HTTP routes (HTTPRouteTrigger)
+    - Lifecycle (StartupTrigger, ShutdownTrigger) via lifespan
+    - Exception handlers (ExceptionTrigger)
+    - WebSockets (WebSocketTrigger)
+    - Global capabilities (Application.capabilities)
+
     Args:
         app: Wire application
         axes: Axes context (default: Axes.default())
@@ -432,13 +440,74 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
     Returns:
         FastAPI application
     """
+    from contextlib import asynccontextmanager
+    from collections.abc import AsyncIterator
+
+    from emergent.wire.axis._capability import (
+        FastAPIAppContext,
+        FastAPIAppCompilable,
+    )
+    from emergent.wire.axis.surface.triggers.lifecycle import (
+        StartupTrigger,
+        ShutdownTrigger,
+    )
+    from emergent.wire.axis.surface.triggers.exception import ExceptionTrigger
+    from emergent.wire.axis.surface.triggers.websocket import WebSocketTrigger
+    from emergent.wire.axis.surface._scan import scan
+
     axes = axes or Axes.default()
-    fapi = fastapi.FastAPI()
 
-    # Shared state for compile-time capabilities
+    # 1. Collect lifecycle handlers sorted by order
+    startup_with_order = sorted(
+        [(t.order, _wrap_lifecycle(h)) for t, h in scan(app, StartupTrigger)],
+        key=lambda x: x[0],
+    )
+    shutdown_with_order = sorted(
+        [(t.order, _wrap_lifecycle(h)) for t, h in scan(app, ShutdownTrigger)],
+        key=lambda x: x[0],
+    )
+
+    @asynccontextmanager
+    async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
+        del fastapi_app  # unused but required by FastAPI
+        # Startup
+        for _order, handler_fn in startup_with_order:
+            await handler_fn()
+        yield
+        # Shutdown
+        for _order, handler_fn in shutdown_with_order:
+            await handler_fn()
+
+    fapi = fastapi.FastAPI(lifespan=lifespan)
+
+    # 2. Process application-level capabilities → middleware
+    app_ctx = FastAPIAppContext()
+    for cap in app.capabilities:
+        if isinstance(cap, FastAPIAppCompilable):
+            app_ctx = cap.compile_fastapi_app(app_ctx)
+
+    # Apply middleware (CORS is just middleware too)
+    for middleware_cls, kwargs in app_ctx.middleware:
+        fapi.add_middleware(middleware_cls, **kwargs)
+
+    # 3. Exception handlers
+    # Note: ExceptionTrigger is generic, pyright can't infer concrete type from scan()
+    for exc_trigger, exc_handler in scan(app, ExceptionTrigger):  # pyright: ignore[reportUnknownVariableType]
+        fapi.add_exception_handler(
+            exc_trigger.exception_type,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            _wrap_exception_handler(exc_handler),
+        )
+
+    # 4. WebSocket routes
+    for ws_trigger, ws_handler in scan(app, WebSocketTrigger):
+        fapi.add_api_websocket_route(
+            ws_trigger.path,
+            _wrap_websocket(ws_handler),
+            name=ws_trigger.name,
+        )
+
+    # 5. HTTP routes (existing logic)
     mounted: set[tuple[int, str]] = set()
-
-    # Unified compile loop
     scan_all_codecs(
         app,
         HTTPRouteTrigger,
@@ -448,6 +517,79 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
     )
 
     return fapi
+
+
+def _wrap_lifecycle(handler: Handler[Any]) -> Callable[[], Coroutine[Any, Any, None]]:
+    """Wrap lifecycle handler for lifespan context manager."""
+    import inspect
+
+    codec = handler.codec
+
+    # DelegateCodec — call the handler directly
+    if hasattr(codec, "handler"):
+        fn = codec.handler
+
+        async def _lifecycle() -> None:
+            if inspect.iscoroutinefunction(fn):
+                await fn()
+            else:
+                fn()
+
+        return _lifecycle
+
+    # ImmediateFactoryCodec — call the factory
+    if hasattr(codec, "factory"):
+        fn = codec.factory
+
+        async def _lifecycle_factory() -> None:
+            result = fn()
+            if inspect.isawaitable(result):
+                await result
+
+        return _lifecycle_factory
+
+    msg = f"Unsupported codec for lifecycle: {type(codec)}"
+    raise ValueError(msg)
+
+
+def _wrap_exception_handler(handler: Handler[Any]) -> Any:
+    """Wrap exception handler for FastAPI."""
+    import inspect
+
+    codec = handler.codec
+
+    if hasattr(codec, "handler"):
+        fn = codec.handler
+
+        async def _exc_handler(request: fastapi.Request, exc: Exception) -> Any:
+            if inspect.iscoroutinefunction(fn):
+                return await fn(exc)
+            else:
+                return fn(exc)
+
+        return _exc_handler
+
+    raise ValueError(f"Unsupported codec for exception handler: {type(codec)}")
+
+
+def _wrap_websocket(handler: Handler[Any]) -> Any:
+    """Wrap WebSocket handler for FastAPI."""
+    import inspect
+
+    codec = handler.codec
+
+    if hasattr(codec, "handler"):
+        fn = codec.handler
+
+        async def _ws_handler(websocket: Any) -> None:
+            if inspect.iscoroutinefunction(fn):
+                await fn(websocket)
+            else:
+                fn(websocket)
+
+        return _ws_handler
+
+    raise ValueError(f"Unsupported codec for websocket: {type(codec)}")
 
 
 def fastapi_compile_stack(stack: AppStack, axes: Axes | None = None) -> fastapi.FastAPI:

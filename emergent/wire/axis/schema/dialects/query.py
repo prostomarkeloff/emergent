@@ -24,11 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
-class QueryCapability(Capability):
+class QueryCapability(SchemaAxisCapability):
     """Base for query-specific capabilities."""
+
     pass
 
 

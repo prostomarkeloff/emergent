@@ -400,6 +400,128 @@ class CLICompilable(Protocol):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Application-Level Contexts (global middleware, app config)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _empty_middleware() -> tuple[tuple[type, Mapping[str, object]], ...]:
+    return ()
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIAppContext:
+    """FastAPI application-level configuration.
+
+    Used by FastAPIAppCompilable capabilities to configure
+    application-wide middleware. CORS is just middleware too.
+
+    Example::
+
+        @dataclass(frozen=True, slots=True)
+        class CORS(SurfaceCapability):
+            origins: tuple[str, ...]
+
+            def compile_fastapi_app(self, ctx: FastAPIAppContext) -> FastAPIAppContext:
+                from starlette.middleware.cors import CORSMiddleware
+                return fastapi_app_middleware(
+                    ctx,
+                    CORSMiddleware,
+                    allow_origins=list(self.origins),
+                )
+    """
+
+    middleware: tuple[tuple[type, Mapping[str, object]], ...] = field(
+        default_factory=_empty_middleware
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TelegrinderBotContext:
+    """Telegrinder bot-level configuration."""
+
+    error_handler: object | None = None
+    parse_mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CLIAppContext:
+    """CLI application-level configuration."""
+
+    prog: str | None = None
+    description: str | None = None
+    epilog: str | None = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Application-Level Compilation Protocols
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@runtime_checkable
+class FastAPIAppCompilable(Protocol):
+    """Capability that compiles to FastAPI application configuration.
+
+    Used for global middleware, CORS, etc.
+
+    Example::
+
+        @dataclass(frozen=True, slots=True)
+        class CORS(SurfaceCapability):
+            origins: tuple[str, ...]
+
+            def compile_fastapi_app(self, ctx: FastAPIAppContext) -> FastAPIAppContext:
+                return replace(ctx, cors=CORSSpec(allow_origins=self.origins))
+    """
+
+    def compile_fastapi_app(self, ctx: FastAPIAppContext) -> FastAPIAppContext:
+        ...
+
+
+@runtime_checkable
+class TelegrinderBotCompilable(Protocol):
+    """Capability that compiles to Telegrinder bot configuration."""
+
+    def compile_telegrinder_bot(self, ctx: TelegrinderBotContext) -> TelegrinderBotContext:
+        ...
+
+
+@runtime_checkable
+class CLIAppCompilable(Protocol):
+    """Capability that compiles to CLI application configuration."""
+
+    def compile_cli_app(self, ctx: CLIAppContext) -> CLIAppContext:
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Application-Level Context Helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def fastapi_app_middleware(
+    ctx: FastAPIAppContext,
+    middleware_cls: type,
+    **kwargs: object,
+) -> FastAPIAppContext:
+    """Add middleware to FastAPI app context.
+
+    Example::
+
+        # CORS is just middleware
+        ctx = fastapi_app_middleware(
+            ctx,
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_methods=["GET", "POST"],
+        )
+    """
+    return replace(
+        ctx,
+        middleware=(*ctx.middleware, (middleware_cls, kwargs)),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Combinator
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -437,14 +559,20 @@ __all__ = (
     "pydantic_model",
     "openapi_schema_level",
     "sqlalchemy_table",
-    # Surface axis contexts
+    # Surface axis route-level contexts
     "FastAPIRouteContext",
     "TelegrinderHandlerContext",
     "CLICommandContext",
-    # Surface axis helpers
+    # Surface axis route-level helpers
     "fastapi_route",
     "telegrinder_handler",
     "cli_command",
+    # Surface axis application-level contexts
+    "FastAPIAppContext",
+    "TelegrinderBotContext",
+    "CLIAppContext",
+    # Surface axis application-level helpers
+    "fastapi_app_middleware",
     # Schema axis field-level protocols
     "PydanticCompilable",
     "OpenAPICompilable",
@@ -454,10 +582,14 @@ __all__ = (
     "PydanticModelCompilable",
     "OpenAPISchemaCompilable",
     "SQLAlchemyTableCompilable",
-    # Surface axis protocols
+    # Surface axis route-level protocols
     "FastAPICompilable",
     "TelegrinderCompilable",
     "CLICompilable",
+    # Surface axis application-level protocols
+    "FastAPIAppCompilable",
+    "TelegrinderBotCompilable",
+    "CLIAppCompilable",
     # Combinators
     "combine",
 )

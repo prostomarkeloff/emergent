@@ -25,7 +25,7 @@ from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
 from emergent.wire.axis.schema.dialects.compose import (
     Node as ComposeNode,
     Optional as ComposeOptional,
-    Inject as ComposeInject,
+    Retrieve as ComposeRetrieve,
 )
 
 if TYPE_CHECKING:
@@ -78,7 +78,7 @@ async def build_field_value(
     Checks capabilities in order:
     1. compose.Node — compose via nodnod
     2. compose.Optional — compose, wrap in Option
-    3. compose.Inject — direct scope injection
+    3. compose.Retrieve — direct scope retrieval
     4. Regular — get from context accessor
 
     Returns: (has_value, value)
@@ -107,16 +107,16 @@ async def build_field_value(
         else:
             return True, Nothing()
 
-    # 3. compose.Inject
-    compose_inject_cap = info.get(ComposeInject)
-    if isinstance(compose_inject_cap, ComposeInject) and scope is not None:
-        inject_type = compose_inject_cap.inject_type
-        result = scope.retrieve(inject_type)
+    # 3. compose.Retrieve
+    compose_retrieve_cap = info.get(ComposeRetrieve)
+    if isinstance(compose_retrieve_cap, ComposeRetrieve) and scope is not None:
+        from_type = compose_retrieve_cap.from_type
+        result = scope.retrieve(from_type)
         match result:
             case Some(v):
                 return True, v.value
             case Nothing():
-                return False, f"Failed to inject {inject_type.__name__}"
+                return False, f"Failed to retrieve {from_type.__name__}"
 
     # 4. Regular — from context
     value = get_value(name)
@@ -211,7 +211,7 @@ def build_request_sync(
 ) -> Any:
     """Sync version of build_request.
 
-    WARNING: Does NOT support compose.* capabilities (Node, Optional, Inject).
+    WARNING: Does NOT support compose.* capabilities (Node, Optional, Retrieve).
     Use build_request() for full support.
 
     Only for backwards compatibility or truly sync-only contexts.

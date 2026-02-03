@@ -25,6 +25,7 @@ from emergent.wire.axis.surface._stack import AppStack
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.codecs.stateful import StatefulCodec, get_transitions
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
+from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 from emergent.wire.axis.surface.codecs.resolve import get_method_params
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
@@ -229,6 +230,139 @@ def wrap_immediate_cli(handler: Handler[Any], axes: Axes) -> Any:
 wrap_immediate_factory_cli = wrap_immediate_cli
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Delegate Handler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _inspect_handler_params(handler: Any) -> list[tuple[str, type, bool]]:
+    """Extract (name, type, has_default) from handler signature."""
+    import inspect
+    from typing import get_type_hints
+
+    result: list[tuple[str, type, bool]] = []
+    try:
+        sig = inspect.signature(handler)
+        hints = get_type_hints(handler)
+    except Exception:
+        return result
+
+    for name, param in sig.parameters.items():
+        param_type = hints.get(name)
+        if param_type is None:
+            continue
+        has_default = param.default is not inspect.Parameter.empty
+        result.append((name, param_type, has_default))
+
+    return result
+
+
+def _get_delegate_arg_specs(handler: Any, axes: Axes) -> list[ArgSpec]:
+    """Extract argparse specs from handler signature using schema axis.
+
+    For structured types (dataclasses, Pydantic): uses axes.schema for introspection.
+    For simple types: generates simple --name flags.
+    """
+    specs: list[ArgSpec] = []
+    params = _inspect_handler_params(handler)
+
+    for name, param_type, has_default in params:
+        # Structured type — use schema axis (supports dataclasses + Pydantic)
+        try:
+            specs.extend(to_argparse_args(param_type, axes))
+        except TypeError:
+            # Not a supported structured type — single flag
+            cli_name = f"--{name.replace('_', '-')}"
+            kwargs: dict[str, Any] = {}
+
+            if param_type in (str, int, float):
+                kwargs["type"] = param_type
+            elif param_type is bool:
+                kwargs["action"] = "store_true"
+            else:
+                kwargs["type"] = str
+
+            if not has_default:
+                kwargs["required"] = True
+
+            specs.append(ArgSpec(
+                name=cli_name, dest=name, kwargs=kwargs, is_positional=False
+            ))
+
+    return specs
+
+
+def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> dict[str, Any]:
+    """Build handler arguments from parsed namespace.
+
+    Reconstructs structured types (dataclasses, Pydantic) from fields.
+    """
+    from emergent.wire.axis.schema._inspect import inspect_dataclass
+
+    result: dict[str, Any] = {}
+    params = _inspect_handler_params(handler)
+
+    for name, param_type, _has_default in params:
+        # Structured type (dataclass or Pydantic) — reconstruct from fields
+        try:
+            fields = inspect_dataclass(param_type)
+            kwargs = {
+                field_name: getattr(ns, field_name, None)
+                for field_name in fields
+                if getattr(ns, field_name, None) is not None
+            }
+            result[name] = param_type(**kwargs)
+        except TypeError:
+            # Simple value
+            value = getattr(ns, name, None)
+            if value is not None:
+                result[name] = value
+
+    return result
+
+
+def wrap_delegate_cli(
+    handler: Handler[DelegateCodec],
+    axes: Axes,
+) -> tuple[list[ArgSpec], Any]:
+    """Wrap DelegateCodec handler for CLI using schema axis."""
+    delegate_handler = handler.codec.handler
+    arg_specs = _get_delegate_arg_specs(delegate_handler, axes)
+
+    async def _handler(ns: argparse.Namespace) -> str:
+        args = _build_delegate_args(delegate_handler, ns)
+
+        # Call handler (may be sync or async)
+        result = delegate_handler(**args)
+        if hasattr(result, "__await__"):
+            result = await result
+
+        # Apply response capabilities
+        result = apply_response_capabilities(result, handler.capabilities)
+        return str(result)
+
+    return (arg_specs, _handler)
+
+
+def register_delegate(
+    subparsers: Any,
+    trigger: CLITrigger,
+    handler: Handler[DelegateCodec],
+    axes: Axes,
+) -> None:
+    """Register DelegateCodec as subcommand."""
+    arg_specs, async_handler = wrap_delegate_cli(handler, axes)
+
+    sub = subparsers.add_parser(trigger.command, help=trigger.description)
+    for spec in arg_specs:
+        if spec.is_positional:
+            sub.add_argument(spec.name, **spec.kwargs)
+        else:
+            sub.add_argument(spec.name, dest=spec.dest, **spec.kwargs)
+
+    sub.set_defaults(_handler=async_handler)
+
+
 def register_immediate(
     subparsers: Any,
     trigger: CLITrigger,
@@ -262,6 +396,8 @@ def register_handler(
         register_rrc(subparsers, trigger, handler, axes)
     elif isinstance(handler.codec, StatefulCodec):
         register_stateful(subparsers, trigger, handler, axes)
+    elif isinstance(handler.codec, DelegateCodec):
+        register_delegate(subparsers, trigger, handler, axes)
     elif isinstance(handler.codec, ImmediateCodec):
         register_immediate(subparsers, trigger, handler, axes)
     elif isinstance(handler.codec, ImmediateFactoryCodec):

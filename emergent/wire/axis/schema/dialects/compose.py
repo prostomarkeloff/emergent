@@ -16,14 +16,15 @@ Any compiler with nodnod integration reads these.
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
 T = TypeVar("T")
 
 
-class ComposeCapability(Capability):
+class ComposeCapability(SchemaAxisCapability):
     """Base for nodnod composition capabilities."""
+
     pass
 
 
@@ -56,12 +57,15 @@ class Optional(ComposeCapability):
 
 
 @dataclass(frozen=True, slots=True)
-class Either(ComposeCapability):
+class Fallback(ComposeCapability):
     """Fallback chain — first successful node wins (SequentialEither).
 
+    Renamed from Either to avoid confusion with schema.Either (tagged union).
+
     Example:
-        user: Annotated[User, compose.Either(CachedUser, DBUser, GuestUser)]
+        user: Annotated[User, compose.Fallback(CachedUser, DBUser, GuestUser)]
     """
+
     node_types: tuple[type, ...]
 
     def __init__(self, *node_types: type) -> None:
@@ -82,18 +86,22 @@ class Race(ComposeCapability):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Scope Injection
+# Scope Retrieval
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True, slots=True)
-class Inject(ComposeCapability):
-    """Inject value directly from scope (no composition).
+class Retrieve(ComposeCapability):
+    """Retrieve value directly from scope by type (no composition).
+
+    Renamed from Inject to clarify this READS from scope.
+    (enricher.Inject WRITES to scope)
 
     Example:
-        auth_user: Annotated[AuthUser, compose.Inject(AuthUser)]
+        auth_user: Annotated[AuthUser, compose.Retrieve(AuthUser)]
     """
-    inject_type: type
+
+    from_type: type
 
 
 __all__ = (
@@ -101,8 +109,8 @@ __all__ = (
     # Node composition
     "Node",
     "Optional",
-    "Either",
+    "Fallback",
     "Race",
-    # Injection
-    "Inject",
+    # Scope retrieval
+    "Retrieve",
 )

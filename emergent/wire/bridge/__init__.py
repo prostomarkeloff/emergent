@@ -5,32 +5,20 @@ to wire Application for migration or unification.
 
 Structure mirrors compile/:
 - compile/targets: Application → Framework (OUT)
-- bridge/sources:  Framework → BridgeResult (IN)
+- bridge/bridgers: Framework → BridgeResult (IN)
 
 ```python
-from emergent.wire.bridge import sources, capabilities as BC
+from emergent.wire.bridge import bridgers, capabilities as BC
 
 # Extract from FastAPI
-result = sources.fastapi(
+wire_app = bridgers.fastapi.extract(
     existing_app,
     capabilities=(
         BC.SkipDeprecated(),
         BC.AddCapability(C.enricher.Timeout(seconds=30)),
-        BC.IsolateGlobal(
-            module_path="app.db",
-            attr_name="session",
-            factory=create_session,
-        ),
+        bridgers.fastapi.capabilities.MapDepends({...}),
     ),
 )
-
-# Inspect extracted handlers
-for h in result:
-    print(f"{h.trigger_data['method']} {h.trigger_data['path']}")
-    print(f"  request: {h.request_type}, response: {h.response_type}")
-
-# Convert to wire Application
-wire_app = sources.fastapi_compile(result, runner)
 ```
 """
 
@@ -39,6 +27,8 @@ from emergent.wire.bridge._core import (
     SyncHandler,
     AsyncHandler,
     AnyHandler,
+    # Wire data
+    WireData,
 )
 from emergent.wire.bridge._capabilities import (
     # Context
@@ -58,9 +48,11 @@ from emergent.wire.bridge._capabilities import (
     # BridgeCompilable capabilities
     SkipDeprecated,
     SkipByName,
+    IncludeOnlyByName,
     AddCapability,
     SetRequestTypeByName,
     SetResponseTypeByName,
+    SetCodecByName,
     # Purifier capabilities
     WrapAsync,
     CatchErrors,
@@ -68,8 +60,6 @@ from emergent.wire.bridge._capabilities import (
     IsolateGlobalAsync,
     InjectKwarg,
     InjectKwargAsync,
-    # ASGI mounting
-    MountASGI,
     # Delegate wrapping (THIN — framework handles params)
     WrapAsDelegate,
 )
@@ -89,14 +79,19 @@ from emergent.wire.bridge._core import (
 from emergent.wire.bridge._extract import extract_handler_unified
 
 # Re-export submodules
-from emergent.wire.bridge import sources
+from emergent.wire.bridge import bridgers
 from emergent.wire.bridge import _capabilities as capabilities
+
+# Cross-compilation
+from emergent.wire.bridge.bridgers._base import AddTrigger
 
 __all__ = (
     # Types
     "SyncHandler",
     "AsyncHandler",
     "AnyHandler",
+    # Wire data
+    "WireData",
     # Context
     "BridgeContext",
     # Protocols
@@ -121,9 +116,11 @@ __all__ = (
     # BridgeCompilable capabilities
     "SkipDeprecated",
     "SkipByName",
+    "IncludeOnlyByName",
     "AddCapability",
     "SetRequestTypeByName",
     "SetResponseTypeByName",
+    "SetCodecByName",
     # Purifier capabilities
     "WrapAsync",
     "CatchErrors",
@@ -131,15 +128,15 @@ __all__ = (
     "IsolateGlobalAsync",
     "InjectKwarg",
     "InjectKwargAsync",
-    # ASGI mounting
-    "MountASGI",
     # Delegate wrapping (THIN — framework handles params)
     "WrapAsDelegate",
+    # Cross-compilation
+    "AddTrigger",
     # Functions
     "extract_all",
     "extract_handler_unified",
     "to_application",
     # Submodules
     "capabilities",
-    "sources",
+    "bridgers",
 )

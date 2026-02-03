@@ -15,14 +15,15 @@ import copy
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import PydanticContext
 
 
-class PydanticCapability(Capability):
+class PydanticCapability(SchemaAxisCapability):
     """Base for Pydantic-specific capabilities."""
+
     pass
 
 

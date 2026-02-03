@@ -1,6 +1,6 @@
 """Delegate codec support — compose dialect resolution.
 
-Compose dialect (compose.Node, compose.Inject, compose.Optional) works
+Compose dialect (compose.Node, compose.Retrieve, compose.Optional) works
 by default on handler params — no capability needed.
 """
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 #
 # This is NOT a capability — compose dialect works by default in all compilers.
-# Annotate handler params with compose.Node, compose.Inject, compose.Optional
+# Annotate handler params with compose.Node, compose.Retrieve, compose.Optional
 # and compilers will resolve them automatically.
 
 
@@ -34,7 +34,7 @@ async def resolve_handler_params(
 
     For each param:
     1. Has compose.Node → run nodnod node
-    2. Has compose.Inject → get from scope by type
+    2. Has compose.Retrieve → get from scope by type
     3. Has compose.Optional → compose, wrap in Option
     4. No annotation → get from scope by type (fallback)
 
@@ -49,7 +49,7 @@ async def resolve_handler_params(
     from emergent.wire.axis.schema.dialects.compose import (
         Node as ComposeNode,
         Optional as ComposeOptional,
-        Inject as ComposeInject,
+        Retrieve as ComposeRetrieve,
     )
 
     try:
@@ -89,9 +89,9 @@ async def resolve_handler_params(
             else:
                 result[name] = Nothing()
 
-        elif isinstance(compose_cap, ComposeInject):
-            # Direct scope injection by type
-            inject_result = scope.retrieve(compose_cap.inject_type)
+        elif isinstance(compose_cap, ComposeRetrieve):
+            # Direct scope retrieval by type
+            inject_result = scope.retrieve(compose_cap.from_type)
             match inject_result:
                 case Some(v):
                     result[name] = v.value

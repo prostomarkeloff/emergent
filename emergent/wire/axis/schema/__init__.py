@@ -8,10 +8,38 @@
     @dataclass
     class User:
         email: Annotated[str, Unique, MaxLen(255), Doc("User email")]
+
+## Type Inspection — Pure Composable Inspectors
+
+Unified inspection for ANY structured type (dataclass, Pydantic, TypedDict, NamedTuple):
+
+    from emergent.wire.axis.schema import inspect_type, FieldInfo
+
+    # Works for any supported type
+    fields = inspect_type(User)  # dataclass, Pydantic, TypedDict, NamedTuple
+
+    for name, info in fields.items():
+        print(f"{name}: {info.base_type}")
+        print(f"  universal: {info.universal}")
+        print(f"  sql: {info.dialect('sql')}")
+
+Custom composition with `first_match`:
+
+    from emergent.wire.axis.schema import (
+        first_match, dataclass_inspector, pydantic_inspector
+    )
+
+    # Prioritize attrs over dataclass
+    my_inspector = first_match(
+        attrs_inspector,
+        dataclass_inspector,
+        pydantic_inspector,
+    )
+    axes = Axes(schema=my_inspector)
 """
 
 from emergent.wire.axis.schema._universal import (
-    Capability,
+    SchemaAxisCapability,
     UniversalCapability,
     SchemaCapability,
     schema_meta,
@@ -71,10 +99,26 @@ from emergent.wire.axis.schema._patterns import (
 )
 
 from emergent.wire.axis.schema._inspect import (
+    # Core types
     FieldInfo,
-    inspect_field,
+    Inspector,
+    # Combinator
+    first_match,
+    # Individual inspectors (for custom composition)
+    dataclass_inspector,
+    pydantic_inspector,
+    typeddict_inspector,
+    namedtuple_inspector,
+    # Default composed inspector
+    inspect_type,
+    # Backwards compat
     inspect_dataclass,
-    get_table_capabilities,
+    # Helpers
+    inspect_field,
+    unwrap_optional,
+    unwrap_annotated,
+    extract_capabilities,
+    # Dialect registry
     DIALECT_BASES,
 )
 
@@ -82,7 +126,7 @@ from emergent.wire.axis.schema import dialects
 
 __all__ = (
     # Base
-    "Capability",
+    "SchemaAxisCapability",
     "UniversalCapability",
     "SchemaCapability",
     "schema_meta",
@@ -136,11 +180,25 @@ __all__ = (
     "Percentage",
     "Probability",
     "UniqueValue",
-    # Introspection
+    # Introspection — Core types
     "FieldInfo",
-    "inspect_field",
+    "Inspector",
+    # Introspection — Combinator
+    "first_match",
+    # Introspection — Individual inspectors (for custom composition)
+    "dataclass_inspector",
+    "pydantic_inspector",
+    "typeddict_inspector",
+    "namedtuple_inspector",
+    # Introspection — Default composed inspector
+    "inspect_type",
+    # Introspection — Backwards compat
     "inspect_dataclass",
-    "get_table_capabilities",
+    # Introspection — Helpers
+    "inspect_field",
+    "unwrap_optional",
+    "unwrap_annotated",
+    "extract_capabilities",
     "DIALECT_BASES",
     # Dialects
     "dialects",

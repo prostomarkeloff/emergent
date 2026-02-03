@@ -1,21 +1,25 @@
-"""Bridge capabilities — transform during extraction.
+"""Bridge capabilities — GENERIC transformation during extraction.
 
-Like compile/_capabilities.py + surface/capabilities/_enricher.py combined.
+CORE MODULE — framework-agnostic. Framework-specific capabilities
+live in bridgers/ (e.g., bridgers/fastapi/_capabilities.py).
 
 Two orthogonal protocols:
-- BridgeCompilable: transforms BridgeContext (compile-time metadata)
-- Purifier: wraps handler (symmetric to ScopeEnricher)
+- BridgeCompilable: transforms BridgeContext (extraction-time metadata)
+- Purifier: wraps handler (static transformation)
 
 A capability can implement both, one, or neither.
 
     from emergent.wire.bridge import capabilities as BC
+    from emergent.wire.bridge.bridgers import fastapi
 
-    result = sources.fastapi(
+    wire_app = fastapi.extract(
         app,
         capabilities=(
             BC.SkipDeprecated(),
             BC.AddCapability(C.Timeout(seconds=30), for_names=frozenset({"slow"})),
             BC.IsolateGlobal(...),
+            # Framework-specific:
+            fastapi.capabilities.MapDepends({...}),
         ),
     )
 """
@@ -31,13 +35,13 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, TypeGuard, runtime_checkable
 
-from kungfu import Result
 
 from emergent.wire.axis._capability import Capability
 from emergent.wire.bridge._core import (
     AnyHandler,
     AsyncHandler,
     SyncHandler,
+    WireData,
 )
 
 if TYPE_CHECKING:
@@ -53,10 +57,6 @@ type AsyncContextManagerFactory[V] = Callable[[], AbstractAsyncContextManager[V]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_surface_caps() -> tuple[SurfaceCapability, ...]:
-    return ()
-
-
 @dataclass(frozen=True, slots=True)
 class BridgeContext[T, **P, R]:
     """Extraction context — capabilities transform this.
@@ -65,7 +65,8 @@ class BridgeContext[T, **P, R]:
     P — handler parameter spec.
     R — handler return type.
 
-    Capabilities set codec/op_type/op_handler for endpoint creation.
+    Wire-specific data (codec, surface_capabilities) stored in `wire` field.
+    Use replace() to update.
     """
 
     trigger_data: T
@@ -73,18 +74,13 @@ class BridgeContext[T, **P, R]:
     # Detected types (from inspector)
     request_type: type | None = None
     response_type: type | None = None
-    # Metadata
+    # Basic metadata
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    surface_capabilities: tuple[SurfaceCapability, ...] = field(
-        default_factory=_empty_surface_caps
-    )
     skip: bool = False
-    # Codec + runner setup — set by capabilities (self-contained!)
-    codec: object | None = None
-    op_type: type | None = None
-    op_handler: Callable[..., Awaitable[Result[object, object]]] | None = None
+    # Wire-specific data — typed container
+    wire: WireData = field(default_factory=WireData)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -105,14 +101,28 @@ class BridgeCompilable(Protocol):
 
 @runtime_checkable
 class Purifier(Protocol):
-    """Protocol for handler wrapping at extraction-time.
+    """Protocol for STATIC handler wrapping at extraction-time.
 
-    Symmetric to ScopeEnricher but for bridge direction.
+    NOT symmetric to ScopeEnricher — this runs ONCE at extraction, not per-request.
+    Use for: sync→async conversion, error boundaries, global isolation.
+
+    For RUNTIME behavior (auth, timeout, retry, caching), use AddCapability
+    with enrichers instead::
+
+        # WRONG — Purifier can't access request/scope
+        class AuthPurifier:
+            def purify(self, handler): ...  # No scope access!
+
+        # RIGHT — AddCapability with enricher runs at runtime
+        AddCapability(enricher.Provide(type=User, ...))
+        AddCapability(enricher.Timeout(seconds=30))
+        AddCapability(enricher.Retry(policy=...))
+
     Always returns async handler, preserving parameter spec and return type.
     """
 
     def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
-        """Wrap handler with purification logic."""
+        """Wrap handler with static transformation logic."""
         ...
 
 
@@ -187,16 +197,27 @@ async def _call_handler[**P, R](
     raise TypeError("Handler must be sync or async")
 
 
+# Public aliases for use by bridgers
+ensure_async = _ensure_async
+call_handler = _call_handler
+
+
 def chain_purifiers[**P, R](
     purifiers: Sequence[Purifier],
     handler: AnyHandler[P, R],
 ) -> AsyncHandler[P, R]:
-    """Chain purifiers around handler."""
+    """Chain purifiers around handler.
+
+    Purifiers are applied in order: first purifier is outermost wrapper.
+    For [A, B, C]: A wraps B wraps C wraps handler.
+    Execution order: A.before → B.before → C.before → handler → C.after → B.after → A.after
+    """
     if not purifiers:
         return _ensure_async(handler)
 
-    result: AsyncHandler[P, R] = purifiers[-1].purify(handler)
-    for purifier in reversed(purifiers[:-1]):
+    # Apply in reverse so first purifier is outermost
+    result: AsyncHandler[P, R] = _ensure_async(handler)
+    for purifier in reversed(purifiers):
         result = purifier.purify(result)
     return result
 
@@ -306,6 +327,25 @@ class SkipByName(BridgeCapability):
 
 
 @dataclass(frozen=True, slots=True)
+class IncludeOnlyByName(BridgeCapability):
+    """Include only handlers matching name or pattern. Skip all others."""
+
+    names: frozenset[str] = frozenset()
+    pattern: str | None = None
+
+    def compile_bridge[T, **P, R](
+        self, ctx: BridgeContext[T, P, R]
+    ) -> BridgeContext[T, P, R]:
+        if ctx.name is None:
+            return replace(ctx, skip=True)
+        if ctx.name in self.names:
+            return ctx
+        if self.pattern is not None and re.match(self.pattern, ctx.name):
+            return ctx
+        return replace(ctx, skip=True)
+
+
+@dataclass(frozen=True, slots=True)
 class AddCapability(BridgeCapability):
     """Add surface capability to handlers."""
 
@@ -318,10 +358,11 @@ class AddCapability(BridgeCapability):
     ) -> BridgeContext[T, P, R]:
         if not _matches_name(ctx, self.for_names, self.for_pattern):
             return ctx
-        return replace(
-            ctx,
-            surface_capabilities=(*ctx.surface_capabilities, self.capability),
+        new_wire = replace(
+            ctx.wire,
+            surface_capabilities=(*ctx.wire.surface_capabilities, self.capability),
         )
+        return replace(ctx, wire=new_wire)
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +394,33 @@ class SetResponseTypeByName(BridgeCapability):
             return ctx
         if ctx.name is not None and ctx.name in self.type_map:
             return replace(ctx, response_type=self.type_map[ctx.name])
+        return ctx
+
+
+@dataclass(frozen=True, slots=True)
+class SetCodecByName(BridgeCapability):
+    """Set codec explicitly by handler name.
+
+    Use when you need full control over codec creation.
+
+    Example::
+
+        SetCodecByName(codec_map={
+            "get_users": rrc(GetUsersRequest, UsersResponse),
+            "create_user": rrc(CreateUserRequest, UserResponse),
+        })
+    """
+
+    codec_map: dict[str, object]
+
+    def compile_bridge[T, **P, R](
+        self, ctx: BridgeContext[T, P, R]
+    ) -> BridgeContext[T, P, R]:
+        if ctx.wire.codec is not None:
+            return ctx
+        if ctx.name is not None and ctx.name in self.codec_map:
+            new_wire = replace(ctx.wire, codec=self.codec_map[ctx.name])
+            return replace(ctx, wire=new_wire)
         return ctx
 
 
@@ -390,12 +458,15 @@ class CatchErrors[E](BridgeCapability):
 
 @dataclass(frozen=True, slots=True)
 class IsolateGlobal[V](BridgeCapability):
-    """Isolate global module attribute with lock."""
+    """Isolate global module attribute with per-handler lock.
+
+    Each wrapped handler gets its OWN lock, so different handlers
+    don't block each other. Only concurrent calls to the SAME handler serialize.
+    """
 
     module_path: str
     attr_name: str
     factory: Callable[[], V]
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
         import importlib
@@ -403,7 +474,8 @@ class IsolateGlobal[V](BridgeCapability):
         module = importlib.import_module(self.module_path)
         attr = self.attr_name
         factory = self.factory
-        lock = self._lock
+        # Per-handler lock — created once per purify() call
+        lock = asyncio.Lock()
 
         @functools.wraps(handler)
         async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -420,12 +492,15 @@ class IsolateGlobal[V](BridgeCapability):
 
 @dataclass(frozen=True, slots=True)
 class IsolateGlobalAsync[V](BridgeCapability):
-    """Isolate global with async context manager factory."""
+    """Isolate global with async context manager factory.
+
+    Each wrapped handler gets its OWN lock, so different handlers
+    don't block each other. Only concurrent calls to the SAME handler serialize.
+    """
 
     module_path: str
     attr_name: str
     factory: AsyncContextManagerFactory[V]
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
         import importlib
@@ -433,7 +508,8 @@ class IsolateGlobalAsync[V](BridgeCapability):
         module = importlib.import_module(self.module_path)
         attr = self.attr_name
         factory = self.factory
-        lock = self._lock
+        # Per-handler lock — created once per purify() call
+        lock = asyncio.Lock()
 
         @functools.wraps(handler)
         async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -492,60 +568,6 @@ class InjectKwargAsync[V](BridgeCapability):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MountASGI — mount ASGI app via compiler capability
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True, slots=True)
-class MountASGI(BridgeCapability):
-    """Mount ASGI app instead of calling individual handlers.
-
-    Adds the Mount compiler capability to extracted handlers.
-    The compiler will mount the ASGI app ONCE at the specified prefix.
-    Individual route registrations are skipped — ASGI app handles all routes.
-
-    Example::
-
-        from django.core.asgi import get_asgi_application
-
-        django_asgi = get_asgi_application()
-
-        result = sources.django(
-            urlpatterns,
-            capabilities=(
-                BC.MountASGI(django_asgi, prefix="/django", source="django"),
-                BC.WrapAsDelegate(),
-            ),
-        )
-
-    Attributes:
-        app: ASGI application to mount.
-        prefix: Path prefix to mount at.
-        source: Source framework name (for documentation).
-    """
-
-    app: object  # ASGI app
-    prefix: str = "/"
-    source: str = ""
-    _mount_cap: object | None = field(default=None, compare=False, hash=False)
-
-    def compile_bridge[T, **P, R](
-        self, ctx: BridgeContext[T, P, R]
-    ) -> BridgeContext[T, P, R]:
-        """Add Mount compiler capability to surface capabilities."""
-        from emergent.wire.compile._capabilities import Mount
-
-        # Reuse same Mount instance so it mounts only once
-        if self._mount_cap is None:
-            object.__setattr__(self, "_mount_cap", Mount(self.app, self.prefix, self.source))
-
-        return replace(
-            ctx,
-            surface_capabilities=(*ctx.surface_capabilities, self._mount_cap),
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # WrapAsDelegate — THIN, preserves handler signature
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -556,8 +578,8 @@ class WrapAsDelegate(BridgeCapability):
 
     SIMPLE capability that:
     1. Wraps handler in DelegateCodec (preserves signature)
-    2. Optionally extracts response type from return annotation
-    3. That's it! Framework (FastAPI) handles all param resolution.
+    2. Uses response_type from context (already extracted by inspector)
+    3. That's it! Target framework handles all param resolution.
 
     This is the THIN approach — don't reinvent type resolution.
     """
@@ -566,25 +588,13 @@ class WrapAsDelegate(BridgeCapability):
         self, ctx: BridgeContext[T, P, R]
     ) -> BridgeContext[T, P, R]:
         """Create delegate codec — just wrap the handler."""
-        from typing import get_type_hints
-
         from emergent.wire.axis.surface.codecs.delegate import delegate
 
-        # Extract response type from return annotation
-        response_type: type | None = None
-        if callable(ctx.handler):
-            try:
-                hints = get_type_hints(ctx.handler)
-                ret = hints.get("return")
-                if isinstance(ret, type):
-                    response_type = ret
-            except Exception:
-                pass
+        # Use response_type from context (already extracted by inspector)
+        codec = delegate(ctx.handler, response=ctx.response_type)
+        new_wire = replace(ctx.wire, codec=codec)
 
-        # Create codec — just wraps the handler
-        codec = delegate(ctx.handler, response=response_type)
-
-        return replace(ctx, codec=codec)
+        return replace(ctx, wire=new_wire)
 
 
 __all__ = (
@@ -600,6 +610,8 @@ __all__ = (
     # Base
     "BridgeCapability",
     # Execution helpers
+    "ensure_async",
+    "call_handler",
     "chain_purifiers",
     "apply_bridge_capabilities",
     "apply_purifiers",
@@ -609,9 +621,11 @@ __all__ = (
     # BridgeCompilable capabilities
     "SkipDeprecated",
     "SkipByName",
+    "IncludeOnlyByName",
     "AddCapability",
     "SetRequestTypeByName",
     "SetResponseTypeByName",
+    "SetCodecByName",
     # Purifier capabilities
     "WrapAsync",
     "CatchErrors",
@@ -619,8 +633,6 @@ __all__ = (
     "IsolateGlobalAsync",
     "InjectKwarg",
     "InjectKwargAsync",
-    # ASGI mounting
-    "MountASGI",
     # Delegate wrapping (THIN — framework handles params)
     "WrapAsDelegate",
 )

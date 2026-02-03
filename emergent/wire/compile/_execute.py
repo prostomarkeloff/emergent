@@ -239,7 +239,7 @@ async def execute_delegate_unified(
 ) -> Any:
     """Unified delegate execution — compose dialect works by default.
 
-    Compose dialect (compose.Node, compose.Inject, compose.Optional) is
+    Compose dialect (compose.Node, compose.Retrieve, compose.Optional) is
     resolved automatically on handler params. No capability needed.
 
     Args:

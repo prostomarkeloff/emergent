@@ -24,14 +24,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
 P = TypeVar("P")  # Profile type
 
 
-class APICapability(Capability):
+class APICapability(SchemaAxisCapability):
     """Base for API-specific capabilities."""
+
     pass
 
 

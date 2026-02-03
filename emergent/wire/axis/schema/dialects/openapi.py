@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import OpenAPIContext
@@ -24,8 +24,9 @@ if TYPE_CHECKING:
 ExampleValue = str | int | float | bool | None | list["ExampleValue"] | dict[str, "ExampleValue"]
 
 
-class OpenAPICapability(Capability):
+class OpenAPICapability(SchemaAxisCapability):
     """Base for OpenAPI-specific capabilities."""
+
     pass
 
 

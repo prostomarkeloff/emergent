@@ -17,14 +17,15 @@ import os
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import ArgparseContext
 
 
-class CLICapability(Capability):
+class CLICapability(SchemaAxisCapability):
     """Base for CLI-specific capabilities."""
+
     pass
 
 

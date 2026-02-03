@@ -1,13 +1,12 @@
 """Unified extraction — like _execute.py for compile.
 
 Sources just provide the pieces, extraction logic is unified.
-Capabilities set codec/op_type/op_handler — extraction just passes through.
+Capabilities set codec/op_type/op_handler via wire field — extraction just passes through.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 from emergent.wire.bridge._capabilities import (
     AnyHandler,
@@ -16,10 +15,7 @@ from emergent.wire.bridge._capabilities import (
     apply_bridge_capabilities,
     apply_purifiers,
 )
-from emergent.wire.bridge._core import BridgeAxes, ExtractedHandler
-
-if TYPE_CHECKING:
-    from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
+from emergent.wire.bridge._core import BridgeAxes, ExtractedHandler, WireData
 
 
 def extract_handler_unified[T, **P, R](
@@ -27,12 +23,12 @@ def extract_handler_unified[T, **P, R](
     handler: AnyHandler[P, R],
     axes: BridgeAxes,
     capabilities: Sequence[BridgeCapability] = (),
-    extra_surface_caps: Sequence[SurfaceCapability] = (),
+    extra_surface_caps: Sequence[object] = (),
 ) -> ExtractedHandler[T, P, R] | None:
     """Unified handler extraction — sources just call this.
 
     Like execute_rrc_unified() — does all the work.
-    Capabilities are self-contained — they set codec/op_type/op_handler.
+    Capabilities are self-contained — they set wire.codec/op_type/op_handler.
 
     Args:
         trigger_data: Source-specific trigger data.
@@ -48,7 +44,8 @@ def extract_handler_unified[T, **P, R](
     request_type = axes.inspector.request_type(handler)
     response_type = axes.inspector.response_type(handler)
 
-    # 2. Build initial context
+    # 2. Build initial context with wire data
+    initial_wire = WireData(surface_capabilities=tuple(extra_surface_caps))  # type: ignore[arg-type]
     ctx: BridgeContext[T, P, R] = BridgeContext(
         trigger_data=trigger_data,
         handler=handler,
@@ -56,10 +53,10 @@ def extract_handler_unified[T, **P, R](
         response_type=response_type,
         name=getattr(handler, "__name__", None),
         description=getattr(handler, "__doc__", None),
-        surface_capabilities=tuple(extra_surface_caps),
+        wire=initial_wire,
     )
 
-    # 3. Apply BridgeCompilable capabilities (set codec/op_type/op_handler)
+    # 3. Apply BridgeCompilable capabilities (set wire.codec/op_type/op_handler)
     ctx = apply_bridge_capabilities(ctx, capabilities)
     if ctx.skip:
         return None
@@ -67,17 +64,14 @@ def extract_handler_unified[T, **P, R](
     # 4. Apply Purifier capabilities to handler
     wrapped_handler = apply_purifiers(ctx.handler, capabilities)
 
-    # 5. Return extracted handler — capabilities already set everything
+    # 5. Return extracted handler — capabilities already set everything in wire
     return ExtractedHandler(
         trigger_data=ctx.trigger_data,
         handler=wrapped_handler,
-        codec=ctx.codec,
-        op_type=ctx.op_type,
-        op_handler=ctx.op_handler,
         name=ctx.name,
         description=ctx.description,
         deprecated=ctx.deprecated,
-        surface_capabilities=ctx.surface_capabilities,
+        wire=ctx.wire,
     )
 
 

@@ -41,6 +41,14 @@ from emergent.wire.axis.surface._types import Trigger, Codec, Exposure
 # Submodules
 from emergent.wire.axis.surface import codecs, triggers, capabilities
 
+# Re-export commonly used triggers at package level
+from emergent.wire.axis.surface.triggers import (
+    StartupTrigger,
+    ShutdownTrigger,
+    ExceptionTrigger,
+    WebSocketTrigger,
+)
+
 # Empty runner for immediate codecs
 from emergent.ops import ops as _ops, Runner as _Runner
 
@@ -76,6 +84,11 @@ __all__ = (
     "Trigger",
     "Codec",
     "Exposure",
+    # Common triggers (re-exported for convenience)
+    "StartupTrigger",
+    "ShutdownTrigger",
+    "ExceptionTrigger",
+    "WebSocketTrigger",
     # Submodules
     "codecs",
     "triggers",

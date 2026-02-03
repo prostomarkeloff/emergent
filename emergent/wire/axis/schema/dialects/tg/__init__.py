@@ -14,11 +14,12 @@ Only formatting/structure. Text comes from Response data (i18n is your problem).
 from dataclasses import dataclass
 from typing import Literal
 
-from emergent.wire.axis.schema._universal import Capability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
-class TelegramCapability(Capability):
+class TelegramCapability(SchemaAxisCapability):
     """Base for Telegram-specific capabilities."""
+
     pass
 
 
