@@ -66,9 +66,10 @@ class Bounty:
     status: str = "open"
     hunter: str | None = None
 
+    @classmethod
     @post("/bounties/{bounty_id}/claim")
     async def claim(
-        self,
+        cls,
         db: Annotated[MutatingRelationalProvider[Bounty], compose.Node(BountyBoard)],
         bounty_id: int,
         hunter: str,
@@ -84,9 +85,10 @@ class Bounty:
         await db.update(updated)
         return Ok(updated)
 
+    @classmethod
     @post("/bounties/{bounty_id}/complete")
     async def complete(
-        self,
+        cls,
         db: Annotated[MutatingRelationalProvider[Bounty], compose.Node(BountyBoard)],
         bounty_id: int,
     ) -> Result[Bounty, DomainError]:

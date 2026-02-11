@@ -768,12 +768,14 @@ from derivelib.patterns.methods import methods, post, get, command
 @derive(methods)
 @dataclass
 class OrderService:
+    @classmethod
     @post("/api/orders")
-    async def create(self, customer: str, total: float) -> Result[int, DomainError]:
+    async def create(cls, customer: str, total: float) -> Result[int, DomainError]:
         return Ok(new_id)
 
+    @classmethod
     @get("/api/orders")
-    async def list_all(self) -> Result[list[Order], DomainError]:
+    async def list_all(cls) -> Result[list[Order], DomainError]:
         ...
 
 app = build_application_from_decorated(OrderService)
@@ -798,9 +800,10 @@ Methods don't derive from entity shape — they're explicit. Each method declare
 Stack decorators for multiple exposures per method:
 
 ```python
+@classmethod
 @post("/api/orders")
 @command("order-create")
-async def create(self, ...) -> Result[int, DomainError]: ...
+async def create(cls, ...) -> Result[int, DomainError]: ...
 ```
 
 #### Per-method capabilities
@@ -808,8 +811,9 @@ async def create(self, ...) -> Result[int, DomainError]: ...
 Pass capabilities directly to trigger decorators:
 
 ```python
+@classmethod
 @post("/api/admin/users", AuthCap())
-async def admin_create(self, ...) -> Result[User, DomainError]: ...
+async def admin_create(cls, ...) -> Result[User, DomainError]: ...
 ```
 
 #### `MethodsPattern`
@@ -892,7 +896,7 @@ add_method_capability(AuthCap()) # appends to ExposeMethod.capabilities
 Methods must return `Result[T, E]`:
 
 ```python
-async def create(self, ...) -> Result[int, DomainError]:
+async def create(cls, ...) -> Result[int, DomainError]:
     return Ok(42)          # success
     return Error(InvalidData(...))  # error → passed through capabilities
 ```
@@ -904,9 +908,10 @@ The `T` in `Result[T, E]` becomes the response type. Errors are converted by cap
 Methods get dependencies via `Annotated[T, compose.Node(NodeType)]` — same DI mechanism as CRUD handlers:
 
 ```python
+@classmethod
 @post("/api/orders")
 async def create(
-    self,
+    cls,
     db: Annotated[MutatingRelationalProvider[Order], compose.Node(OrderStore)],
     customer: str,
     total: float,
@@ -1430,12 +1435,14 @@ class Bounty:
     status: str = "open"
     hunter: str | None = None
 
+    @classmethod
     @post("/bounties/{bounty_id}/claim")
-    async def claim(self, db: ..., bounty_id: int, hunter: str) -> Result[Bounty, DomainError]:
+    async def claim(cls, db: ..., bounty_id: int, hunter: str) -> Result[Bounty, DomainError]:
         ...  # domain logic
 
+    @classmethod
     @post("/bounties/{bounty_id}/complete")
-    async def complete(self, db: ..., bounty_id: int) -> Result[Bounty, DomainError]:
+    async def complete(cls, db: ..., bounty_id: int) -> Result[Bounty, DomainError]:
         ...  # domain logic
 ```
 
@@ -1450,12 +1457,14 @@ Full control over every endpoint. No schema derivation — you write methods, de
 @derive(methods)
 @dataclass
 class OrderService:
+    @classmethod
     @post("/api/orders")
-    async def create(self, db: ..., customer: str, total: float) -> Result[int, DomainError]:
+    async def create(cls, db: ..., customer: str, total: float) -> Result[int, DomainError]:
         ...
 
+    @classmethod
     @get("/api/orders")
-    async def list_all(self, db: ...) -> Result[list[Order], DomainError]:
+    async def list_all(cls, db: ...) -> Result[list[Order], DomainError]:
         ...
 ```
 
@@ -1511,8 +1520,8 @@ class ExposeMethod:
         hints = get_type_hints(method, include_extras=True)
         sig = inspect.signature(method)
 
-        fields = {n: hints.get(n, Any) for n in sig.parameters if n != "self"}
-        params = [n for n in sig.parameters if n != "self"]
+        fields = {n: hints.get(n, Any) for n in sig.parameters if n not in ("self", "cls")}
+        params = [n for n in sig.parameters if n not in ("self", "cls")]
 
         async def handler(op):
             return await method(**{n: getattr(op, n) for n in params})
@@ -1723,9 +1732,10 @@ class Bounty:
     reward: int
     status: str = "open"
 
+    @classmethod
     @post("/bounties/{bounty_id}/claim")
     async def claim(
-        self,
+        cls,
         db: Annotated[MutatingRelationalProvider[Bounty], compose.Node(BountyBoard)],
         bounty_id: int,
         hunter: str,
@@ -1748,12 +1758,14 @@ from derivelib.transforms import add_method_capability
 @derive(methods.chain(add_method_capability(AuthCap())))
 @dataclass
 class AdminService:
+    @classmethod
     @post("/admin/reset")
-    async def reset(self, db: ...) -> Result[bool, DomainError]:
+    async def reset(cls, db: ...) -> Result[bool, DomainError]:
         ...
 
+    @classmethod
     @get("/admin/stats")
-    async def stats(self, db: ...) -> Result[dict, DomainError]:
+    async def stats(cls, db: ...) -> Result[dict, DomainError]:
         ...
 ```
 
@@ -1806,12 +1818,14 @@ from derivelib.patterns.methods import methods, post, get
 @derive(methods)
 @dataclass
 class MyService:
+    @classmethod
     @post("/api/things")
-    async def create(self, name: str) -> Result[int, DomainError]:
+    async def create(cls, name: str) -> Result[int, DomainError]:
         return Ok(1)
 
+    @classmethod
     @get("/api/things")
-    async def list_all(self) -> Result[list[Thing], DomainError]:
+    async def list_all(cls) -> Result[list[Thing], DomainError]:
         return Ok([])
 
 app = build_application_from_decorated(MyService)

@@ -59,9 +59,10 @@ OrderStore = memory_node()
 class OrderService:
     """Order management with explicit HTTP triggers per method."""
 
+    @classmethod
     @post("/api/orders")
     async def create(
-        self,
+        cls,
         db: Annotated[MemoryRelationalProvider[Order], compose.Node(OrderStore)],
         customer: str,
         total: float,
@@ -72,17 +73,19 @@ class OrderService:
         )
         return Ok(nid)
 
+    @classmethod
     @get("/api/orders")
     async def list_all(
-        self,
+        cls,
         db: Annotated[MemoryRelationalProvider[Order], compose.Node(OrderStore)],
     ) -> Result[list[Order], DomainError]:
         orders = await db.fetch_many(relational(Order))
         return Ok(orders)
 
+    @classmethod
     @get("/api/orders/{order_id}")
     async def find(
-        self,
+        cls,
         db: Annotated[MutatingRelationalProvider[Order], compose.Node(OrderStore)],
         order_id: int,
     ) -> Result[Order | None, DomainError]:
@@ -91,9 +94,10 @@ class OrderService:
         )
         return Ok(order)
 
+    @classmethod
     @post("/api/orders/cancel")
     async def cancel(
-        self,
+        cls,
         db: Annotated[MutatingRelationalProvider[Order], compose.Node(OrderStore)],
         order_id: int,
     ) -> Result[bool, DomainError]:

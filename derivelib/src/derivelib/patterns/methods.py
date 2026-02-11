@@ -1,28 +1,31 @@
 """methods pattern — decorate methods with explicit triggers and capabilities.
 
-Write async methods. Decorate each with its trigger. Get endpoints.
+Supports three calling conventions via standard Python descriptors:
 
-    from derivelib import derive
-    from derivelib.patterns.methods import methods, post, get
+- ``@classmethod`` + ``@post(...)`` — ``cls`` receives the entity class.
+- ``@staticmethod`` + ``@post(...)`` — plain static function.
+- ``@post(...)`` alone — instance method (``self`` is always ``None``).
 
-    @derive(methods)
-    @dataclass
-    class OrderService:
-        @post("/api/orders")
-        async def create(self, customer: str, total: float) -> Result[int, DomainError]:
-            return Ok(new_id)
+Stack order: ``@classmethod`` / ``@staticmethod`` outermost, trigger innermost::
 
-        @get("/api/orders")
-        async def list_all(self) -> Result[list[Order], DomainError]:
-            ...
+    @classmethod
+    @post("/api/orders")
+    async def create(cls, customer: str, total: float) -> Result[int, DomainError]:
+        return Ok(new_id)
 
-Multi-target: stack decorators for multiple exposures per method:
+    @staticmethod
+    @post("/api/health")
+    async def health() -> Result[str, DomainError]:
+        return Ok("ok")
 
+Multi-target: stack trigger decorators for multiple exposures per method::
+
+    @classmethod
     @post("/api/orders")
     @command("order-create")
-    async def create(self, ...) -> Result[int, DomainError]: ...
+    async def create(cls, ...) -> Result[int, DomainError]: ...
 
-Composition via .chain():
+Composition via .chain()::
 
     from derivelib.transforms import add_method_capability
 
@@ -30,7 +33,7 @@ Composition via .chain():
     @dataclass
     class SecureService: ...
 
-Custom capabilities (no RFC 7807):
+Custom capabilities (no RFC 7807)::
 
     @derive(MethodsPattern(capabilities=(MyErrorHandler(),)))
     @dataclass
@@ -42,7 +45,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeVar, get_args, get_origin, get_type_hints
+from typing import TypeVar, cast, get_args, get_origin, get_type_hints
 
 from kungfu import Result
 
@@ -83,6 +86,29 @@ class _TriggerEntry:
 def method(trigger: object, *capabilities: SurfaceCapability) -> Callable[[F], F]:
     """Attach a trigger and optional capabilities to a method.
 
+    Works with all three Python calling conventions:
+
+    - ``@classmethod`` — ``cls`` is ``type[Self]`` (the entity class).
+    - ``@staticmethod`` — plain static, no implicit first arg.
+    - plain method — ``self`` is always ``None`` (entity is never instantiated).
+
+    The trigger decorator goes *inside* ``@classmethod`` / ``@staticmethod``::
+
+        @classmethod
+        @post("/api/orders")
+        async def create(cls, ...) -> Result[int, DomainError]: ...
+
+        @staticmethod
+        @post("/api/health")
+        async def health() -> Result[str, DomainError]: ...
+
+    Stacking multiple trigger decorators is supported::
+
+        @classmethod
+        @post("/api/orders")
+        @command("order-create")
+        async def create(cls, ...) -> Result[int, DomainError]: ...
+
     This is the base decorator. Use ``post``, ``get``, ``command``, etc.
     for convenience.
     """
@@ -94,7 +120,7 @@ def method(trigger: object, *capabilities: SurfaceCapability) -> Callable[[F], F
         setattr(fn, TRIGGER_ENTRIES_ATTR, entries)
         return fn
 
-    return decorator
+    return cast(Callable[[F], F], decorator)
 
 
 # --- HTTP aliases ---
@@ -159,20 +185,22 @@ class ExposeMethod:
         fields: dict[str, type] = {}
         params: list[str] = []
         for name in sig.parameters:
-            if name == "self":
+            if name in ("self", "cls"):
                 continue
             fields[name] = hints[name]
             params.append(name)
 
         _method_fn, _params = method_fn, params
-        is_static = isinstance(
-            inspect.getattr_static(self.service, self.method_name), staticmethod
-        )
+        raw_attr = inspect.getattr_static(self.service, self.method_name)
+        is_static = isinstance(raw_attr, staticmethod)
+        is_classmethod = isinstance(raw_attr, classmethod)
 
         async def handler[OpT](op: OpT) -> Result[OpT, DomainError]:
             kw = {n: getattr(op, n) for n in _params}
             raw_result = (
-                await _method_fn(**kw) if is_static else await _method_fn(None, **kw)
+                await _method_fn(**kw)
+                if is_static or is_classmethod
+                else await _method_fn(None, **kw)
             )
             return raw_result
 
@@ -230,10 +258,12 @@ class MethodsPattern:
         for name in dir(entity):
             if name.startswith("_"):
                 continue
-            attr = getattr(entity, name, None)
-            if attr is None:
+            raw = inspect.getattr_static(entity, name, None)
+            if raw is None:
                 continue
-            entries: list[_TriggerEntry] = getattr(attr, TRIGGER_ENTRIES_ATTR, [])
+            # Unwrap classmethod/staticmethod to find trigger entries
+            fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
+            entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             if not entries:
                 continue
             for i, entry in enumerate(entries):
