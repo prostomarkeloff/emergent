@@ -43,6 +43,9 @@ typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 reportUnknownMemberType = false
 
+[tool.hatch.build.targets.wheel]
+packages = ["emergent", "derivelib/src/derivelib"]
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
