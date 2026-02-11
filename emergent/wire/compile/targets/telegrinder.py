@@ -52,10 +52,12 @@ from emergent.wire.axis.surface.codecs.stateful import (
     get_transitions,
 )
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
+from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 from emergent.wire.axis.surface.codecs.resolve import get_method_params, wrap
 from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
-from emergent.wire.compile._core import Axes, scan_all_codecs
+from emergent.wire.compile._core import Axes, fold_field, fold
+from emergent.wire.compile._target import CodecAdapter, TargetCompiler
 from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
 from emergent.wire.compile._request import compose_node_value
 from emergent.wire.compile._stateful import (
@@ -66,32 +68,22 @@ from emergent.wire.compile._stateful import (
     delete_state,
 )
 from emergent.wire.axis.schema._inspect import inspect_dataclass
-from emergent.wire.axis.schema.dialects.tg import CommandArg
+from emergent.wire.axis._capability import (
+    TelegrinderInputCompilable, TelegrinderInputContext,
+    TelegrinderHandlerContext, TelegrinderCompilable,
+)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Capability Helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def find_edit_message_cap(
+def fold_tg_handler_ctx(
     capabilities: tuple[SurfaceCapability, ...],
-) -> tg_cap.EditMessage | None:
-    """Find EditMessage capability if present."""
-    for cap in capabilities:
-        if isinstance(cap, tg_cap.EditMessage):
-            return cap
-    return None
-
-
-def find_answer_callback_cap(
-    capabilities: tuple[SurfaceCapability, ...],
-) -> tg_cap.AnswerCallback | None:
-    """Find AnswerCallback capability if present."""
-    for cap in capabilities:
-        if isinstance(cap, tg_cap.AnswerCallback):
-            return cap
-    return None
+) -> TelegrinderHandlerContext:
+    """Fold handler capabilities into TelegrinderHandlerContext."""
+    return fold(
+        capabilities,
+        TelegrinderHandlerContext(),
+        TelegrinderCompilable,
+        "compile_telegrinder",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,8 +94,8 @@ def find_answer_callback_cap(
 def generate_command_args(request_cls: type) -> tuple[list[Argument], bool]:
     """Generate telegrinder Arguments from request fields with tg.CommandArg.
 
-    Inspects request dataclass for fields annotated with tg.CommandArg()
-    and generates corresponding telegrinder Argument objects.
+    Uses fold_field to read TelegrinderInputContext from capabilities,
+    then generates corresponding telegrinder Argument objects.
 
     Args:
         request_cls: Request dataclass type
@@ -121,18 +113,19 @@ def generate_command_args(request_cls: type) -> tuple[list[Argument], bool]:
     has_greedy = False
 
     for name, info in fields.items():
-        cmd_arg = info.get(CommandArg)
-        if cmd_arg is not None:
+        ctx = TelegrinderInputContext(field_name=name, field_type=info.base_type)
+        ctx = fold_field(info, ctx, TelegrinderInputCompilable, "compile_telegrinder_input")
+
+        if ctx.is_command_arg:
             validators: list[Any] = []
-            # Add type validator for int fields
-            if info.base_type is int:
+            if ctx.field_type is int:
                 validators.append(int)
             args.append(Argument(
                 name=name,
                 validators=validators,
-                optional=cmd_arg.optional,  # type: ignore[union-attr]
+                optional=ctx.optional,
             ))
-            if cmd_arg.greedy:  # type: ignore[union-attr]
+            if ctx.greedy:
                 has_greedy = True
 
     return args, has_greedy
@@ -327,16 +320,35 @@ async def resolve_transition(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# TelegrindRoute — structured wrap result (NO heuristics in registration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class TelegrindRoute:
+    """Structured result of wrapping a handler for telegrinder.
+
+    The wrap function knows its codec and fills ALL metadata.
+    Registration reads ONLY from this — zero codec sniffing.
+    """
+
+    handler: Callable[[Context], object]
+    rules: tuple[ABCRule, ...]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RRC Handler
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 def wrap_rrc_telegrinder(
     handler: Handler[RequestResponseCodec],
+    trigger: TelegrindTrigger,
     axes: Axes,
-) -> Callable[[Context], object]:
-    """Wrap RRC handler for telegrinder — trivial with unified execution."""
-    edit_message_cap = find_edit_message_cap(handler.capabilities)
+) -> TelegrindRoute:
+    """Wrap RRC handler for telegrinder. Returns handler + enhanced rules."""
+    tg_ctx = fold_tg_handler_ctx(handler.capabilities)
+    edit_message_cap = tg_ctx.edit_message_cap
 
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
@@ -360,7 +372,9 @@ def wrap_rrc_telegrinder(
 
         return response
 
-    return _handler
+    # Rule preparation: enhance Command rules with generated Arguments
+    enhanced = enhance_command_with_args(trigger, handler.codec.request)
+    return TelegrindRoute(handler=_handler, rules=tuple(enhanced.rules))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -393,88 +407,6 @@ class HasActiveFlowState(ABCRule):
             return False
 
 
-def wrap_stateful_telegrinder(
-    handler: Handler[StatefulCodec],
-    axes: Axes,
-) -> Callable[[Context], object]:
-    """Wrap StatefulCodec handler for telegrinder."""
-    codec = handler.codec
-    agent_cls = codec.agent_cls
-    transitions = get_transitions(codec.flow)
-
-    async def _handler(ctx: Context) -> object:
-        # 1. Get store key
-        store_key = await compose_store_key(codec.key_node, agent_cls, ctx)
-
-        # 2. Load state
-        state = await load_state(codec, store_key)
-
-        # 3. Resolve transition
-        resolved = await resolve_transition(transitions, agent_cls, ctx)
-        if resolved is None:
-            raise RuntimeError("No transition resolvable")
-
-        method, composed = resolved
-
-        # 4. Execute transition
-        new_state, response, is_terminal = await execute_stateful_turn(
-            handler, state, method, composed
-        )
-
-        # 5. Continue or Done
-        if not is_terminal:
-            await save_state(codec, store_key, state, new_state)
-            return response
-
-        # 6. Done — execute with enrichers
-        async with Scope() as done_scope:
-            done_scope.inject(Context, ctx)
-            done_scope.inject(Update, ctx.update)
-            done_scope.inject(API, ctx.api)
-            final = await execute_stateful_done(handler, new_state, done_scope)
-
-        await delete_state(codec, store_key)
-        return final
-
-    return _handler
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Immediate Handlers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def wrap_immediate_telegrinder(
-    handler: Handler[Any],
-    axes: Axes,
-) -> Callable[[Context], object]:
-    """Wrap Immediate codecs for telegrinder — trivial with unified execution."""
-    edit_message_cap = find_edit_message_cap(handler.capabilities)
-
-    async def _handler(ctx: Context) -> object:
-        response = execute_immediate_unified(handler)
-
-        # EditMessage capability — telegrinder-specific delivery
-        if edit_message_cap is not None and isinstance(response, dict) and "text" in response:
-            response_dict = cast(dict[str, Any], response)
-            text = str(response_dict.pop("text"))
-            if await edit_message_cap.deliver(ctx, text, **response_dict):
-                return None
-
-        return response
-
-    return _handler
-
-
-# Alias for backwards compatibility
-wrap_immediate_factory_telegrinder = wrap_immediate_telegrinder
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Registration
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 def create_stateful_rule(trigger: TelegrindTrigger, codec: StatefulCodec) -> ABCRule:
     """Create composite rule: trigger_rules OR has_active_state."""
     state_rule = HasActiveFlowState(
@@ -490,34 +422,114 @@ def create_stateful_rule(trigger: TelegrindTrigger, codec: StatefulCodec) -> ABC
     return OrRule(initial, state_rule)
 
 
-def register_handler[C](
+def wrap_stateful_telegrinder(
+    handler: Handler[StatefulCodec],
+    trigger: TelegrindTrigger,
+    axes: Axes,
+) -> TelegrindRoute:
+    """Wrap StatefulCodec handler for telegrinder. Returns handler + composite rule."""
+    codec = handler.codec
+    agent_cls = codec.agent_cls
+    transitions = get_transitions(codec.flow)
+
+    async def _handler(ctx: Context) -> object:
+        store_key = await compose_store_key(codec.key_node, agent_cls, ctx)
+        state = await load_state(codec, store_key)
+
+        resolved = await resolve_transition(transitions, agent_cls, ctx)
+        if resolved is None:
+            raise RuntimeError("No transition resolvable")
+
+        method, composed = resolved
+
+        new_state, response, is_terminal = await execute_stateful_turn(
+            handler, state, method, composed
+        )
+
+        if not is_terminal:
+            await save_state(codec, store_key, state, new_state)
+            return response
+
+        async with Scope() as done_scope:
+            done_scope.inject(Context, ctx)
+            done_scope.inject(Update, ctx.update)
+            done_scope.inject(API, ctx.api)
+            final = await execute_stateful_done(handler, state, done_scope)
+
+        await delete_state(codec, store_key)
+        return final
+
+    # Rule: trigger_rules OR has_active_state
+    rule = create_stateful_rule(trigger, codec)
+    return TelegrindRoute(handler=_handler, rules=(rule,))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Immediate Handlers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def wrap_immediate_telegrinder(
+    handler: Handler[Any],
+    trigger: TelegrindTrigger,
+    axes: Axes,
+) -> TelegrindRoute:
+    """Wrap Immediate codecs for telegrinder."""
+
+    async def _handler(ctx: Context) -> object:
+        return execute_immediate_unified(handler)
+
+    return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
+
+
+# Alias for backwards compatibility
+wrap_immediate_factory_telegrinder = wrap_immediate_telegrinder
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Delegate Handler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def wrap_delegate_telegrinder(
+    handler: Handler[DelegateCodec],
+    trigger: TelegrindTrigger,
+    axes: Axes,
+) -> TelegrindRoute:
+    """Wrap DelegateCodec handler for telegrinder."""
+    from emergent.wire.compile._execute import execute_delegate_unified
+
+    async def _handler(ctx: Context) -> object:
+        def inject_scope(scope: Scope) -> None:
+            scope.inject(Context, ctx)
+            scope.inject(Update, ctx.update)
+            scope.inject(API, ctx.api)
+
+        return await execute_delegate_unified(
+            handler=handler,
+            inject_scope=inject_scope,
+        )
+
+    return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Registration — reads ONLY from TelegrindRoute
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def register_handler(
     dp: Dispatch,
     trigger: TelegrindTrigger,
-    handler: Handler[C],
-    axes: Axes,
+    handler: Handler[Any],
+    route: TelegrindRoute,
 ) -> None:
-    """Register handler on dispatch.
+    """Register pre-wrapped handler on dispatch.
 
-    For RRC handlers, enhances Command rules with Arguments generated
-    from request fields annotated with tg.CommandArg().
+    Reads ONLY from TelegrindRoute — zero codec sniffing.
     """
     view = getattr(dp, trigger.view)
-
-    if isinstance(handler.codec, RequestResponseCodec):
-        # Enhance trigger with generated Command arguments
-        rrc_handler = cast(Handler[RequestResponseCodec], handler)
-        enhanced = enhance_command_with_args(trigger, handler.codec.request)
-        view(*enhanced.rules)(wrap_rrc_telegrinder(rrc_handler, axes))
-    elif isinstance(handler.codec, StatefulCodec):
-        stateful_handler = cast(Handler[StatefulCodec], handler)
-        rule = create_stateful_rule(trigger, handler.codec)
-        view(rule)(wrap_stateful_telegrinder(stateful_handler, axes))
-    elif isinstance(handler.codec, ImmediateCodec):
-        immediate_handler = cast(Handler[ImmediateCodec], handler)
-        view(*trigger.rules)(wrap_immediate_telegrinder(immediate_handler, axes))
-    elif isinstance(handler.codec, ImmediateFactoryCodec):
-        factory_handler = cast(Handler[ImmediateFactoryCodec], handler)
-        view(*trigger.rules)(wrap_immediate_factory_telegrinder(factory_handler, axes))
+    view(*route.rules)(route.handler)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -525,25 +537,40 @@ def register_handler[C](
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def telegrinder_compile(app: Application, axes: Axes | None = None) -> Dispatch:
+TELEGRINDER_COMPILER: TargetCompiler[TelegrindTrigger] = TargetCompiler(
+    trigger_type=TelegrindTrigger,
+    adapters=(
+        CodecAdapter(RequestResponseCodec, wrap_rrc_telegrinder),
+        CodecAdapter(StatefulCodec, wrap_stateful_telegrinder),
+        CodecAdapter(ImmediateCodec, wrap_immediate_telegrinder),
+        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_telegrinder),
+        CodecAdapter(DelegateCodec, wrap_delegate_telegrinder),
+    ),
+)
+
+
+def telegrinder_compile(
+    app: Application,
+    axes: Axes | None = None,
+    compiler: TargetCompiler[TelegrindTrigger] | None = None,
+) -> Dispatch:
     """Compile wire Application to telegrinder Dispatch.
 
     Args:
         app: Wire application
         axes: Axes context (default: Axes.default())
+        compiler: TargetCompiler (default: TELEGRINDER_COMPILER). Pass custom
+                  compiler to add/swap/remove codec adapters.
 
     Returns:
         telegrinder Dispatch
     """
     axes = axes or Axes.default()
+    _compiler = compiler or TELEGRINDER_COMPILER
     dp = Dispatch()
 
-    # Unified compile loop
-    scan_all_codecs(
-        app,
-        TelegrindTrigger,
-        lambda trigger, handler: register_handler(dp, trigger, handler, axes),
-    )
+    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
+        register_handler(dp, trigger, handler, route)
 
     return dp
 
@@ -694,10 +721,13 @@ from_application = telegrinder_compile
 __all__ = (
     "telegrinder_compile",
     "from_application",
+    "TelegrindRoute",
+    "TELEGRINDER_COMPILER",
     "wrap_rrc_telegrinder",
     "wrap_stateful_telegrinder",
     "wrap_immediate_telegrinder",
     "wrap_immediate_factory_telegrinder",
+    "wrap_delegate_telegrinder",
     "register_handler",
     "compose_store_key",
     "resolve_transition",
@@ -706,8 +736,7 @@ __all__ = (
     "extract_command_info",
     "generate_help_from_command_rules",
     # Capability helpers
-    "find_edit_message_cap",
-    "find_answer_callback_cap",
+    "fold_tg_handler_ctx",
 )
 
 

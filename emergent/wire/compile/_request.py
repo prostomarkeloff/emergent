@@ -22,11 +22,8 @@ from typing import Any, Callable, TYPE_CHECKING
 from kungfu import Some, Nothing
 
 from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
-from emergent.wire.axis.schema.dialects.compose import (
-    Node as ComposeNode,
-    Optional as ComposeOptional,
-    Retrieve as ComposeRetrieve,
-)
+from emergent.wire.axis._capability import RequestBuildCompilable, RequestBuildContext
+from emergent.wire.compile._core import fold_field
 
 if TYPE_CHECKING:
     from nodnod import Scope
@@ -75,62 +72,71 @@ async def build_field_value(
 ) -> tuple[bool, Any]:
     """Build value for a single field.
 
-    Checks capabilities in order:
-    1. compose.Node — compose via nodnod
-    2. compose.Optional — compose, wrap in Option
-    3. compose.Retrieve — direct scope retrieval
-    4. Regular — get from context accessor
+    Uses fold_field to read compose.* capabilities into RequestBuildContext,
+    then executes the appropriate strategy.
 
     Returns: (has_value, value)
     """
-    # 1. compose.Node
-    compose_node_cap = info.get(ComposeNode)
-    if isinstance(compose_node_cap, ComposeNode) and scope is not None:
-        node_type: type = compose_node_cap.node_type
-        success, value = await compose_node_value(node_type, agent_cls, scope)
-        if success:
-            if compose_node_cap.map is not None:
-                value = compose_node_cap.map(value)
-            return True, value
-        elif compose_node_cap.default is not None:
-            return True, compose_node_cap.default
-        else:
-            return False, f"Failed to compose {node_type.__name__}"
+    # 1. Fold capabilities into context
+    ctx = RequestBuildContext(field_name=name, field_type=info.base_type)
+    ctx = fold_field(info, ctx, RequestBuildCompilable, "compile_request_build")
 
-    # 2. compose.Optional
-    compose_optional_cap = info.get(ComposeOptional)
-    if isinstance(compose_optional_cap, ComposeOptional) and scope is not None:
-        node_type = compose_optional_cap.node_type
-        success, value = await compose_node_value(node_type, agent_cls, scope)
+    # 2. Execute strategy from folded context
+    if ctx.compose_node is not None and scope is not None:
+        success, value = await compose_node_value(ctx.compose_node, agent_cls, scope)
+        if success:
+            if ctx.compose_node_map is not None:
+                value = ctx.compose_node_map(value)
+            return True, value
+        elif ctx.compose_node_default is not None:
+            return True, ctx.compose_node_default
+        else:
+            return False, f"Failed to compose {ctx.compose_node.__name__}"
+
+    if ctx.compose_optional_node is not None and scope is not None:
+        success, value = await compose_node_value(ctx.compose_optional_node, agent_cls, scope)
         if success:
             return True, Some(value)
         else:
             return True, Nothing()
 
-    # 3. compose.Retrieve
-    compose_retrieve_cap = info.get(ComposeRetrieve)
-    if isinstance(compose_retrieve_cap, ComposeRetrieve) and scope is not None:
-        from_type = compose_retrieve_cap.from_type
-        result = scope.retrieve(from_type)
+    if ctx.compose_fallback_nodes is not None and scope is not None:
+        for node_type in ctx.compose_fallback_nodes:
+            success, value = await compose_node_value(node_type, agent_cls, scope)
+            if success:
+                return True, value
+        return False, "All fallback nodes failed"
+
+    if ctx.compose_race_nodes is not None and scope is not None:
+        import asyncio
+        tasks = [compose_node_value(nt, agent_cls, scope) for nt in ctx.compose_race_nodes]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple) and r[0]:
+                return True, r[1]
+        return False, "All race nodes failed"
+
+    if ctx.compose_retrieve_type is not None and scope is not None:
+        result = scope.retrieve(ctx.compose_retrieve_type)
         match result:
             case Some(v):
                 return True, v.value
             case Nothing():
-                return False, f"Failed to retrieve {from_type.__name__}"
+                return False, f"Failed to retrieve {ctx.compose_retrieve_type.__name__}"
 
-    # 4. Regular — from context
+    # 3. Regular — from context
     value = get_value(name)
     if value is not None:
         return True, value
 
-    # 5. Check for default
+    # 4. Check for default
     if dataclass_field is not None:
         if dataclass_field.default is not dataclasses.MISSING:
             return True, dataclass_field.default
         if dataclass_field.default_factory is not dataclasses.MISSING:
             return True, dataclass_field.default_factory()
 
-    # 6. Optional field without value
+    # 5. Optional field without value
     if info.is_optional:
         return True, None
 

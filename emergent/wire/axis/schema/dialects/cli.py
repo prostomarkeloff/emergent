@@ -79,6 +79,9 @@ class Flag(CLICapability):
     def __init__(self, *names: str) -> None:
         object.__setattr__(self, "names", names)
 
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        return replace(ctx, arg_names=self.names)
+
 
 @dataclass(frozen=True, slots=True)
 class Positional(CLICapability):
@@ -88,6 +91,11 @@ class Positional(CLICapability):
         file: Annotated[str, cli.Positional("input_file")]
     """
     name: str | None = None
+
+    def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
+        if self.name is not None:
+            return replace(ctx, is_positional=True, field_name=self.name)
+        return replace(ctx, is_positional=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

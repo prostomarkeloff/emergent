@@ -60,18 +60,10 @@ from sqlalchemy.engine import CursorResult
 from kungfu import Result, Ok, Error, Option, Some, Nothing
 
 from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
-from emergent.wire.axis.schema._universal import (
-    Identity,
-    Unique,
-    Ref,
-    MaxLen,
-)
-from emergent.wire.axis.schema.dialects.sql import (
-    Index as SQLIndex,
-    Type as SQLType,
-    ServerDefault,
-    ForeignKey as SQLForeignKey,
-    PrimaryKey,
+from emergent.wire.compile._core import fold_field
+from emergent.wire.axis._capability import (
+    SQLAlchemyContext, SQLAlchemyCompilable,
+    ConstraintsContext, ConstraintsCompilable,
 )
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -92,6 +84,17 @@ from emergent.wire.axis.query._expr import (
     EndsWith,
     IsNull,
     IsNotNull,
+    Between,
+    Like,
+    ILike,
+    Regex,
+    JsonExtract,
+    JsonContains,
+    JsonHasKey,
+    ArrayContains,
+    ArrayAny,
+    ArrayAll,
+    ArrayOverlap,
 )
 from emergent.wire.axis.query._proxy import EntityProxy, build_expr
 
@@ -104,23 +107,19 @@ T = TypeVar("T")
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _python_type_to_sqlalchemy(py_type: type[Any], field_info: FieldInfo) -> Any:
-    """Map Python type to SQLAlchemy column type."""
-    # Check for explicit SQL type override
-    for cap in field_info.capabilities:
-        if isinstance(cap, SQLType):
-            # Return raw SQL type string — will be handled by Text or similar
-            # For now, use Text as fallback
-            return Text
+def _python_type_to_sqlalchemy(
+    py_type: type[Any],
+    max_length: int | None = None,
+    type_override: Any = None,
+) -> Any:
+    """Map Python type to SQLAlchemy column type.
 
-    # Check for MaxLen on strings
-    max_len: int | None = None
-    for cap in field_info.capabilities:
-        if isinstance(cap, MaxLen):
-            max_len = cap.value
-            break
+    Pure function — reads pre-computed values from fold results,
+    never raw capabilities.
+    """
+    if type_override is not None:
+        return Text
 
-    # Basic type mapping
     if py_type is int:
         return Integer
     elif py_type is float:
@@ -128,20 +127,25 @@ def _python_type_to_sqlalchemy(py_type: type[Any], field_info: FieldInfo) -> Any
     elif py_type is bool:
         return Boolean
     elif py_type is str:
-        if max_len:
-            return String(max_len)
+        if max_length:
+            return String(max_length)
         return String(255)  # Default string length
     elif py_type is datetime:
         return DateTime
     else:
-        # Fallback to Text for complex types
         return Text
 
 
 def _get_identity_field(fields: dict[str, FieldInfo]) -> str | None:
-    """Find field marked with Identity capability."""
+    """Find field marked with Identity capability via fold."""
     for name, info in fields.items():
-        if info.has(Identity):
+        ctx = fold_field(
+            info,
+            ConstraintsContext(field_name=name, field_type=info.base_type),
+            ConstraintsCompilable,
+            "compile_constraints",
+        )
+        if ctx.is_identity:
             return name
     return None
 
@@ -189,6 +193,13 @@ def compile_model(
     # Use provided base or create new one
     model_base = base or _GeneratedBase
 
+    # Check if table already exists in this base's metadata — reuse it
+    if tablename in model_base.metadata.tables:
+        # Find existing model class for this table
+        for mapper in model_base.registry.mappers:
+            if hasattr(mapper.class_, '__tablename__') and mapper.class_.__tablename__ == tablename:
+                return mapper.class_
+
     # Inspect entity fields
     fields = inspect_dataclass(entity)
     identity_field = _get_identity_field(fields)
@@ -202,68 +213,45 @@ def compile_model(
         columns["__table_args__"] = {"schema": schema}
 
     for name, info in fields.items():
-        # Determine column type
-        col_type = _python_type_to_sqlalchemy(info.base_type, info)
+        # Fold constraints (for max_length, identity, etc.)
+        constraints_ctx = fold_field(
+            info,
+            ConstraintsContext(field_name=name, field_type=info.base_type),
+            ConstraintsCompilable,
+            "compile_constraints",
+        )
 
-        # Column kwargs
-        col_kwargs: dict[str, Any] = {
-            "nullable": info.is_optional,
-        }
+        # Fold all capabilities → SQLAlchemyContext
+        sa_ctx = fold_field(
+            info,
+            SQLAlchemyContext(field_name=name, field_type=info.base_type),
+            SQLAlchemyCompilable,
+            "compile_sqlalchemy",
+        )
 
-        # Identity → primary key
-        if info.has(Identity):
-            col_kwargs["primary_key"] = True
-            if info.base_type is int:
-                col_kwargs["autoincrement"] = True
+        # Determine column type from fold results (no raw capability reads)
+        col_type = _python_type_to_sqlalchemy(
+            info.base_type,
+            max_length=constraints_ctx.max_length,
+            type_override=sa_ctx.column_kwargs.get("type_"),
+        )
 
-        # Explicit PrimaryKey
-        pk_cap = info.get(PrimaryKey)
-        if pk_cap is not None:
-            col_kwargs["primary_key"] = True
-            if info.base_type is int and isinstance(pk_cap, PrimaryKey):
-                col_kwargs["autoincrement"] = pk_cap.autoincrement
+        # Extract column kwargs from fold result
+        col_kwargs: dict[str, Any] = dict(sa_ctx.column_kwargs)
+        col_kwargs.setdefault("nullable", info.is_optional)
 
-        # Unique
-        if info.has(Unique):
-            col_kwargs["unique"] = True
+        # Extract FK config → SA ForeignKey instance
+        fk_target = col_kwargs.pop("fk_target", None)
+        fk_ondelete = col_kwargs.pop("fk_ondelete", None)
+        fk_onupdate = col_kwargs.pop("fk_onupdate", None)
 
-        # ServerDefault
-        server_default = info.get(ServerDefault)
-        if server_default is not None and isinstance(server_default, ServerDefault):
-            col_kwargs["server_default"] = server_default.expression
-
-        # ForeignKey from Ref
-        ref = info.get(Ref)
         fk_instance: ForeignKey | None = None
-        if ref is not None and isinstance(ref, Ref):
-            target = ref.target
-            if isinstance(target, str):
-                fk_target = target
-            else:
-                # Assume target has __tablename__ or use class name
-                target_table = getattr(
-                    target, "__tablename__", getattr(target, "__name__", "unknown").lower()
-                )
-                fk_target = f"{target_table}.id"
+        if fk_target is not None:
             fk_instance = ForeignKey(
                 fk_target,
-                ondelete=ref.on_delete,
-                onupdate=ref.on_update,
+                ondelete=fk_ondelete or "CASCADE",
+                onupdate=fk_onupdate or "CASCADE",
             )
-
-        # Explicit ForeignKey
-        sql_fk = info.get(SQLForeignKey)
-        if sql_fk is not None and isinstance(sql_fk, SQLForeignKey):
-            fk_instance = ForeignKey(
-                sql_fk.target,
-                ondelete=sql_fk.ondelete,
-                onupdate=sql_fk.onupdate,
-            )
-
-        # Index
-        sql_index = info.get(SQLIndex)
-        if sql_index is not None:
-            col_kwargs["index"] = True
 
         # Create column
         if fk_instance is not None:
@@ -287,62 +275,109 @@ def compile_model(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def compile_expr(expr: Expr, model: type[Any]) -> Any:
-    """Compile query Expr to SQLAlchemy column expression."""
+def compile_expr(expr: Expr, model: type[Any], *extra_models: type[Any]) -> Any:
+    """Compile query Expr to SQLAlchemy column expression.
+
+    For join ON clauses, pass the join model as extra_models so fields
+    from both sides resolve correctly.
+    """
     match expr:
         case Field(name=name):
-            return getattr(model, name)
+            if hasattr(model, name):
+                return getattr(model, name)
+            for m in extra_models:
+                if hasattr(m, name):
+                    return getattr(m, name)
+            return getattr(model, name)  # raises AttributeError
 
         case Const():
             return cast(Any, expr).value
 
         case Eq(left=left, right=right):
-            return compile_expr(left, model) == compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) == compile_expr(right, model, *extra_models)
 
         case Ne(left=left, right=right):
-            return compile_expr(left, model) != compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) != compile_expr(right, model, *extra_models)
 
         case Lt(left=left, right=right):
-            return compile_expr(left, model) < compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) < compile_expr(right, model, *extra_models)
 
         case Le(left=left, right=right):
-            return compile_expr(left, model) <= compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) <= compile_expr(right, model, *extra_models)
 
         case Gt(left=left, right=right):
-            return compile_expr(left, model) > compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) > compile_expr(right, model, *extra_models)
 
         case Ge(left=left, right=right):
-            return compile_expr(left, model) >= compile_expr(right, model)
+            return compile_expr(left, model, *extra_models) >= compile_expr(right, model, *extra_models)
 
         case And(left=left, right=right):
             from sqlalchemy import and_
-            return and_(compile_expr(left, model), compile_expr(right, model))
+            return and_(compile_expr(left, model, *extra_models), compile_expr(right, model, *extra_models))
 
         case Or(left=left, right=right):
             from sqlalchemy import or_
-            return or_(compile_expr(left, model), compile_expr(right, model))
+            return or_(compile_expr(left, model, *extra_models), compile_expr(right, model, *extra_models))
 
         case Not(operand=operand):
             from sqlalchemy import not_
-            return not_(compile_expr(operand, model))
+            return not_(compile_expr(operand, model, *extra_models))
 
         case In(field=field, values=values):
-            return compile_expr(field, model).in_(values)
+            return compile_expr(field, model, *extra_models).in_(values)
 
         case Contains(field=field, substring=substring):
-            return compile_expr(field, model).contains(substring)
+            return compile_expr(field, model, *extra_models).contains(substring)
 
         case StartsWith(field=field, prefix=prefix):
-            return compile_expr(field, model).startswith(prefix)
+            return compile_expr(field, model, *extra_models).startswith(prefix)
 
         case EndsWith(field=field, suffix=suffix):
-            return compile_expr(field, model).endswith(suffix)
+            return compile_expr(field, model, *extra_models).endswith(suffix)
 
         case IsNull(field=field):
-            return compile_expr(field, model).is_(None)
+            return compile_expr(field, model, *extra_models).is_(None)
 
         case IsNotNull(field=field):
-            return compile_expr(field, model).isnot(None)
+            return compile_expr(field, model, *extra_models).isnot(None)
+
+        case Between(field=field, low=low, high=high):
+            return compile_expr(field, model, *extra_models).between(
+                compile_expr(low, model, *extra_models), compile_expr(high, model, *extra_models)
+            )
+
+        case Like(field=field, pattern=pattern):
+            return compile_expr(field, model, *extra_models).like(pattern)
+
+        case ILike(field=field, pattern=pattern):
+            return compile_expr(field, model, *extra_models).ilike(pattern)
+
+        case Regex(field=field, pattern=pattern):
+            return compile_expr(field, model, *extra_models).regexp_match(pattern)
+
+        case JsonExtract(field=field, path=path):
+            col = compile_expr(field, model, *extra_models)
+            for key in path.split("."):
+                col = col[key]
+            return col
+
+        case JsonContains(field=field, value=value):
+            return compile_expr(field, model, *extra_models).contains(value)
+
+        case JsonHasKey(field=field, key=key):
+            return compile_expr(field, model, *extra_models).has_key(key)
+
+        case ArrayContains(field=field, value=value):
+            return compile_expr(field, model, *extra_models).contains([value])
+
+        case ArrayAny(field=field, values=values):
+            return compile_expr(field, model, *extra_models).overlap(list(values))
+
+        case ArrayAll(field=field, values=values):
+            return compile_expr(field, model, *extra_models).contains(list(values))
+
+        case ArrayOverlap(field=field, values=values):
+            return compile_expr(field, model, *extra_models).overlap(list(values))
 
         case _:
             raise TypeError(f"Unsupported expression type: {type(expr)}")

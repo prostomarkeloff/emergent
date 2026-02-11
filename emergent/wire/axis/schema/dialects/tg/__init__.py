@@ -11,10 +11,13 @@ Only formatting/structure. Text comes from Response data (i18n is your problem).
         payout: Annotated[int, tg.Bold()]      # *100*
 """
 
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import Literal, TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
+
+if TYPE_CHECKING:
+    from emergent.wire.axis._capability import TelegrinderInputContext, TelegrinderRenderContext
 
 
 class TelegramCapability(SchemaAxisCapability):
@@ -40,6 +43,9 @@ class Style(TelegramCapability):
     value: Literal["bold", "italic", "code", "pre", "strike", "underline", "spoiler"]
     language: str | None = None  # For "pre" only
 
+    def compile_telegrinder_render(self, ctx: "TelegrinderRenderContext") -> "TelegrinderRenderContext":
+        return replace(ctx, style=self.value, style_language=self.language)
+
 
 # Shortcuts
 def Bold() -> Style:
@@ -56,6 +62,9 @@ def Pre(language: str | None = None) -> Style:
 
 def Strike() -> Style:
     return Style("strike")
+
+def Underline() -> Style:
+    return Style("underline")
 
 def Spoiler() -> Style:
     return Style("spoiler")
@@ -77,6 +86,9 @@ class Line(TelegramCapability):
     after: bool = True
     before: bool = False
 
+    def compile_telegrinder_render(self, ctx: "TelegrinderRenderContext") -> "TelegrinderRenderContext":
+        return replace(ctx, line_after=self.after, line_before=self.before)
+
 
 @dataclass(frozen=True, slots=True)
 class Skip(TelegramCapability):
@@ -85,7 +97,9 @@ class Skip(TelegramCapability):
     Example:
         internal_id: Annotated[str, tg.Skip()]
     """
-    pass
+
+    def compile_telegrinder_render(self, ctx: "TelegrinderRenderContext") -> "TelegrinderRenderContext":
+        return replace(ctx, skip=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -117,6 +131,9 @@ class CommandArg(TelegramCapability):
     optional: bool = False
     greedy: bool = False  # If True, captures rest of line (enables lazy mode)
 
+    def compile_telegrinder_input(self, ctx: "TelegrinderInputContext") -> "TelegrinderInputContext":
+        return replace(ctx, is_command_arg=True, optional=self.optional, greedy=self.greedy)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Buttons
@@ -135,6 +152,9 @@ class Button(TelegramCapability):
     callback: str | None = None
     url: str | None = None
 
+    def compile_telegrinder_render(self, ctx: "TelegrinderRenderContext") -> "TelegrinderRenderContext":
+        return replace(ctx, button_callback=self.callback, button_url=self.url)
+
 
 @dataclass(frozen=True, slots=True)
 class Keyboard(TelegramCapability):
@@ -144,6 +164,9 @@ class Keyboard(TelegramCapability):
         buttons: Annotated[ButtonGroup, tg.Keyboard(columns=2)]
     """
     columns: int = 1
+
+    def compile_telegrinder_render(self, ctx: "TelegrinderRenderContext") -> "TelegrinderRenderContext":
+        return replace(ctx, keyboard_columns=self.columns)
 
 
 # Subdialects
@@ -159,6 +182,7 @@ __all__ = (
     "Code",
     "Pre",
     "Strike",
+    "Underline",
     "Spoiler",
     # Layout
     "Line",

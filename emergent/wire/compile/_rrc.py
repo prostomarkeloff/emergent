@@ -19,8 +19,8 @@ from nodnod import Scope
 
 from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
-from emergent.wire.axis.surface.capabilities import ScopeEnricher
-from emergent.wire.axis.surface.capabilities._enricher import chain_enrichers
+from emergent.wire.axis.surface.enrichers import chain_enrichers
+from emergent.wire.compile._capabilities import fold_handler_runtime
 
 
 async def execute_rrc(
@@ -50,11 +50,9 @@ async def execute_rrc(
         result = await handler.runner.run(op, scope_extras=scope_extras)
         return codec.response.from_domain(result)
 
-    # Extract ScopeEnricher capabilities
-    enrichers = tuple(
-        cap for cap in handler.capabilities
-        if isinstance(cap, ScopeEnricher)
-    )
+    # Extract enrichers via fold
+    rt_ctx = fold_handler_runtime(handler.capabilities)
+    enrichers = rt_ctx.enrichers
 
     # Chain and execute
     if enrichers:

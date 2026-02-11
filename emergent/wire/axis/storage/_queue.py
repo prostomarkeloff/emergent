@@ -10,9 +10,10 @@ Queue = Push + Pop capabilities composed with Codec.
 from dataclasses import dataclass
 from typing import Protocol
 
-from kungfu import Result, Ok, Error, Option, Some, Nothing
+from kungfu import Result, Option
 
 from emergent.wire.axis.storage._codec import Codec
+from emergent.wire.axis.storage._result import map_option
 from emergent.wire.axis.storage._capabilities import (
     Push as PushCap,
     Pop as PopCap,
@@ -72,20 +73,11 @@ class Queue[T, E]:
 
     async def push(self, value: T) -> Result[None, E]:
         """Push typed value to queue."""
-        data = self.codec.encode(value)
-        return await self.backend.push(data)
+        return await self.backend.push(self.codec.encode(value))
 
     async def pop(self) -> Result[Option[T], E]:
         """Pop typed value from queue."""
-        match await self.backend.pop():
-            case Ok(Some(data)):
-                return Ok(Some(self.codec.decode(data)))
-            case Ok(Nothing()):
-                return Ok(Nothing())
-            case Error(e):
-                return Error(e)
-            case _:
-                return Ok(Nothing())
+        return map_option(await self.backend.pop(), self.codec.decode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,32 +92,15 @@ class QueueFull[T, E]:
 
     async def push(self, value: T) -> Result[None, E]:
         """Push typed value to queue."""
-        data = self.codec.encode(value)
-        return await self.backend.push(data)
+        return await self.backend.push(self.codec.encode(value))
 
     async def pop(self) -> Result[Option[T], E]:
         """Pop typed value from queue."""
-        match await self.backend.pop():
-            case Ok(Some(data)):
-                return Ok(Some(self.codec.decode(data)))
-            case Ok(Nothing()):
-                return Ok(Nothing())
-            case Error(e):
-                return Error(e)
-            case _:
-                return Ok(Nothing())
+        return map_option(await self.backend.pop(), self.codec.decode)
 
     async def peek(self) -> Result[Option[T], E]:
         """Peek at front without removing."""
-        match await self.backend.peek():
-            case Ok(Some(data)):
-                return Ok(Some(self.codec.decode(data)))
-            case Ok(Nothing()):
-                return Ok(Nothing())
-            case Error(e):
-                return Error(e)
-            case _:
-                return Ok(Nothing())
+        return map_option(await self.backend.peek(), self.codec.decode)
 
     async def length(self) -> Result[int, E]:
         """Get queue length."""

@@ -9,6 +9,7 @@ app = fastapi_compile(wire_app, axes)
 from __future__ import annotations
 
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from typing import Any, Callable, cast
 
 import fastapi
@@ -34,14 +35,15 @@ from emergent.wire.axis.surface.codecs.resolve import (
 )
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
-from emergent.wire.compile._core import Axes, scan_all_codecs
+from emergent.wire.compile._core import Axes, fold
+from emergent.wire.compile._target import CodecAdapter, TargetCompiler
 from emergent.wire.compile._capabilities import (
     apply_response_capabilities,
-    apply_fastapi_capabilities,
-    apply_fastapi_route_capabilities,
     FastAPICompileContext,
-    FastAPIRouteContext,
+    FastAPICompilable,
+    FastAPIRouteCompilable,
 )
+from emergent.wire.axis._capability import FastAPIRouteContext
 from emergent.wire.compile._execute import (
     execute_rrc_unified,
     execute_immediate_unified,
@@ -111,6 +113,24 @@ async def setup_fastapi_scope(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FastAPIRoute — structured wrap result (NO heuristics in registration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIRoute:
+    """Structured result of wrapping a handler for FastAPI.
+
+    The wrap function knows its codec and fills ALL metadata.
+    register_handler reads ONLY from this — zero hasattr/getattr on codec.
+    """
+
+    endpoint: Any
+    response_model: type | None = None
+    openapi_extra: dict[str, Any] | None = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # RRC Wrapper
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -119,11 +139,20 @@ def wrap_rrc_fastapi(
     handler: Handler[RequestResponseCodec],
     trigger: HTTPRouteTrigger,
     axes: Axes,
-) -> Any:
-    """Wrap RRC handler for FastAPI — trivial with unified execution."""
+) -> FastAPIRoute:
+    """Wrap RRC handler for FastAPI — uses Pydantic for type coercion."""
+    from emergent.wire.compile._generate import to_pydantic
+
+    req_cls = handler.codec.request
     resp_cls = handler.codec.response
 
+    # Compile request to Pydantic for type coercion
+    RequestModel = to_pydantic(req_cls, axes)
+
     async def _route(request: fastapi.Request) -> Any:
+        from fastapi.exceptions import RequestValidationError
+        from pydantic import ValidationError
+
         # Parse request data based on method
         if trigger.method in ("POST", "PUT", "PATCH"):
             try:
@@ -136,11 +165,18 @@ def wrap_rrc_fastapi(
         # Merge path params + body/query (path params take precedence)
         all_values = {**body, **dict(request.path_params)}
 
+        # Coerce types via Pydantic
+        try:
+            pydantic_instance = RequestModel(**all_values)
+        except ValidationError as e:
+            raise RequestValidationError(e.errors()) from e
+        coerced = pydantic_instance.model_dump()
+
         # Unified execution — just provide the pieces
         return await execute_rrc_unified(
             handler=handler,
             axes=axes,
-            get_value=lambda name: all_values.get(name),
+            get_value=lambda name: coerced.get(name),
             inject_scope=lambda scope: scope.inject(fastapi.Request, request),
         )
 
@@ -149,7 +185,11 @@ def wrap_rrc_fastapi(
         "return": resp_cls,
     }
 
-    return _route
+    return FastAPIRoute(
+        endpoint=_route,
+        response_model=resp_cls,
+        openapi_extra=_build_rrc_openapi_extra(handler.codec, trigger, axes),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -161,7 +201,7 @@ def wrap_stateful_fastapi(
     handler: Handler[StatefulCodec],
     trigger: HTTPRouteTrigger,
     axes: Axes,
-) -> Any:
+) -> FastAPIRoute:
     """Wrap StatefulCodec handler for FastAPI."""
     codec = handler.codec
     agent_cls = cast(type[Agent], codec.agent_cls)
@@ -207,9 +247,8 @@ def wrap_stateful_fastapi(
         if not is_terminal:
             await save_state(codec, store_key, state, new_state)
             if response is not None:
-                # Apply response capabilities
                 response = apply_response_capabilities(response, handler.capabilities)
-                return _serialize(response)
+                return response
             return fastapi.Response(status_code=200)
 
         # 6. Done — execute with enrichers
@@ -219,25 +258,18 @@ def wrap_stateful_fastapi(
 
         await delete_state(codec, store_key)
 
-        # Apply response capabilities
         final = apply_response_capabilities(final, handler.capabilities)
-        return _serialize(final)
+        return final
 
     _route.__annotations__ = {
         "request": fastapi.Request,
         "return": codec.response,
     }
 
-    return _route
-
-
-def _serialize(resp: Any) -> Any:
-    """Serialize response for FastAPI."""
-    if isinstance(resp, fastapi.Response):
-        return resp
-    if _is_pydantic_model(type(resp)):
-        return resp
-    return resp
+    return FastAPIRoute(
+        endpoint=_route,
+        response_model=codec.response,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -249,13 +281,13 @@ def wrap_immediate_fastapi(
     handler: Handler[Any],
     trigger: HTTPRouteTrigger,
     axes: Axes,
-) -> Any:
+) -> FastAPIRoute:
     """Wrap Immediate codecs for FastAPI — trivial with unified execution."""
 
     async def _route() -> Any:
         return execute_immediate_unified(handler)
 
-    return _route
+    return FastAPIRoute(endpoint=_route)
 
 
 # Alias for backwards compatibility
@@ -271,29 +303,119 @@ def wrap_delegate_fastapi(
     handler: Handler[DelegateCodec],
     trigger: HTTPRouteTrigger,
     axes: Axes,
-    agent_cls: type[Agent] | None = None,
-) -> Any:
+) -> FastAPIRoute:
     """Wrap DelegateCodec handler for FastAPI — trivial with unified execution.
 
     Compose dialect works by default on handler params.
     """
     from emergent.wire.compile._execute import execute_delegate_unified
 
-    # Build route using unified execution
     async def _route(request: fastapi.Request) -> Any:
         def inject_scope(scope: Scope) -> None:
             scope.inject(fastapi.Request, request)
-            # Inject path params into scope
             for _, value in request.path_params.items():
                 scope.inject(type(value), value)
 
         return await execute_delegate_unified(
             handler=handler,
             inject_scope=inject_scope,
-            agent_cls=agent_cls,
         )
 
-    return _route
+    return FastAPIRoute(endpoint=_route)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OpenAPI Schema Generation — uses schema axis
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _build_rrc_openapi_extra(
+    codec: RequestResponseCodec,
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+) -> dict[str, Any] | None:
+    """Build openapi_extra for RRC codec using schema axis.
+
+    Uses to_openapi_schema() to generate proper request schema.
+    FastAPI will merge this into the route's OpenAPI specification.
+    """
+    import re
+    from emergent.wire.compile._schema import to_openapi_schema
+
+    req_cls = codec.request
+
+    # Generate request schema using schema axis
+    request_schema = to_openapi_schema(req_cls, axes)
+
+    # Extract path params from trigger
+    path_param_names = set(re.findall(r"\{(\w+)\}", trigger.path))
+
+    # Build path parameters list
+    path_parameters: list[dict[str, Any]] = []
+    if path_param_names and "properties" in request_schema:
+        for name in path_param_names:
+            if name in request_schema["properties"]:
+                prop = request_schema["properties"][name]
+                path_parameters.append({
+                    "name": name,
+                    "in": "path",
+                    "required": True,
+                    "schema": prop,
+                })
+
+    result: dict[str, Any] = {}
+
+    # Add path parameters
+    if path_parameters:
+        result["parameters"] = path_parameters
+
+    # Add request body for POST/PUT/PATCH
+    if trigger.method in ("POST", "PUT", "PATCH"):
+        # Remove path params from body schema
+        body_schema = dict(request_schema)
+        if "properties" in body_schema and path_param_names:
+            body_schema = dict(body_schema)
+            body_schema["properties"] = {
+                k: v for k, v in body_schema["properties"].items()
+                if k not in path_param_names
+            }
+            if "required" in body_schema:
+                body_schema["required"] = [
+                    r for r in body_schema["required"]
+                    if r not in path_param_names
+                ]
+
+        # Only add requestBody if there are body properties
+        if body_schema.get("properties"):
+            result["requestBody"] = {
+                "required": True,
+                "content": {
+                    "application/json": {
+                        "schema": body_schema,
+                    }
+                },
+            }
+    else:
+        # GET/DELETE — add query parameters
+        query_parameters: list[dict[str, Any]] = []
+        if "properties" in request_schema:
+            required_fields = set(request_schema.get("required", []))
+            for name, prop in request_schema["properties"].items():
+                if name not in path_param_names:
+                    query_parameters.append({
+                        "name": name,
+                        "in": "query",
+                        "required": name in required_fields,
+                        "schema": prop,
+                    })
+
+        if query_parameters:
+            if "parameters" in result:
+                result["parameters"].extend(query_parameters)
+            else:
+                result["parameters"] = query_parameters
+
+    return result if result else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -305,60 +427,93 @@ def register_handler(
     app: fastapi.FastAPI | fastapi.APIRouter,
     trigger: HTTPRouteTrigger,
     handler: Handler[Any],
+    route: FastAPIRoute,
     axes: Axes,
     mounted: set[tuple[int, str]] | None = None,
 ) -> None:
-    """Register handler on FastAPI app/router."""
-    # 1. Build compile context
+    """Register pre-wrapped handler on FastAPI app/router.
+
+    Reads ALL metadata from FastAPIRoute — zero codec sniffing.
+    Capabilities applied from handler.capabilities (axis data).
+    """
+    # 1. Apply compile-time capabilities (e.g., Mount) — fold() with tracing
     ctx = FastAPICompileContext(
         app=app,
         trigger=trigger,
         handler=handler,
         mounted=mounted if mounted is not None else set(),
     )
+    ctx = fold(
+        handler.capabilities, ctx,
+        FastAPICompilable, "compile_fastapi",
+        trace=axes.trace,
+    )
 
-    # 2. Apply compile-time capabilities (e.g., Mount)
-    ctx = apply_fastapi_capabilities(ctx, handler.capabilities)
-
-    # If capability handled registration (e.g., mounted ASGI), we're done
     if ctx.skip_route:
         return
 
-    # 3. Build route context for route-level capabilities (Tag, Summary, etc.)
+    # 2. Route-level capabilities (Tag, Summary, etc.) — fold() with tracing
     route_ctx = FastAPIRouteContext(
         path=trigger.path,
         method=trigger.method,
     )
-    route_ctx = apply_fastapi_route_capabilities(route_ctx, handler.capabilities)
+    route_ctx = fold(
+        handler.capabilities, route_ctx,
+        FastAPIRouteCompilable, "compile_fastapi_route",
+        trace=axes.trace,
+    )
 
-    # 4. Wrap handler based on codec
-    if isinstance(handler.codec, RequestResponseCodec):
-        route = wrap_rrc_fastapi(handler, trigger, axes)
-    elif isinstance(handler.codec, StatefulCodec):
-        route = wrap_stateful_fastapi(handler, trigger, axes)
-    elif isinstance(handler.codec, ImmediateCodec):
-        route = wrap_immediate_fastapi(handler, trigger, axes)
-    elif isinstance(handler.codec, ImmediateFactoryCodec):
-        route = wrap_immediate_factory_fastapi(handler, trigger, axes)
-    elif isinstance(handler.codec, DelegateCodec):
-        route = wrap_delegate_fastapi(handler, trigger, axes)
-    else:
-        raise ValueError(f"Unknown codec type: {type(handler.codec)}")
-
-    # 5. Register route with capabilities from route context
+    # 3. Register — all metadata from FastAPIRoute + route_ctx
     method_fn = getattr(app, trigger.method.lower(), None)
     if method_fn is None:
         raise ValueError(f"Unsupported HTTP method: {trigger.method}")
 
-    # Apply route context to FastAPI decorator
-    method_fn(
-        trigger.path,
-        tags=list(route_ctx.tags) if route_ctx.tags else None,
-        summary=route_ctx.summary,
-        description=route_ctx.description,
-        deprecated=route_ctx.deprecated or None,
-        operation_id=route_ctx.operation_id,
-    )(route)
+    # Merge openapi_extra: route comes from wrap, capabilities come from route_ctx
+    openapi_extra = route.openapi_extra
+    if route_ctx.openapi_extra:
+        if openapi_extra is None:
+            openapi_extra = dict(route_ctx.openapi_extra)
+        else:
+            openapi_extra = dict(openapi_extra)
+            for key, value in route_ctx.openapi_extra.items():
+                if key == "responses" and "responses" in openapi_extra:
+                    openapi_extra["responses"] = {
+                        **openapi_extra["responses"],
+                        **value,
+                    }
+                else:
+                    openapi_extra[key] = value
+
+    kwargs: dict[str, Any] = {
+        "tags": list(route_ctx.tags) if route_ctx.tags else None,
+        "summary": route_ctx.summary,
+        "description": route_ctx.description,
+        "deprecated": route_ctx.deprecated or None,
+        "operation_id": route_ctx.operation_id,
+        "response_model": route.response_model,
+        "openapi_extra": openapi_extra,
+    }
+    if route_ctx.status_code is not None:
+        kwargs["status_code"] = route_ctx.status_code
+
+    method_fn(trigger.path, **kwargs)(route.endpoint)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FASTAPI_COMPILER — open-world codec adapter set
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+FASTAPI_COMPILER: TargetCompiler[HTTPRouteTrigger] = TargetCompiler(
+    trigger_type=HTTPRouteTrigger,
+    adapters=(
+        CodecAdapter(RequestResponseCodec, wrap_rrc_fastapi),
+        CodecAdapter(StatefulCodec, wrap_stateful_fastapi),
+        CodecAdapter(ImmediateCodec, wrap_immediate_fastapi),
+        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_fastapi),
+        CodecAdapter(DelegateCodec, wrap_delegate_fastapi),
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -399,35 +554,39 @@ def fastapi_compile_endpoint(
     routes: list[fastapi.routing.APIRoute] = []
 
     for trigger, handler in scan_endpoint(endp, HTTPRouteTrigger, RequestResponseCodec):
-        route_fn = wrap_rrc_fastapi(handler, trigger, axes)
+        fapi_route = wrap_rrc_fastapi(handler, trigger, axes)
         routes.append(
             fastapi.routing.APIRoute(
                 path=trigger.path,
-                endpoint=route_fn,
+                endpoint=fapi_route.endpoint,
                 methods=[trigger.method.upper()],
-                response_model=handler.codec.response,
+                response_model=fapi_route.response_model,
             )
         )
 
     for trigger, handler in scan_endpoint(endp, HTTPRouteTrigger, StatefulCodec):
-        route_fn = wrap_stateful_fastapi(handler, trigger, axes)
+        fapi_route = wrap_stateful_fastapi(handler, trigger, axes)
         routes.append(
             fastapi.routing.APIRoute(
                 path=trigger.path,
-                endpoint=route_fn,
+                endpoint=fapi_route.endpoint,
                 methods=[trigger.method.upper()],
-                response_model=handler.codec.response,
+                response_model=fapi_route.response_model,
             )
         )
 
     return routes
 
 
-def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastAPI:
+def fastapi_compile(
+    app: Application,
+    axes: Axes | None = None,
+    compiler: TargetCompiler[HTTPRouteTrigger] | None = None,
+) -> fastapi.FastAPI:
     """Compile wire Application to FastAPI app.
 
     Handles:
-    - HTTP routes (HTTPRouteTrigger)
+    - HTTP routes (HTTPRouteTrigger) via TargetCompiler
     - Lifecycle (StartupTrigger, ShutdownTrigger) via lifespan
     - Exception handlers (ExceptionTrigger)
     - WebSockets (WebSocketTrigger)
@@ -436,6 +595,8 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
     Args:
         app: Wire application
         axes: Axes context (default: Axes.default())
+        compiler: TargetCompiler (default: FASTAPI_COMPILER). Pass custom
+                  compiler to add/swap/remove codec adapters.
 
     Returns:
         FastAPI application
@@ -456,6 +617,7 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
     from emergent.wire.axis.surface._scan import scan
 
     axes = axes or Axes.default()
+    _compiler = compiler or FASTAPI_COMPILER
 
     # 1. Collect lifecycle handlers sorted by order
     startup_with_order = sorted(
@@ -470,28 +632,25 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
     @asynccontextmanager
     async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
         del fastapi_app  # unused but required by FastAPI
-        # Startup
         for _order, handler_fn in startup_with_order:
             await handler_fn()
         yield
-        # Shutdown
         for _order, handler_fn in shutdown_with_order:
             await handler_fn()
 
     fapi = fastapi.FastAPI(lifespan=lifespan)
 
-    # 2. Process application-level capabilities → middleware
-    app_ctx = FastAPIAppContext()
-    for cap in app.capabilities:
-        if isinstance(cap, FastAPIAppCompilable):
-            app_ctx = cap.compile_fastapi_app(app_ctx)
+    # 2. Process application-level capabilities → middleware (fold with tracing)
+    app_ctx = fold(
+        app.capabilities, FastAPIAppContext(),
+        FastAPIAppCompilable, "compile_fastapi_app",
+        trace=axes.trace,
+    )
 
-    # Apply middleware (CORS is just middleware too)
     for middleware_cls, kwargs in app_ctx.middleware:
         fapi.add_middleware(middleware_cls, **kwargs)
 
     # 3. Exception handlers
-    # Note: ExceptionTrigger is generic, pyright can't infer concrete type from scan()
     for exc_trigger, exc_handler in scan(app, ExceptionTrigger):  # pyright: ignore[reportUnknownVariableType]
         fapi.add_exception_handler(
             exc_trigger.exception_type,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
@@ -506,15 +665,10 @@ def fastapi_compile(app: Application, axes: Axes | None = None) -> fastapi.FastA
             name=ws_trigger.name,
         )
 
-    # 5. HTTP routes (existing logic)
+    # 5. HTTP routes — via TargetCompiler, no isinstance chains
     mounted: set[tuple[int, str]] = set()
-    scan_all_codecs(
-        app,
-        HTTPRouteTrigger,
-        lambda trigger, handler: register_handler(
-            fapi, trigger, handler, axes, mounted
-        ),
-    )
+    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
+        register_handler(fapi, trigger, handler, route, axes, mounted)
 
     return fapi
 
@@ -592,19 +746,44 @@ def _wrap_websocket(handler: Handler[Any]) -> Any:
     raise ValueError(f"Unsupported codec for websocket: {type(codec)}")
 
 
-def fastapi_compile_stack(stack: AppStack, axes: Axes | None = None) -> fastapi.FastAPI:
+def _wrap_for_stack(
+    handler: Handler[Any],
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+    compiler: TargetCompiler[HTTPRouteTrigger],
+) -> FastAPIRoute:
+    """Find the right adapter and wrap handler for stack compilation."""
+    for adapter in compiler.adapters:
+        if isinstance(handler.codec, adapter.codec_type):
+            return adapter.wrap(handler, trigger, axes)
+    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
+
+
+def fastapi_compile_stack(
+    stack: AppStack,
+    axes: Axes | None = None,
+    compiler: TargetCompiler[HTTPRouteTrigger] | None = None,
+) -> fastapi.FastAPI:
     """Compile AppStack to FastAPI app with nested routers."""
     axes = axes or Axes.default()
+    _compiler = compiler or FASTAPI_COMPILER
     fapi = fastapi.FastAPI()
     view = scan_stack(stack, HTTPRouteTrigger)
 
-    # Shared state for compile-time capabilities
     mounted: set[tuple[int, str]] = set()
+
+    def _register(
+        target: fastapi.FastAPI | fastapi.APIRouter,
+        trigger: HTTPRouteTrigger,
+        handler: Handler[Any],
+    ) -> None:
+        route = _wrap_for_stack(handler, trigger, axes, _compiler)
+        register_handler(target, trigger, handler, route, axes, mounted)
 
     def build_router(v: StackView[HTTPRouteTrigger]) -> fastapi.APIRouter:
         router = fastapi.APIRouter()
         for trigger, handler in v.root:
-            register_handler(router, trigger, handler, axes, mounted)
+            _register(router, trigger, handler)
 
         for prefix, child in v.mounts.items():
             if isinstance(child, StackView):
@@ -612,23 +791,21 @@ def fastapi_compile_stack(stack: AppStack, axes: Axes | None = None) -> fastapi.
             else:
                 nested = fastapi.APIRouter()
                 for trigger, handler in child:
-                    register_handler(nested, trigger, handler, axes, mounted)
+                    _register(nested, trigger, handler)
             router.include_router(nested, prefix=f"/{prefix}")
 
         return router
 
-    # Root handlers
     for trigger, handler in view.root:
-        register_handler(fapi, trigger, handler, axes, mounted)
+        _register(fapi, trigger, handler)
 
-    # Mounts
     for prefix, child in view.mounts.items():
         if isinstance(child, StackView):
             router = build_router(child)
         else:
             router = fastapi.APIRouter()
             for trigger, handler in child:
-                register_handler(router, trigger, handler, axes, mounted)
+                _register(router, trigger, handler)
         fapi.include_router(router, prefix=f"/{prefix}")
 
     return fapi
@@ -638,12 +815,14 @@ __all__ = (
     "fastapi_compile",
     "fastapi_compile_endpoint",
     "fastapi_compile_stack",
+    "FastAPIRoute",
     "wrap_rrc_fastapi",
     "wrap_stateful_fastapi",
     "wrap_immediate_fastapi",
     "wrap_immediate_factory_fastapi",
     "register_handler",
     "setup_fastapi_scope",
+    "FASTAPI_COMPILER",
 )
 
 

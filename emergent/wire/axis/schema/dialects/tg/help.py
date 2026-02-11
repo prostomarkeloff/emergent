@@ -17,13 +17,29 @@ Two approaches supported:
 Explicit parameters always override decorators.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Protocol, runtime_checkable
 
 from emergent.wire.axis.schema._universal import (
     SchemaCapability,
     schema_meta,
-    get_schema_capability,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class TgHelpContext:
+    """Fold context for Telegram help metadata."""
+    description: str | None = None
+    order: int = 100
+    hidden: bool = False
+
+
+@runtime_checkable
+class TgHelpCompilable(Protocol):
+    """Protocol for schema-level capabilities that contribute to TG help."""
+
+    def compile_tg_help(self, ctx: TgHelpContext) -> TgHelpContext:
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +54,9 @@ class Command(SchemaCapability):
     description: str | None = None
     order: int = 100
     hidden: bool = False
+
+    def compile_tg_help(self, ctx: TgHelpContext) -> TgHelpContext:
+        return replace(ctx, description=self.description, order=self.order, hidden=self.hidden)
 
 
 def command(description: str, *, order: int = 100):
@@ -65,11 +84,10 @@ def hidden():
 
 
 def get_command(cls: type) -> Command:
-    """Get Command capability from request class."""
-    cap = get_schema_capability(cls, Command)
-    if isinstance(cap, Command):
-        return cap
-    return Command()
+    """Get Command capability from request class via fold_schema."""
+    from emergent.wire.compile._core import fold_schema
+    ctx = fold_schema(cls, TgHelpContext(), TgHelpCompilable, "compile_tg_help")
+    return Command(description=ctx.description, order=ctx.order, hidden=ctx.hidden)
 
 
 def is_hidden(cls: type) -> bool:

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Generic, TypeVar
 
 
+K = TypeVar("K")
 T = TypeVar("T")
 
 
@@ -26,29 +27,29 @@ T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
-class KVGet:
+class KVGet(Generic[K]):
     """Get by key."""
-    key: Any
+    key: K
 
 
 @dataclass(frozen=True, slots=True)
-class KVSet:
+class KVSet(Generic[K, T]):
     """Set key-value."""
-    key: Any
-    value: Any
+    key: K
+    value: T
     ttl: int | None = None  # seconds
 
 
 @dataclass(frozen=True, slots=True)
-class KVDelete:
+class KVDelete(Generic[K]):
     """Delete by key."""
-    key: Any
+    key: K
 
 
 @dataclass(frozen=True, slots=True)
-class Exists:
+class Exists(Generic[K]):
     """Check key exists."""
-    key: Any
+    key: K
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +65,10 @@ class Keys:
 
 
 # Union type
-KVOp = KVGet | KVSet | KVDelete | Exists | Scan | Keys
+KVOp = KVGet[Any] | KVSet[Any, Any] | KVDelete[Any] | Exists[Any] | Scan | Keys
 
 # Backward compatibility aliases
 Get = KVGet
-Set = KVSet
 Delete = KVDelete
 
 
@@ -76,17 +76,18 @@ Delete = KVDelete
 
 
 @dataclass(frozen=True)
-class KVQuerySet(Generic[T]):
+class KVQuerySet(Generic[K, T]):
     """KV query — key-value operations.
 
+    Generic over K (key type) and T (value type).
     Immutable. Each method returns new query op.
     """
 
     entity: type[T]
-    key_fn: Callable[[T], Any]
+    key_fn: Callable[[T], K]
     op: KVOp | None = None
 
-    def get(self, key: Any) -> KVQuerySet[T]:
+    def get(self, key: K) -> KVQuerySet[K, T]:
         """Get by key.
 
         Usage:
@@ -95,7 +96,7 @@ class KVQuerySet(Generic[T]):
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVGet(key))
 
-    def set(self, key: Any, value: T, ttl: int | None = None) -> KVQuerySet[T]:
+    def set(self, key: K, value: T, ttl: int | None = None) -> KVQuerySet[K, T]:
         """Set key-value with optional TTL.
 
         Usage:
@@ -104,7 +105,7 @@ class KVQuerySet(Generic[T]):
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVSet(key, value, ttl))
 
-    def delete(self, key: Any) -> KVQuerySet[T]:
+    def delete(self, key: K) -> KVQuerySet[K, T]:
         """Delete by key.
 
         Usage:
@@ -112,7 +113,7 @@ class KVQuerySet(Generic[T]):
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=KVDelete(key))
 
-    def exists(self, key: Any) -> KVQuerySet[T]:
+    def exists(self, key: K) -> KVQuerySet[K, T]:
         """Check if key exists.
 
         Usage:
@@ -120,7 +121,7 @@ class KVQuerySet(Generic[T]):
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Exists(key))
 
-    def scan(self, pattern: str) -> KVQuerySet[T]:
+    def scan(self, pattern: str) -> KVQuerySet[K, T]:
         """Scan keys by pattern.
 
         Usage:
@@ -129,7 +130,7 @@ class KVQuerySet(Generic[T]):
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Scan(pattern))
 
-    def keys(self, pattern: str = "*") -> KVQuerySet[T]:
+    def keys(self, pattern: str = "*") -> KVQuerySet[K, T]:
         """Get keys matching pattern.
 
         Usage:
@@ -140,7 +141,7 @@ class KVQuerySet(Generic[T]):
 
     # ─── Convenience ──────────────────────────────────────────────────────
 
-    def put(self, entity: T, ttl: int | None = None) -> KVQuerySet[T]:
+    def put(self, entity: T, ttl: int | None = None) -> KVQuerySet[K, T]:
         """Set using entity's key.
 
         Usage:
@@ -150,7 +151,7 @@ class KVQuerySet(Generic[T]):
         return self.set(key, entity, ttl)
 
 
-def kv(entity: type[T], key: Callable[[T], Any]) -> KVQuerySet[T]:
+def kv(entity: type[T], key: Callable[[T], K]) -> KVQuerySet[K, T]:
     """Create KV QuerySet for entity.
 
     Args:
@@ -175,7 +176,6 @@ __all__ = (
     "KVOp",
     # Backward compat aliases
     "Get",
-    "Set",
     "Delete",
     # QuerySet
     "KVQuerySet",

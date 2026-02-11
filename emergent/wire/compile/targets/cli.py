@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from nodnod import Scope
 from nodnod.agent.base import Agent
@@ -29,11 +30,29 @@ from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 from emergent.wire.axis.surface.codecs.resolve import get_method_params
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
-from emergent.wire.compile._core import Axes, scan_all_codecs
+from emergent.wire.compile._core import Axes
+from emergent.wire.compile._target import CodecAdapter, TargetCompiler
 from emergent.wire.compile._capabilities import apply_response_capabilities
 from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
 from emergent.wire.compile._stateful import execute_stateful_turn, execute_stateful_done
 from emergent.wire.compile._generate import to_argparse_args, ArgSpec
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLIRoute — structured wrap result (NO heuristics in registration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class CLIRoute:
+    """Structured result of wrapping a handler for CLI.
+
+    The wrap function knows its codec and fills ALL metadata.
+    register_handler reads ONLY from this — zero isinstance on codec.
+    """
+
+    handler: Callable[[argparse.Namespace], object]
+    arg_specs: tuple[ArgSpec, ...] = ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -43,8 +62,9 @@ from emergent.wire.compile._generate import to_argparse_args, ArgSpec
 
 def wrap_rrc_cli(
     handler: Handler[RequestResponseCodec],
+    trigger: CLITrigger,
     axes: Axes,
-) -> tuple[list[ArgSpec], Any]:
+) -> CLIRoute:
     """Wrap RRC handler for CLI — trivial with unified execution."""
     req_cls = handler.codec.request
     arg_specs = to_argparse_args(req_cls, axes)
@@ -58,7 +78,7 @@ def wrap_rrc_cli(
         )
         return str(response)
 
-    return (arg_specs, _handler)
+    return CLIRoute(handler=_handler, arg_specs=tuple(arg_specs))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -127,8 +147,9 @@ async def _compose_cli_param(
 
 def wrap_stateful_cli(
     handler: Handler[StatefulCodec],
+    trigger: CLITrigger,
     axes: Axes,
-) -> Any:
+) -> CLIRoute:
     """Wrap StatefulCodec for CLI (interactive).
 
     Supports node composition for transition parameters.
@@ -179,51 +200,23 @@ def wrap_stateful_cli(
             final = apply_response_capabilities(final, handler.capabilities)
             return str(final)
 
-    return _handler
+    return CLIRoute(handler=_handler)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Registration
+# Immediate Handler
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def register_rrc(
-    subparsers: Any,
+def wrap_immediate_cli(
+    handler: Handler[Any],
     trigger: CLITrigger,
-    handler: Handler[RequestResponseCodec],
     axes: Axes,
-) -> None:
-    """Register RRC as subcommand."""
-    arg_specs, async_handler = wrap_rrc_cli(handler, axes)
-
-    sub = subparsers.add_parser(trigger.command, help=trigger.description)
-    for spec in arg_specs:
-        if spec.is_positional:
-            sub.add_argument(spec.name, **spec.kwargs)
-        else:
-            sub.add_argument(spec.name, dest=spec.dest, **spec.kwargs)
-
-    sub.set_defaults(_handler=async_handler)
-
-
-def register_stateful(
-    subparsers: Any,
-    trigger: CLITrigger,
-    handler: Handler[StatefulCodec],
-    axes: Axes,
-) -> None:
-    """Register Stateful as subcommand."""
-    async_handler = wrap_stateful_cli(handler, axes)
-
-    sub = subparsers.add_parser(trigger.command, help=trigger.description)
-    sub.set_defaults(_handler=async_handler)
-
-
-def wrap_immediate_cli(handler: Handler[Any], axes: Axes) -> Any:
+) -> CLIRoute:
     """Wrap Immediate codecs for CLI — trivial with unified execution."""
     async def _handler(ns: argparse.Namespace) -> str:
         return str(execute_immediate_unified(handler))
-    return _handler
+    return CLIRoute(handler=_handler)
 
 
 # Alias for backwards compatibility
@@ -323,8 +316,9 @@ def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> dict[str, Any]
 
 def wrap_delegate_cli(
     handler: Handler[DelegateCodec],
+    trigger: CLITrigger,
     axes: Axes,
-) -> tuple[list[ArgSpec], Any]:
+) -> CLIRoute:
     """Wrap DelegateCodec handler for CLI using schema axis."""
     delegate_handler = handler.codec.handler
     arg_specs = _get_delegate_arg_specs(delegate_handler, axes)
@@ -341,67 +335,69 @@ def wrap_delegate_cli(
         result = apply_response_capabilities(result, handler.capabilities)
         return str(result)
 
-    return (arg_specs, _handler)
-
-
-def register_delegate(
-    subparsers: Any,
-    trigger: CLITrigger,
-    handler: Handler[DelegateCodec],
-    axes: Axes,
-) -> None:
-    """Register DelegateCodec as subcommand."""
-    arg_specs, async_handler = wrap_delegate_cli(handler, axes)
-
-    sub = subparsers.add_parser(trigger.command, help=trigger.description)
-    for spec in arg_specs:
-        if spec.is_positional:
-            sub.add_argument(spec.name, **spec.kwargs)
-        else:
-            sub.add_argument(spec.name, dest=spec.dest, **spec.kwargs)
-
-    sub.set_defaults(_handler=async_handler)
-
-
-def register_immediate(
-    subparsers: Any,
-    trigger: CLITrigger,
-    handler: Handler[ImmediateCodec],
-    axes: Axes,
-) -> None:
-    """Register Immediate as subcommand."""
-    sub = subparsers.add_parser(trigger.command, help=trigger.description)
-    sub.set_defaults(_handler=wrap_immediate_cli(handler, axes))
-
-
-def register_immediate_factory(
-    subparsers: Any,
-    trigger: CLITrigger,
-    handler: Handler[ImmediateFactoryCodec],
-    axes: Axes,
-) -> None:
-    """Register ImmediateFactory as subcommand."""
-    sub = subparsers.add_parser(trigger.command, help=trigger.description)
-    sub.set_defaults(_handler=wrap_immediate_factory_cli(handler, axes))
+    return CLIRoute(handler=_handler, arg_specs=tuple(arg_specs))
 
 
 def register_handler(
     subparsers: Any,
     trigger: CLITrigger,
     handler: Handler[Any],
-    axes: Axes,
+    route: CLIRoute,
+    axes: Axes | None = None,
 ) -> None:
-    """Register handler based on codec type."""
-    if isinstance(handler.codec, RequestResponseCodec):
-        register_rrc(subparsers, trigger, handler, axes)
-    elif isinstance(handler.codec, StatefulCodec):
-        register_stateful(subparsers, trigger, handler, axes)
-    elif isinstance(handler.codec, DelegateCodec):
-        register_delegate(subparsers, trigger, handler, axes)
-    elif isinstance(handler.codec, ImmediateCodec):
-        register_immediate(subparsers, trigger, handler, axes)
-    elif isinstance(handler.codec, ImmediateFactoryCodec):
-        register_immediate_factory(subparsers, trigger, handler, axes)
+    """Register pre-wrapped handler on subparsers.
+
+    Folds handler capabilities through CLICompilable for command metadata.
+    Reads argument specs from CLIRoute — zero codec sniffing.
+    """
+    from emergent.wire.axis._capability import CLICompilable, CLICommandContext
+    from emergent.wire.compile._core import fold
+
+    # Start with trigger defaults
+    ctx = CLICommandContext(
+        name=trigger.command,
+        help=trigger.description,
+    )
+
+    # Fold capabilities (Tag, Help, Hidden, etc.)
+    trace = axes.trace if axes else None
+    ctx = fold(
+        handler.capabilities, ctx,
+        CLICompilable, "compile_cli",
+        trace=trace,
+    )
+
+    # Register — hidden commands use argparse.SUPPRESS
+    help_text = argparse.SUPPRESS if ctx.hidden else ctx.help
+    sub = subparsers.add_parser(
+        ctx.name,
+        help=help_text,
+        description=ctx.description,
+        epilog=ctx.epilog,
+    )
+    for spec in route.arg_specs:
+        if spec.is_positional:
+            sub.add_argument(spec.name, **spec.kwargs)
+        else:
+            sub.add_argument(spec.name, dest=spec.dest, **spec.kwargs)
+    sub.set_defaults(_handler=route.handler)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CLI_COMPILER — open-world codec adapter set
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+CLI_COMPILER: TargetCompiler[CLITrigger] = TargetCompiler(
+    trigger_type=CLITrigger,
+    adapters=(
+        CodecAdapter(RequestResponseCodec, wrap_rrc_cli),
+        CodecAdapter(StatefulCodec, wrap_stateful_cli),
+        CodecAdapter(ImmediateCodec, wrap_immediate_cli),
+        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_cli),
+        CodecAdapter(DelegateCodec, wrap_delegate_cli),
+    ),
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -412,38 +408,70 @@ def register_handler(
 def cli_compile(
     app: Application,
     axes: Axes | None = None,
+    compiler: TargetCompiler[CLITrigger] | None = None,
     prog: str = "cli",
 ) -> argparse.ArgumentParser:
-    """Compile wire Application to argparse parser."""
+    """Compile wire Application to argparse parser.
+
+    Args:
+        app: Wire application
+        axes: Axes context (default: Axes.default())
+        compiler: TargetCompiler (default: CLI_COMPILER). Pass custom
+                  compiler to add/swap/remove codec adapters.
+        prog: Program name for argparse
+
+    Returns:
+        argparse ArgumentParser
+    """
     axes = axes or Axes.default()
+    _compiler = compiler or CLI_COMPILER
     parser = argparse.ArgumentParser(prog=prog)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Unified compile loop
-    scan_all_codecs(
-        app,
-        CLITrigger,
-        lambda trigger, handler: register_handler(subparsers, trigger, handler, axes),
-    )
+    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
+        register_handler(subparsers, trigger, handler, route, axes)
 
     return parser
+
+
+def _wrap_for_stack(
+    handler: Handler[Any],
+    trigger: CLITrigger,
+    axes: Axes,
+    compiler: TargetCompiler[CLITrigger],
+) -> CLIRoute:
+    """Find the right adapter and wrap handler for stack compilation."""
+    for adapter in compiler.adapters:
+        if isinstance(handler.codec, adapter.codec_type):
+            return adapter.wrap(handler, trigger, axes)
+    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 def cli_compile_stack(
     stack: AppStack,
     axes: Axes | None = None,
+    compiler: TargetCompiler[CLITrigger] | None = None,
     prog: str = "cli",
 ) -> argparse.ArgumentParser:
     """Compile AppStack to argparse with nested subcommands."""
     axes = axes or Axes.default()
+    _compiler = compiler or CLI_COMPILER
     parser = argparse.ArgumentParser(prog=prog)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     view = scan_stack(stack, CLITrigger)
 
+    def _register(
+        sp: Any,
+        trigger: CLITrigger,
+        handler: Handler[Any],
+    ) -> None:
+        route = _wrap_for_stack(handler, trigger, axes, _compiler)
+        register_handler(sp, trigger, handler, route, axes)
+
     def build_tree(sp: Any, v: StackView[CLITrigger], depth: int = 0) -> None:
         for trigger, handler in v.root:
-            register_handler(sp, trigger, handler, axes)
+            _register(sp, trigger, handler)
 
         for prefix, child in v.mounts.items():
             sub = sp.add_parser(prefix, help=f"{prefix} commands")
@@ -455,7 +483,7 @@ def cli_compile_stack(
                 build_tree(nested_sp, child, depth + 1)
             else:
                 for trigger, handler in child:
-                    register_handler(nested_sp, trigger, handler, axes)
+                    _register(nested_sp, trigger, handler)
 
     build_tree(subparsers, view)
     return parser
@@ -484,14 +512,83 @@ def cli_run(parser: argparse.ArgumentParser, args: list[str] | None = None) -> i
         return 1
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Typed CLI — Pydantic coercion for argparse string values
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def coerce_cli_values(
+    req_cls: type,
+    axes: Axes,
+    get_value: Callable[[str], Any],
+) -> Callable[[str], Any]:
+    """Coerce raw CLI string values through Pydantic.
+
+    CLI args come as strings — this coerces them to proper types
+    via a Pydantic model derived from the request class.
+
+        typed_get = coerce_cli_values(req_cls, axes, lambda name: getattr(ns, name, None))
+        response = await execute_rrc_unified(handler=h, axes=axes, get_value=typed_get, ...)
+    """
+    from emergent.wire.compile._generate import to_pydantic
+
+    model = to_pydantic(req_cls, axes)
+    raw = {
+        name: get_value(name)
+        for name in model.model_fields
+        if get_value(name) is not None
+    }
+    coerced = model(**raw).model_dump()
+    return lambda name: coerced.get(name)
+
+
+def wrap_rrc_cli_typed(
+    handler: Handler[RequestResponseCodec],
+    trigger: CLITrigger,
+    axes: Axes,
+) -> CLIRoute:
+    """RRC CLI adapter with Pydantic type coercion.
+
+    Like wrap_rrc_cli but coerces string args through Pydantic first.
+    Use with TYPED_CLI compiler for proper int/float/bool handling.
+    """
+    req_cls = handler.codec.request
+    arg_specs = to_argparse_args(req_cls, axes)
+
+    async def _handler(ns: argparse.Namespace) -> str:
+        typed_get = coerce_cli_values(
+            req_cls, axes,
+            lambda name: getattr(ns, name, None),
+        )
+        response = await execute_rrc_unified(
+            handler=handler, axes=axes,
+            get_value=typed_get,
+            inject_scope=lambda scope: scope.inject(argparse.Namespace, ns),
+        )
+        return str(response)
+
+    return CLIRoute(handler=_handler, arg_specs=tuple(arg_specs))
+
+
+TYPED_CLI: TargetCompiler[CLITrigger] = CLI_COMPILER.replace_codec(
+    RequestResponseCodec, wrap_rrc_cli_typed
+)
+
+
 __all__ = (
+    "CLIRoute",
+    "CLI_COMPILER",
+    "TYPED_CLI",
     "cli_compile",
     "cli_compile_stack",
     "cli_run",
     "wrap_rrc_cli",
+    "wrap_rrc_cli_typed",
+    "coerce_cli_values",
     "wrap_stateful_cli",
     "wrap_immediate_cli",
     "wrap_immediate_factory_cli",
+    "wrap_delegate_cli",
     "register_handler",
 )
 

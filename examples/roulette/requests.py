@@ -2,9 +2,7 @@
 
 Each request type has:
 - cli.* annotations for argparse
-- openapi.* annotations for FastAPI/OpenAPI
-
-Universal annotations (MinLen, etc.) work everywhere.
+- Universal annotations (Doc, MinLen, etc.) work everywhere.
 """
 
 from __future__ import annotations
@@ -12,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-from emergent.wire.axis.schema.dialects import cli, openapi, tg, compose
+from emergent.wire.axis.schema import Doc
+from emergent.wire.axis.schema.dialects import cli, tg, compose
 from telegrinder.node import ChatId
 
 from roulette.auth.ops import Register, Login, Authenticate, TelegramIdentity, LinkTelegram
@@ -28,13 +27,13 @@ class RegisterRequest:
     login: Annotated[str,
         cli.Help("Username"),
         cli.Positional(),
-        openapi.Description("Username for registration"),
+        Doc("Username for registration"),
         tg.CommandArg(),
     ]
     password: Annotated[str,
         cli.Help("Password"),
         cli.Positional(),
-        openapi.Description("Account password"),
+        Doc("Account password"),
         tg.CommandArg(),
     ]
 
@@ -55,7 +54,7 @@ class LoginRequest:
 @dataclass
 class AuthenticatedRequest:
     """Request with token auth header."""
-    token: Annotated[str, openapi.Description("Auth token from login")]
+    token: Annotated[str, Doc("Auth token from login")]
 
     def to_auth(self) -> Authenticate:
         return Authenticate(token=self.token)
@@ -82,7 +81,7 @@ class LinkTelegramRequest:
 @dataclass
 class BalanceRequest:
     """Get current balance (with auth token)."""
-    token: Annotated[str, openapi.Description("Auth token from login")]
+    token: Annotated[str, Doc("Auth token from login")]
 
     def to_domain(self) -> GetBalance:
         return GetBalance()
@@ -106,17 +105,17 @@ class TelegramBalanceRequest:
 @dataclass
 class BetRequest:
     """Place a bet (with auth token)."""
-    token: Annotated[str, openapi.Description("Auth token from login")]
+    token: Annotated[str, Doc("Auth token from login")]
     bet: Annotated[str,
         cli.Help("Bet type: red, black, or 0-36"),
         cli.Positional(),
-        openapi.Description("Bet type: 'red', 'black', or number 0-36"),
+        Doc("Bet type: 'red', 'black', or number 0-36"),
         tg.CommandArg(),
     ]
     amount: Annotated[int,
         cli.Help("Bet amount"),
         cli.Positional(),
-        openapi.Description("Amount to bet"),
+        Doc("Amount to bet"),
         tg.CommandArg(),
     ]
 

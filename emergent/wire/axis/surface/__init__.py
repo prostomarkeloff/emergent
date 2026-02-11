@@ -49,6 +49,16 @@ from emergent.wire.axis.surface.triggers import (
     WebSocketTrigger,
 )
 
+from emergent.wire.axis.surface._explain import (
+    SurfaceExplainHandler,
+    application_dict,
+    endpoint_dict,
+    exposure_dict,
+    explain_application,
+    explain_endpoint,
+    SURFACE_EXPLAIN,
+)
+
 # Empty runner for immediate codecs
 from emergent.ops import ops as _ops, Runner as _Runner
 
@@ -95,4 +105,12 @@ __all__ = (
     "capabilities",
     # Helper
     "empty_runner",
+    # Explain
+    "SurfaceExplainHandler",
+    "application_dict",
+    "endpoint_dict",
+    "exposure_dict",
+    "explain_application",
+    "explain_endpoint",
+    "SURFACE_EXPLAIN",
 )

@@ -7,12 +7,12 @@ AddTrigger capability enables cross-compilation:
     from emergent.wire.bridge.bridgers import fastapi
     from emergent.wire.bridge.bridgers._base import AddTrigger
 
-    wire_app = fastapi.extract(
+    wire_app = build_application(
         app,
         capabilities=(
             AddTrigger(
                 CLITrigger,
-                builder=lambda h: CLITrigger(h.name.replace("/", "_")),
+                builder=lambda e: CLITrigger(e.name.replace("/", "_")),
             ),
         ),
     )
@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 from emergent.wire.bridge._capabilities import BridgeCapability, BridgeContext
 
 if TYPE_CHECKING:
-    from emergent.wire.bridge._core import ExtractedHandler
+    from emergent.wire.bridge._types import Extracted, RouteData
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,14 +47,14 @@ class AddTrigger(BridgeCapability):
         from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
         # FastAPI → CLI
-        wire_app = fastapi.extract(
+        wire_app = build_application(
             app,
             capabilities=(
                 AddTrigger(
                     trigger_type=CLITrigger,
-                    builder=lambda h: CLITrigger(
-                        name=h.name.replace("/", "-").strip("-"),
-                        description=h.description,
+                    builder=lambda e: CLITrigger(
+                        name=e.name.replace("/", "-").strip("-"),
+                        description=e.description,
                     ),
                 ),
             ),
@@ -66,12 +66,12 @@ class AddTrigger(BridgeCapability):
 
     Note:
         AddTrigger stores (trigger_type, builder) in wire.additional_triggers.
-        The to_application() function reads these and creates multiple
+        The build_application() function reads these and creates multiple
         exposures per endpoint.
     """
 
     trigger_type: type
-    builder: Callable[[ExtractedHandler[object, ..., object]], object]
+    builder: Callable[[Extracted[RouteData]], object]
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]

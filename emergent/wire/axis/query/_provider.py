@@ -9,15 +9,20 @@ Each space has its own provider protocol.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import Sequence
 from typing import Any, TypeVar, Protocol, Generic, runtime_checkable
 
 from emergent.wire.axis.query._relational import RelationalQuerySet
 from emergent.wire.axis.query._kv import KVQuerySet
 from emergent.wire.axis.query._api import APIQuerySet
+from emergent.wire.axis.query._sql import SQLRelationalQuerySet
 
 
 T = TypeVar("T")
+K = TypeVar("K")
+V = TypeVar("V")
 
 
 # ─── Relational Provider ──────────────────────────────────────────────────────
@@ -87,38 +92,65 @@ class MutatingRelationalProvider(RelationalProvider[T], Protocol[T]):
         """Delete all matching. Returns count."""
         ...
 
+    async def insert_many(self, entities: Sequence[T]) -> list[T]:
+        """Bulk insert. Returns inserted entities."""
+        ...
+
+    async def upsert(self, entity: T) -> T:
+        """Insert or update by key."""
+        ...
+
+
+@runtime_checkable
+class SQLRelationalProvider(MutatingRelationalProvider[T], Protocol[T]):
+    """Provider that supports SQL-specific operations.
+
+    Extends MutatingRelationalProvider with:
+    - delete_returning() — DELETE ... RETURNING
+
+    The regular read methods (fetch_one, fetch_many, etc.) accept
+    RelationalQuerySet. Use SQLRelationalQuerySet.to_relational()
+    to strip SQL ops, or pass SQLRelationalQuerySet directly
+    if the provider's implementation handles both.
+    """
+
+    async def delete_returning(self, query: SQLRelationalQuerySet[T]) -> list[T]:
+        """DELETE ... RETURNING — delete and return deleted entities."""
+        ...
+
 
 # ─── KV Provider ──────────────────────────────────────────────────────────────
 
 
 @runtime_checkable
-class KVProvider(Protocol[T]):
+class KVProvider(Protocol[K, V]):
     """Provider for KVQuerySet.
 
     Implements key-value operations.
+    K = key type, V = value type.
     """
 
-    async def get(self, query: KVQuerySet[T]) -> T | None:
+    async def get(self, query: KVQuerySet[K, V]) -> V | None:
         """Get value by key."""
         ...
 
-    async def set(self, query: KVQuerySet[T]) -> None:
+    async def set(self, query: KVQuerySet[K, V]) -> None:
         """Set value."""
         ...
 
-    async def delete(self, query: KVQuerySet[T]) -> bool:
+    async def delete(self, query: KVQuerySet[K, V]) -> bool:
         """Delete by key. Returns True if existed."""
         ...
 
-    async def exists(self, query: KVQuerySet[T]) -> bool:
+    async def exists(self, query: KVQuerySet[K, V]) -> bool:
         """Check if key exists."""
         ...
 
-    async def scan(self, query: KVQuerySet[T]) -> list[T]:
+    async def scan(self, query: KVQuerySet[K, V]) -> list[V]:
         """Scan by pattern."""
         ...
 
-    async def keys(self, query: KVQuerySet[T]) -> list[str]:
+    async def keys(self, query: KVQuerySet[K, V]) -> list[K]:
         """Get keys by pattern."""
         ...
 
@@ -127,25 +159,26 @@ class KVProvider(Protocol[T]):
 
 
 @runtime_checkable
-class APIProvider(Protocol[T]):
+class APIProvider(Protocol[K, T]):
     """Provider for APIQuerySet.
 
+    K = key type, T = entity type.
     Executes REST-ish API operations.
     """
 
-    async def fetch_one(self, query: APIQuerySet[T]) -> T | None:
+    async def fetch_one(self, query: APIQuerySet[K, T]) -> T | None:
         """Execute get/list query, return single result."""
         ...
 
-    async def fetch_many(self, query: APIQuerySet[T]) -> list[T]:
+    async def fetch_many(self, query: APIQuerySet[K, T]) -> list[T]:
         """Execute list query, return all results."""
         ...
 
-    async def execute(self, query: APIQuerySet[T]) -> T:
+    async def execute(self, query: APIQuerySet[K, T]) -> T:
         """Execute create/update, return result."""
         ...
 
-    async def delete(self, query: APIQuerySet[T]) -> bool:
+    async def delete(self, query: APIQuerySet[K, T]) -> bool:
         """Execute delete, return success."""
         ...
 
@@ -175,10 +208,10 @@ class APIListResult(Protocol[T]):
 
 
 @runtime_checkable
-class PaginatedAPIProvider(APIProvider[T], Protocol[T]):
+class PaginatedAPIProvider(APIProvider[K, T], Protocol[K, T]):
     """API provider with pagination metadata."""
 
-    async def fetch_page(self, query: APIQuerySet[T]) -> APIListResult[T]:
+    async def fetch_page(self, query: APIQuerySet[K, T]) -> APIListResult[T]:
         """Execute list query, return result with pagination info."""
         ...
 
@@ -186,28 +219,37 @@ class PaginatedAPIProvider(APIProvider[T], Protocol[T]):
 # ─── Capability Protocols ─────────────────────────────────────────────────────
 
 
-@runtime_checkable
 class JoinCapability(Protocol):
-    """Provider supports JOIN operations."""
-    pass
+    """Provider supports JOIN operations.
+
+    Type-level marker for constraining provider input types.
+    Not runtime_checkable — use for static typing only.
+    """
+    ...
 
 
-@runtime_checkable
 class GroupByCapability(Protocol):
-    """Provider supports GROUP BY."""
-    pass
+    """Provider supports GROUP BY.
+
+    Type-level marker for constraining provider input types.
+    """
+    ...
 
 
-@runtime_checkable
 class AggregateCapability(Protocol):
-    """Provider supports aggregate operations."""
-    pass
+    """Provider supports aggregate operations.
+
+    Type-level marker for constraining provider input types.
+    """
+    ...
 
 
-@runtime_checkable
 class WindowCapability(Protocol):
-    """Provider supports window functions."""
-    pass
+    """Provider supports window functions.
+
+    Type-level marker for constraining provider input types.
+    """
+    ...
 
 
 @runtime_checkable
@@ -222,10 +264,10 @@ class TransactionCapability(Protocol):
 # ─── ID Generation Capability ────────────────────────────────────────────────
 
 
-K = TypeVar("K", covariant=True)
+ID = TypeVar("ID", covariant=True)
 
 
-class NextId(Protocol[K]):
+class NextId(Protocol[ID]):
     """Capability to generate next ID in sequence.
 
     Storage capability — providers can implement this to auto-generate IDs.
@@ -238,7 +280,7 @@ class NextId(Protocol[K]):
         await provider.insert(user)
     """
 
-    async def next_id(self) -> K:
+    async def next_id(self) -> ID:
         """Generate next ID in sequence."""
         ...
 
@@ -255,17 +297,19 @@ class UuidNextId(NextId[str]):
 class SequenceNextId(NextId[int]):
     """Generate sequential integers starting from 1."""
 
-    __slots__ = ("_counter",)
+    __slots__ = ("_counter", "_lock")
 
     def __init__(self, start: int = 1) -> None:
         self._counter = start - 1
+        self._lock = asyncio.Lock()
 
     async def next_id(self) -> int:
-        self._counter += 1
-        return self._counter
+        async with self._lock:
+            self._counter += 1
+            return self._counter
 
 
-class PrefixedNextId(NextId[str], Generic[K]):
+class PrefixedNextId(NextId[str], Generic[T]):
     """Wrap another NextId with a string prefix.
 
     Usage:
@@ -275,7 +319,7 @@ class PrefixedNextId(NextId[str], Generic[K]):
 
     __slots__ = ("_prefix", "_inner")
 
-    def __init__(self, prefix: str, inner: NextId[K]) -> None:
+    def __init__(self, prefix: str, inner: NextId[T]) -> None:
         self._prefix = prefix
         self._inner = inner
 
@@ -288,6 +332,7 @@ __all__ = (
     # Relational
     "RelationalProvider",
     "MutatingRelationalProvider",
+    "SQLRelationalProvider",
     # KV
     "KVProvider",
     # API

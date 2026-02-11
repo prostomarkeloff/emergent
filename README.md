@@ -18,118 +18,136 @@
 uv add git+https://github.com/prostomarkeloff/emergent.git
 ```
 
-Create `app.py`:
-
 ```python
 from dataclasses import dataclass
 from typing import Annotated
 
-from kungfu import Result, Ok, Error
+from emergent.wire.axis.schema import Identity
+from emergent.wire.compile.targets import fastapi
 
-from emergent import ops as O
-from emergent.wire.axis.surface import endpoint, Application
-from emergent.wire.axis.surface.codecs.rrc import rrc
-from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
-from emergent.wire.axis.surface.triggers.cli import CLITrigger
-from emergent.wire.axis.schema.dialects import cli
-from emergent.wire.compile.targets import fastapi, cli as cli_target
-from emergent.wire.compile.targets.cli import cli_run
+from derivelib import derive, build_application_from_decorated
+from derivelib.patterns import http_crud
 
-
-# ─── Domain ──────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class GreetResult:
-    message: str
-
-
-# ─── Op ──────────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class Greet(O.Returning[GreetResult, str]):
+@derive(http_crud("/api/users", provider_node=Users))
+@dataclass
+class User:
+    id: Annotated[int, Identity]
     name: str
+    email: str
 
-
-# ─── Handler ─────────────────────────────────────────────────────────────────
-
-
-async def handle_greet(op: Greet) -> Result[GreetResult, str]:
-    if not op.name:
-        return Error("name is required")
-    return Ok(GreetResult(message=f"Hello, {op.name}!"))
-
-
-# ─── Runner ──────────────────────────────────────────────────────────────────
-
-
-runner = O.ops().on(Greet, handle_greet).compile()
-
-
-# ─── Request / Response ──────────────────────────────────────────────────────
-
-
-@dataclass
-class GreetRequest:
-    name: Annotated[str, cli.Help("Name to greet"), cli.Positional()]
-
-    def to_domain(self) -> Greet:
-        return Greet(name=self.name)
-
-
-@dataclass
-class GreetResponse:
-    message: str | None = None
-    error: str | None = None
-
-    @classmethod
-    def from_domain(cls, dom: Result[GreetResult, str]) -> "GreetResponse":
-        match dom:
-            case Ok(r):
-                return cls(message=r.message)
-            case Error(e):
-                return cls(error=e)
-
-
-# ─── Wiring ──────────────────────────────────────────────────────────────────
-
-
-app = Application().mount(
-    endpoint(runner)
-        .expose(HTTPRouteTrigger("POST", "/greet"), rrc(GreetRequest, GreetResponse))
-        .expose(CLITrigger("greet", "Greet someone"), rrc(GreetRequest, GreetResponse))
-)
-
+app = build_application_from_decorated(User)
 fastapi_app = fastapi.compile(app)
-cli_parser = cli_target.compile(app, prog="app")
-
-
-if __name__ == "__main__":
-    cli_run(cli_parser)
 ```
 
-Run:
+5 endpoints (List, Get, Create, Update, Delete), request/response types with Pydantic validation, OpenAPI schema, error handling — all from the shape of `User`.
 
 ```bash
-# HTTP
 uvicorn app:fastapi_app --reload
 # Open http://localhost:8000/docs
-
-# CLI
-python app.py greet Alice
-# → GreetResponse(message='Hello, Alice!', error=None)
 ```
 
 ---
 
 # Part 1: Build
 
-Real examples from `examples/roulette/`.
+Four levels of wiring — from fully derived to fully manual. Choose the level that fits.
 
 ---
 
-## ops — what your program does
+## Level 1: Pure Algebra — one dataclass, one decorator
+
+```python
+from derivelib import derive, build_application_from_decorated
+from derivelib.patterns import http_crud, cli_crud
+from derivelib.transforms import readonly, paginated, add_capability
+
+@derive(
+    http_crud("/api/users", provider_node=Users).chain(
+        paginated(50),
+        add_capability(BearerAuth.jwt(), Mutation),
+    ),
+    cli_crud("user", provider_node=Users).chain(readonly()),
+)
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: Annotated[str, MinLen(1), MaxLen(100)]
+    email: Annotated[str, Unique, MaxLen(255)]
+```
+
+**You write:** entity fields + pattern choice.
+**Derived:** request/response types, handlers, routes, OpenAPI, CLI, error handling.
+
+---
+
+## Level 2: Algebra + Methods — derive the boring, write the interesting
+
+```python
+from derivelib import derive, build_application_from_decorated
+from derivelib.patterns.crud import http_crud, LIST, GET, CREATE
+from derivelib.patterns.methods import methods, post
+
+@derive(
+    http_crud("/bounties", provider_node=BountyBoard, ops=(LIST, GET, CREATE)),
+    methods,
+)
+@dataclass
+class Bounty:
+    id: Annotated[int, Identity]
+    title: str
+    reward: int
+    status: str = "open"
+    hunter: str | None = None
+
+    @post("/bounties/{bounty_id}/claim")
+    async def claim(
+        self,
+        db: Annotated[MutatingRelationalProvider[Bounty], compose.Node(BountyBoard)],
+        bounty_id: int,
+        hunter: str,
+    ) -> Result[Bounty, DomainError]:
+        bounty = await db.fetch_one(relational(Bounty).filter(lambda b: b.id == bounty_id))
+        if bounty is None:
+            return Error(InvalidData(entity="Bounty", reason="not found"))
+        updated = replace(bounty, status="claimed", hunter=hunter)
+        await db.update(updated)
+        return Ok(updated)
+```
+
+5 endpoints: 3 derived (List, Get, Create) + 2 hand-written (claim, complete). Shared provider, shared error handling.
+
+---
+
+## Level 3: Pure Methods — every endpoint explicit
+
+```python
+from derivelib import derive, build_application_from_decorated
+from derivelib.patterns.methods import methods, post, get
+
+@derive(methods)
+@dataclass
+class OrderService:
+    @post("/api/orders")
+    async def create(self, customer: str, total: float) -> Result[int, DomainError]:
+        return Ok(new_id)
+
+    @get("/api/orders")
+    async def list_all(self) -> Result[list[Order], DomainError]:
+        ...
+
+app = build_application_from_decorated(OrderService)
+```
+
+**You write:** every method, every trigger, every parameter.
+**Derived:** request/response types, route registration, error handling, DI wiring.
+
+---
+
+## Level 4: Pure Wire — full manual control
+
+Real examples from `examples/roulette/`.
+
+### ops — what your program does
 
 ```python
 from dataclasses import dataclass
@@ -147,9 +165,7 @@ class GetBalance(O.Returning[int, str]):
 
 `O.Returning[SuccessType, ErrorType]` — declares what the op returns.
 
----
-
-## handlers — how it works
+### handlers — how it works
 
 ```python
 from kungfu import Result, Ok, Error
@@ -166,9 +182,7 @@ async def handle_get_balance(_op: GetBalance, auth_user: AuthUser, game_store: G
 
 Handler signature declares dependencies. Framework injects them.
 
----
-
-## runner — wire together
+### runner — wire together
 
 ```python
 from emergent import ops as O
@@ -182,13 +196,9 @@ game_runner = (
 )
 ```
 
----
-
-## requests — boundary in
+### requests — boundary in
 
 ```python
-from dataclasses import dataclass
-from typing import Annotated
 from emergent.wire.axis.schema.dialects import cli, openapi, tg
 
 @dataclass
@@ -204,15 +214,11 @@ class BetRequest:
         return Authenticate(token=self.token)
 ```
 
-`to_domain()` converts boundary → op. `to_auth()` extracts auth data.
+ONE type, THREE projections. `to_domain()` converts boundary → op.
 
----
-
-## responses — boundary out
+### responses — boundary out
 
 ```python
-from dataclasses import dataclass
-from typing import Annotated
 from kungfu import Result, Ok, Error
 from emergent.wire.axis.schema.dialects import tg
 
@@ -233,9 +239,7 @@ class BetResponse:
 
 `from_domain()` converts op result → boundary.
 
----
-
-## wiring — expose everywhere
+### wiring — expose everywhere
 
 ```python
 from nodnod import Scope
@@ -287,52 +291,16 @@ fastapi_app = fastapi.compile(app)
 cli_parser = cli.compile(app, prog="roulette")
 ```
 
----
+### Choosing the right level
 
-## store — data access
+| Level | Boilerplate | Control | Schema-driven |
+|---|---|---|---|
+| 1. Pure Algebra | Minimal | Pattern-level | Yes |
+| 2. Algebra + Methods | Low | Per-method for domain ops | Hybrid |
+| 3. Pure Methods | Medium | Per-method for all ops | No |
+| 4. Pure Wire | Maximum | Total | No |
 
-```python
-from dataclasses import dataclass
-from typing import Annotated
-from emergent.wire.axis.schema import Identity
-from emergent.wire.axis.query import relational_store, MemoryRelationalProvider
-
-@dataclass
-class Transaction:
-    id: Annotated[str, Identity]
-    login: str
-    amount: int
-
-class GameStore:
-    def __init__(self) -> None:
-        self._provider = MemoryRelationalProvider[Transaction]()
-        self._transactions = relational_store(Transaction, self._provider)
-
-    async def get_history(self, login: str) -> list[Transaction]:
-        return await (
-            self._transactions
-            .filter(lambda t: t.login == login)
-            .order_by(lambda t: t.created_at.desc())
-            .limit(10)
-            .fetch_many()
-        )
-
-    async def insert(self, tx: Transaction) -> None:
-        await self._transactions.insert(tx)
-```
-
----
-
-## storage — cache/kv
-
-```python
-from emergent.wire.axis.storage import kv, MemoryStorage, JsonCodec
-
-cache = kv(MemoryStorage(), JsonCodec[User]())
-
-await cache.set("alice", user)
-user = await cache.get("alice")
-```
+Levels compose: a single `@derive(...)` can stack CRUD + methods patterns. Each level uses the same compilation pipeline and target compilers.
 
 ---
 
@@ -362,14 +330,18 @@ emergent/wire/
 │   ├── surface/                   # WHERE + HOW to execute (API surface)
 │   │   ├── codecs/                # rrc, stateful, immediate
 │   │   ├── triggers/              # http, cli, telegrinder
-│   │   └── capabilities/          # enrichers, transforms
+│   │   ├── dialects/              # openapi, telegram, cli capabilities
+│   │   ├── enrichers/             # runtime middleware
+│   │   └── transforms/            # compile-time transforms
 │   ├── storage/                   # HOW to persist (KV, Queue, PubSub)
 │   ├── schema/                    # WHAT shape data takes (annotations)
 │   │   └── dialects/              # cli, openapi, sql, pydantic, tg, compose
 │   └── query/                     # HOW to access data (QuerySets)
 │       └── providers/             # memory, sql
-└── compile/                       # Application → Framework artifacts
-    └── targets/                   # fastapi, cli, telegrinder
+├── compile/                       # Application → Framework artifacts
+│   └── targets/                   # fastapi, cli, telegrinder
+└── bridge/                        # Framework → Application (reverse)
+    └── bridgers/                  # fastapi extractors
 ```
 
 ---
@@ -393,12 +365,10 @@ class MaxLen(Capability):
     def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
         return openapi_schema(ctx, maxLength=self.value)
 
-    def compile_argparse(self, ctx: ArgparseContext) -> ArgparseContext:
-        # No effect on argparse — DON'T implement no-op methods
-        ...  # Just don't implement this method
-
     def compile_sqlalchemy(self, ctx: SQLAlchemyContext) -> SQLAlchemyContext:
         return sqlalchemy_column(ctx, length=self.value)
+
+    # No compile_argparse — DON'T implement no-op methods
 ```
 
 ### Compilation contexts per axis
@@ -419,28 +389,7 @@ class MaxLen(Capability):
 - `TelegrinderHandlerContext` — edit_message, answer_callback
 - `CLICommandContext` — name, help, description
 
-### Helper functions
-
-```python
-# Schema axis field-level
-openapi_schema(ctx, maxLength=255)      # → OpenAPIContext with merged schema
-argparse_arg(ctx, help="Username")      # → ArgparseContext with merged kwargs
-sqlalchemy_column(ctx, index=True)      # → SQLAlchemyContext with merged kwargs
-
-# Schema axis class-level
-pydantic_model(ctx, title="User")
-openapi_schema_level(ctx, description="User entity")
-sqlalchemy_table(ctx, table_name="users")
-
-# Surface axis
-fastapi_route(ctx, tags=("users",), deprecated=True)
-telegrinder_handler(ctx, edit_message=True)
-cli_command(ctx, help="List users")
-```
-
 ### Compilable protocols
-
-Each protocol declares what a capability can compile to:
 
 ```python
 # Field-level
@@ -455,10 +404,6 @@ class ArgparseCompilable(Protocol):
 
 class SQLAlchemyCompilable(Protocol):
     def compile_sqlalchemy(self, ctx: SQLAlchemyContext) -> SQLAlchemyContext: ...
-
-# Class-level
-class PydanticModelCompilable(Protocol):
-    def compile_pydantic_model(self, ctx: PydanticModelContext) -> PydanticModelContext: ...
 
 # Surface-level
 class FastAPICompilable(Protocol):
@@ -487,6 +432,19 @@ class User:
         openapi.Format("email"),       # OpenAPI only
         cli.Help("User email"),        # CLI only
     ]
+```
+
+### Pre-built patterns
+
+```python
+from emergent.wire.axis.schema import Id, Email, Slug, Username, Short, NonNegative
+
+@dataclass
+class User:
+    id: Annotated[int, *Id]              # Identity
+    email: Annotated[str, *Email]        # Unique + MaxLen(255)
+    name: Annotated[str, *Short]         # MaxLen(100)
+    balance: Annotated[int, *NonNegative] # Min(0)
 ```
 
 ### compose dialect — nodnod node composition
@@ -563,6 +521,150 @@ endpoint(runner).expose(
     C.enricher.Timeout(seconds=5.0),           # Timeout
     C.enricher.Retry(policy=RetryPolicy(...)), # Retry
 )
+```
+
+---
+
+## derivelib — algebraic derivation system
+
+Not a CRUD generator. CRUD is one dialect. The machinery is a generic algebraic derivation system over wire's 4-axis IR.
+
+### The algebra
+
+```
+Step       = any object implementing derive_schema / derive_query / derive_storage / derive_surface
+Derivation = tuple[Step, ...]
+DerivationT = Derivation → Derivation
+```
+
+### The pipeline
+
+```
+entity + @derive(pattern)
+    ↓
+pattern.compile(entity) → Derivation (tuple of steps)
+    ↓
+fold_derive(steps, entity) → DerivationCtx
+    ↓
+materialize(ctx) → Endpoint
+    ↓
+build_application_from_decorated → Application
+    ↓
+targets.fastapi.compile(app)  /  targets.cli.compile(app)
+```
+
+### Two-pass fold
+
+```
+Pass 1:  Schema    — inspect entity fields, validate constraints
+Pass 2:  Query → Storage → Surface  (sequential, each sees prior results)
+```
+
+Each step only runs in passes where it implements the matching protocol. Steps not matching a phase are silently skipped.
+
+### CRUD Ops
+
+```python
+from derivelib.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE
+
+LIST   = Op("List",   no_fields(),  list_response(),   FetchMany())
+GET    = Op("Get",    id_only(),    entity_response(),  FetchOneById())
+CREATE = Op("Create", non_id(),     entity_response(),  InsertNew())
+UPDATE = Op("Update", all_fields(), entity_response(),  UpdateExisting())
+PATCH  = Op("Patch",  merge(id_only(), optional_non_id()), entity_response(), PatchExisting())
+DELETE = Op("Delete", id_only(),    ok_response(),      DeleteOne())
+```
+
+### Transforms (DerivationT)
+
+```python
+from derivelib.transforms import (
+    readonly, mutations_only, without_delete,
+    without_ops, only_ops,
+    add_capability, paginated, sorted_list,
+    project_response, swap_handler, rename_ops,
+    map_by_effect, wrap_by_effect,
+    with_timeout, with_retry, with_rate_limit,
+    map_methods, add_method_capability,
+)
+
+# Compose via .chain()
+http_crud("/users", Users).chain(
+    readonly(),
+    paginated(50),
+    add_capability(CORSCap()),
+    project_response(exclude=("secret",)),
+)
+```
+
+### Effects
+
+```python
+from derivelib import Read, Mutation, Creates, Updates, Deletes, Pageable, Sortable, Cacheable
+
+# Creates/Updates/Deletes extend Mutation
+# So has_effect(effects, Mutation) matches them automatically
+add_capability(AuthCap(), Mutation)  # auth only for mutations
+```
+
+### Adaptation (auto-adapt from schema_meta)
+
+```python
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.schema.dialects.temporal import SoftDelete, Timestamps
+
+@schema_meta(SoftDelete("deleted_at"), Timestamps("created_at", "updated_at"))
+@derive(http_crud("/api/users", Users))
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: str
+    deleted_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+```
+
+Delete → SoftDeleteMark, Create → auto-set timestamps, base query filters `deleted_at IS NULL`.
+
+### Nested CRUD
+
+```python
+from derivelib.patterns import nested_http_crud
+
+@derive(nested_http_crud("/users", parent=User, provider_node=Posts))
+@dataclass
+class Post:
+    id: Annotated[int, Identity]
+    user_id: Annotated[int, Ref(User)]
+    title: str
+    body: str
+# → GET/POST /users/{user_id}/posts, GET/PUT/DELETE /users/{user_id}/posts/{id}
+```
+
+### Self-description
+
+```python
+from derivelib import explain_entity
+
+print(explain_entity(User))
+```
+
+```
+=== User Derivation ===
+  1 pattern
+
+  Pattern #1: Dialect, provider=Users
+    Steps (11):
+      1. InspectEntity
+      2. RequireIdentity
+      3. BindProvider(node=Users)
+      4. SetBaseQuery
+      5. AdaptBaseQuery
+      6. DeriveOp "List" -> GET /api/users
+         effects: Read, Pageable, Sortable
+      7. DeriveOp "Get" -> GET /api/users/{id}
+         effects: Read, Idempotent, Cacheable
+      ...
 ```
 
 ---
@@ -667,6 +769,111 @@ class RedisBackend:
 
 ---
 
+## Custom dialect
+
+Build your own derivation dialect from generic primitives:
+
+```python
+from derivelib import dialect, Op, fields, entity_response, list_response
+from derivelib import FetchMany, FetchOneById, Read, Mutation, Creates, Idempotent
+from derivelib import HTTPTriggers
+
+SUBMIT = Op("Create", required_non_id(), entity_response(),
+    SubmitAndProcess(processor), effects=(Mutation(), Creates()))
+GET    = Op("Get", id_only(), entity_response(),
+    FetchOneById(), effects=(Read(), Idempotent()))
+LIST   = Op("List", no_fields(), list_response(),
+    FetchMany(), effects=(Read(),))
+
+def http_task_queue(path, provider_node, processor):
+    return dialect(SUBMIT, GET, LIST,
+        triggers=HTTPTriggers(path),
+        provider_node=provider_node,
+    )
+
+@derive(http_task_queue("/tasks", Tasks, processor=resize_image))
+@dataclass
+class ImageResize:
+    id: Annotated[int, Identity]
+    url: str
+    width: int
+    height: int
+    status: str = "pending"
+```
+
+---
+
+## Custom pattern
+
+```python
+@dataclass(frozen=True, slots=True)
+class WorkflowPattern:
+    base_path: str
+    provider_node: type
+    state_field: str
+    transitions: tuple[Transition, ...]
+
+    def compile(self, entity: type) -> Derivation:
+        return (
+            inspect_entity(), require_identity(),
+            WorkflowCreateStep(self.base_path, self.state_field, "draft", self.provider_node),
+            *(TransitionStep(self.base_path, tr, self.state_field, self.provider_node)
+              for tr in self.transitions),
+        )
+
+@derive(WorkflowPattern(
+    "/orders", provider_node=Orders, state_field="status",
+    transitions=(
+        Transition("submit",  ("draft",), "pending"),
+        Transition("approve", ("pending",), "approved"),
+        Transition("ship",    ("approved",), "shipped"),
+    ),
+))
+@dataclass
+class Order:
+    id: Annotated[int, Identity]
+    customer: str
+    amount: float
+    status: str = "draft"
+```
+
+---
+
+## Custom effect end-to-end
+
+```python
+# 1. Define effect
+@dataclass(frozen=True, slots=True)
+class MindBorn(DerivationEffect):
+    """A new mind emerges after this operation."""
+
+# 2. Put on an op
+CREATE_MIND = Op("Create", required_non_id(), entity_response(),
+    InsertNew(), effects=(Mutation(), Creates(), MindBorn()))
+
+# 3. Build transform
+def on_mind_born(callback) -> DerivationT:
+    return map_by_effect({
+        MindBorn: lambda _eff, op: replace(op, handler_template=wrap_template(
+            op.handler_template, lambda inner, spec: _after(inner, callback),
+        ))
+    })
+
+# 4. Use
+@derive(
+    dialect(CREATE_MIND, GET, LIST,
+        triggers=HTTPTriggers("/api/minds"),
+        provider_node=Minds,
+    ).chain(on_mind_born(celebrate))
+)
+@dataclass
+class Mind:
+    id: Annotated[int, Identity]
+    name: str
+```
+
+---
+
 ## Custom compiler target
 
 ```python
@@ -708,17 +915,12 @@ from my_legacy_app import fastapi_app
 wire_app = fastapi.extract(
     fastapi_app,
     capabilities=(
-        # Preserve handler signatures
         WrapAsDelegate(),
-
-        # Symbol rewriting: replace global with wire storage
         IsolateGlobal(
             module_path="my_legacy_app.routes",
             attr_name="_cache",
             factory=lambda: create_storage(),
         ),
-
-        # Add CLI triggers for cross-compilation
         AddTrigger(
             trigger_type=CLITrigger,
             builder=lambda h: CLITrigger(h.name or "cmd", h.description),
@@ -726,11 +928,9 @@ wire_app = fastapi.extract(
     ),
 )
 
-# Compile to CLI (uses CLITrigger added above)
+# Compile to CLI
 cli_parser = cli.compile(wire_app, prog="my-tool")
 ```
-
-**Capabilities:**
 
 | Capability | Purpose |
 |------------|---------|
@@ -748,6 +948,7 @@ cli_parser = cli.compile(wire_app, prog="my-tool")
 | Layer | What |
 |-------|------|
 | emergent | ops, wire, saga, cache, graph, idempotency |
+| derivelib | algebraic derivation over wire's 4-axis IR |
 | [nodnod](https://github.com/timoniq/nodnod) | dependency graphs |
 | [combinators.py](https://github.com/prostomarkeloff/combinators.py) | retry, timeout, fallback |
 | [kungfu](https://github.com/timoniq/kungfu) | Result, Option |

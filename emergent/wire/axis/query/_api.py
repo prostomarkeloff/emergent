@@ -8,7 +8,7 @@ For querying external APIs with typed filters and pagination.
         name: Annotated[str, api.Filterable, api.Sortable]
         active: Annotated[bool, api.Filterable]
 
-    users = api(User)
+    users = api(User, key=lambda u: u.id)
 
     # List with filters
     q = users.list().filter(lambda u: u.active == True).page(1, per_page=20)
@@ -34,6 +34,7 @@ from emergent.wire.axis.query._proxy import (
 )
 
 
+K = TypeVar("K")
 T = TypeVar("T")
 
 
@@ -47,29 +48,29 @@ class ListOp:
 
 
 @dataclass(frozen=True, slots=True)
-class GetOp:
+class GetOp(Generic[K]):
     """Get single resource by ID."""
-    id: Any
+    id: K
 
 
 @dataclass(frozen=True, slots=True)
-class CreateOp:
+class CreateOp(Generic[T]):
     """Create resource."""
-    entity: Any
+    entity: T
 
 
 @dataclass(frozen=True, slots=True)
-class UpdateOp:
+class UpdateOp(Generic[K, T]):
     """Update resource."""
-    id: Any
-    entity: Any
+    id: K
+    entity: T
     partial: bool = False  # PATCH vs PUT
 
 
 @dataclass(frozen=True, slots=True)
-class DeleteOp:
+class DeleteOp(Generic[K]):
     """Delete resource."""
-    id: Any
+    id: K
 
 
 # Filter/pagination modifiers
@@ -125,7 +126,7 @@ class IncludeMod:
 
 
 # Union of all operations
-APIOp = ListOp | GetOp | CreateOp | UpdateOp | DeleteOp
+APIOp = ListOp | GetOp[Any] | CreateOp[Any] | UpdateOp[Any, Any] | DeleteOp[Any]
 
 # Union of all modifiers
 APIMod = FilterMod | OrderMod | PageMod | CursorMod | OffsetMod | SelectMod | SearchMod | IncludeMod
@@ -135,25 +136,32 @@ APIMod = FilterMod | OrderMod | PageMod | CursorMod | OffsetMod | SelectMod | Se
 
 
 @dataclass(frozen=True)
-class APIQuerySet(Generic[T]):
+class APIQuerySet(Generic[K, T]):
     """API query — REST-ish operations.
 
+    K = key type, T = entity type.
     Immutable. Each method returns new QuerySet.
     """
 
     entity: type[T]
+    key_fn: Callable[[T], K] | None = None
     op: APIOp | None = None
     mods: tuple[APIMod, ...] = field(default_factory=tuple)
 
-    def _with_op(self, op: APIOp) -> APIQuerySet[T]:
-        return APIQuerySet(entity=self.entity, op=op, mods=self.mods)
+    def _with_op(self, op: APIOp) -> APIQuerySet[K, T]:
+        return APIQuerySet(entity=self.entity, key_fn=self.key_fn, op=op, mods=self.mods)
 
-    def _with_mod(self, mod: APIMod) -> APIQuerySet[T]:
-        return APIQuerySet(entity=self.entity, op=self.op, mods=(*self.mods, mod))
+    def _with_mod(self, mod: APIMod) -> APIQuerySet[K, T]:
+        if isinstance(mod, (PageMod, CursorMod, OffsetMod)):
+            # Pagination: last-wins — replace any existing pagination mod
+            mods = tuple(m for m in self.mods if not isinstance(m, (PageMod, CursorMod, OffsetMod)))
+        else:
+            mods = self.mods
+        return APIQuerySet(entity=self.entity, key_fn=self.key_fn, op=self.op, mods=(*mods, mod))
 
     # ─── CRUD Operations ─────────────────────────────────────────────────
 
-    def list(self) -> APIQuerySet[T]:
+    def list(self) -> APIQuerySet[K, T]:
         """List resources.
 
         Usage:
@@ -161,7 +169,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_op(ListOp())
 
-    def get(self, id: Any) -> APIQuerySet[T]:
+    def get(self, id: K) -> APIQuerySet[K, T]:
         """Get single resource by ID.
 
         Usage:
@@ -169,7 +177,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_op(GetOp(id))
 
-    def create(self, entity: T) -> APIQuerySet[T]:
+    def create(self, entity: T) -> APIQuerySet[K, T]:
         """Create resource.
 
         Usage:
@@ -177,7 +185,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_op(CreateOp(entity))
 
-    def update(self, id: Any, entity: T, *, partial: bool = False) -> APIQuerySet[T]:
+    def update(self, id: K, entity: T, *, partial: bool = False) -> APIQuerySet[K, T]:
         """Update resource.
 
         Usage:
@@ -186,7 +194,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_op(UpdateOp(id, entity, partial))
 
-    def delete(self, id: Any) -> APIQuerySet[T]:
+    def delete(self, id: K) -> APIQuerySet[K, T]:
         """Delete resource.
 
         Usage:
@@ -196,7 +204,7 @@ class APIQuerySet(Generic[T]):
 
     # ─── Modifiers (for list) ────────────────────────────────────────────
 
-    def filter(self, predicate: Callable[[EntityProxy[T]], Expr]) -> APIQuerySet[T]:
+    def filter(self, predicate: Callable[[EntityProxy[T]], Expr]) -> APIQuerySet[K, T]:
         """Add filter.
 
         Usage:
@@ -208,7 +216,7 @@ class APIQuerySet(Generic[T]):
 
     def order_by(
         self, *order_fns: Callable[[EntityProxy[T]], FieldProxy | OrderSpec]
-    ) -> APIQuerySet[T]:
+    ) -> APIQuerySet[K, T]:
         """Add ordering.
 
         Usage:
@@ -218,7 +226,7 @@ class APIQuerySet(Generic[T]):
         specs = tuple(build_order(self.entity, fn) for fn in order_fns)
         return self._with_mod(OrderMod(specs))
 
-    def page(self, page: int, per_page: int = 20) -> APIQuerySet[T]:
+    def page(self, page: int, per_page: int = 20) -> APIQuerySet[K, T]:
         """Page-based pagination.
 
         Usage:
@@ -226,7 +234,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_mod(PageMod(page, per_page))
 
-    def cursor(self, cursor: str, limit: int = 20) -> APIQuerySet[T]:
+    def cursor(self, cursor: str, limit: int = 20) -> APIQuerySet[K, T]:
         """Cursor-based pagination.
 
         Usage:
@@ -234,7 +242,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_mod(CursorMod(cursor, limit))
 
-    def offset(self, offset: int, limit: int = 20) -> APIQuerySet[T]:
+    def offset(self, offset: int, limit: int = 20) -> APIQuerySet[K, T]:
         """Offset-based pagination.
 
         Usage:
@@ -242,7 +250,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_mod(OffsetMod(offset, limit))
 
-    def select(self, *field_fns: Callable[[T], FieldProxy]) -> APIQuerySet[T]:
+    def select(self, *field_fns: Callable[[EntityProxy[T]], FieldProxy]) -> APIQuerySet[K, T]:
         """Select specific fields (sparse fieldsets).
 
         Usage:
@@ -252,7 +260,7 @@ class APIQuerySet(Generic[T]):
         fields = tuple(fn(proxy).name for fn in field_fns)  # type: ignore
         return self._with_mod(SelectMod(fields))
 
-    def search(self, query: str) -> APIQuerySet[T]:
+    def search(self, query: str) -> APIQuerySet[K, T]:
         """Full-text search.
 
         Usage:
@@ -260,7 +268,7 @@ class APIQuerySet(Generic[T]):
         """
         return self._with_mod(SearchMod(query))
 
-    def include(self, *relations: str) -> APIQuerySet[T]:
+    def include(self, *relations: str) -> APIQuerySet[K, T]:
         """Include related resources.
 
         Usage:
@@ -293,14 +301,17 @@ class APIQuerySet(Generic[T]):
         return None
 
 
-def api(entity: type[T]) -> APIQuerySet[T]:
+def api(entity: type[T], key: Callable[[T], K] | None = None) -> APIQuerySet[K, T]:
     """Create API QuerySet for entity.
 
     Usage:
-        users = api(User)
+        users = api(User, key=lambda u: u.id)
         q = users.list().filter(lambda u: u.active).page(1)
+
+        # Without key (key-dependent ops like get/update/delete lose type info):
+        q = api(User).list()
     """
-    return APIQuerySet(entity=entity)
+    return APIQuerySet(entity=entity, key_fn=key)
 
 
 __all__ = (

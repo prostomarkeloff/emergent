@@ -8,10 +8,24 @@ Each bridger knows ALL patterns of its framework and provides:
     from emergent.wire.bridge.bridgers import fastapi, asgi
     from emergent.wire.bridge.bridgers._base import AddTrigger
 
-    wire_app = fastapi.extract(legacy_app, capabilities=(...))
+    wire_app = build_application(legacy_app, capabilities=(...))
 """
 
-from emergent.wire.bridge.bridgers import asgi, fastapi
 from emergent.wire.bridge.bridgers._base import AddTrigger
 
-__all__ = ("asgi", "fastapi", "AddTrigger")
+__all__: list[str] = ["AddTrigger"]
+
+# ASGI (no external deps)
+from emergent.wire.bridge.bridgers import asgi as asgi
+
+__all__.append("asgi")
+
+# FastAPI (optional)
+try:
+    from emergent.wire.bridge.bridgers import fastapi as fastapi
+    from emergent.wire.bridge.bridgers.fastapi import FASTAPI_BRIDGER as FASTAPI_BRIDGER
+
+    __all__.append("fastapi")
+    __all__.append("FASTAPI_BRIDGER")
+except ImportError:
+    pass

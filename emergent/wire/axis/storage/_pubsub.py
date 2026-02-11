@@ -15,6 +15,7 @@ from typing import Protocol, AsyncIterator
 from kungfu import Result, Ok, Error
 
 from emergent.wire.axis.storage._codec import Codec
+from emergent.wire.axis.storage._result import map_result
 from emergent.wire.axis.storage._capabilities import (
     Publish as PublishCap,
     Subscribe as SubscribeCap,
@@ -62,17 +63,12 @@ class PubSub[T, E]:
 
     async def publish(self, channel: str, value: T) -> Result[None, E]:
         """Publish typed value to channel."""
-        data = self.codec.encode(value)
-        return await self.backend.publish(channel, data)
+        return await self.backend.publish(channel, self.codec.encode(value))
 
     async def subscribe(self, channel: str) -> AsyncIterator[Result[T, E]]:
         """Subscribe to channel, yields typed values."""
         async for result in self.backend.subscribe(channel):
-            match result:
-                case Ok(data):
-                    yield Ok(self.codec.decode(data))
-                case Error(e):
-                    yield Error(e)
+            yield map_result(result, self.codec.decode)
 
 
 def pubsub[T, E](backend: PubSubBackend[E], codec: Codec[T]) -> PubSub[T, E]:

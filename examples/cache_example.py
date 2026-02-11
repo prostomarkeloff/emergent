@@ -11,10 +11,12 @@ Level 3: combinators.lift
 Level 2: kungfu.Result
 """
 
+from typing import cast
+
 from kungfu import Ok, Error, LazyCoroResult
 from combinators import lift as L
 from emergent import cache as C
-from emergent.cache._types import Tier
+from emergent.cache._types import LocalTier, Tier
 from examples._infra import banner, run, UserId, User, NotFound, FakeDb
 
 
@@ -22,43 +24,19 @@ db = FakeDb()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Custom tier with distinct name (simulates Redis)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class NamedTier[T]:
-    """Wrapper to give tier a distinct name."""
-
-    def __init__(self, inner: Tier[T], tier_name: str) -> None:
-        self._inner = inner
-        self._name = tier_name
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    async def get(self, key: str) -> T | None:
-        return await self._inner.get(key)
-
-    async def set(self, key: str, value: T) -> None:
-        await self._inner.set(key, value)
-
-    async def delete(self, key: str) -> bool:
-        return await self._inner.delete(key)
-
-    async def delete_pattern(self, pattern: str) -> int:
-        return await self._inner.delete_pattern(pattern)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # 1. TIERS ARE GLOBAL — create once, inject everywhere
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # L1: In-memory, per-instance (fast, no network)
-l1_tier: Tier[User] = NamedTier(C.LocalTier(max_size=100), "L1-memory")
+# LocalTier has a built-in `name` property that returns "local"
+# Cast needed: LocalTier[T] returns Never as error type, but AnyTier expects object.
+# Pyright can't see Never <: object in protocol return types due to coroutine wrapping.
+# Safe at runtime: Never is the bottom type, compatible with any error type.
+l1_tier = cast(Tier[User, object], LocalTier[User](max_size=100))
 
 # L2: Simulated "remote" tier (in real app: Redis, Memcached)
-l2_tier: Tier[User] = NamedTier(C.LocalTier(max_size=1000), "L2-redis")
+# Same cast rationale as l1_tier above.
+l2_tier = cast(Tier[User, object], LocalTier[User](max_size=1000))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

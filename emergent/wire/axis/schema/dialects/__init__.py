@@ -3,14 +3,13 @@
 Each dialect provides capabilities that only its compiler understands.
 Other compilers ignore these annotations.
 
-    from emergent.wire.axis.schema.dialects import sql, openapi, cli, css, tg
+    from emergent.wire.axis.schema.dialects import sql, cli, tg
 
     @dataclass
     class User:
         email: Annotated[str,
             Unique,                      # Universal
             sql.Index("idx_email"),      # SQL compiler
-            openapi.Format("email"),     # OpenAPI compiler
         ]
 
     @dataclass
@@ -26,6 +25,6 @@ Other compilers ignore these annotations.
         ]
 """
 
-from emergent.wire.axis.schema.dialects import sql, openapi, pydantic, cli, api, tg, compose, query
+from emergent.wire.axis.schema.dialects import sql, pydantic, cli, api, openapi, tg, compose, query, temporal, delta
 
-__all__ = ("sql", "openapi", "pydantic", "cli", "api", "tg", "compose", "query")
+__all__ = ("sql", "pydantic", "cli", "api", "openapi", "tg", "compose", "query", "temporal", "delta")

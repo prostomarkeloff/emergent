@@ -1,8 +1,14 @@
+"""Wire example — simple endpoint → FastAPI compilation.
+
+Demonstrates the surface axis: endpoint + trigger + codec → compile to FastAPI.
+"""
+
 from kungfu import Error, Ok, Result
 from pydantic import BaseModel
-from emergent import wire as W
 
-from emergent.wire import endpoint, application
+from emergent.wire.axis.surface import endpoint, application
+from emergent.wire.axis.surface import codecs, triggers
+from emergent.wire.compile.targets import fastapi
 from examples.ops_composition_example import (
     BuildSummary,
     GetPrice,
@@ -12,6 +18,8 @@ from examples.ops_composition_example import (
 
 
 class BuildSummaryIn(BaseModel):
+    """Request model — converts to domain op."""
+
     product_id: int
 
     def to_domain(self) -> BuildSummary:
@@ -20,6 +28,8 @@ class BuildSummaryIn(BaseModel):
 
 
 class BuildSummaryOut(BaseModel):
+    """Response model — converts from domain result."""
+
     summary: str
 
     @classmethod
@@ -31,15 +41,22 @@ class BuildSummaryOut(BaseModel):
                 return cls(summary=f"Can't build summary: {e}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Build wire endpoint
+# ═══════════════════════════════════════════════════════════════════════════════
+
 endp = endpoint(ops_runner).expose(
-    trigger=W.triggers.http.HTTPRouteTrigger(path="/build", method="GET"),
-    codec=W.codecs.RequestResponseCodec(
-        request=BuildSummaryIn, response=BuildSummaryOut
-    ),
+    trigger=triggers.http.HTTPRouteTrigger(path="/build", method="GET"),
+    codec=codecs.rrc(request=BuildSummaryIn, response=BuildSummaryOut),
 )
 
 app = application().mount(endp)
 
 
-fastapi_app = W.contrib.fastapi.from_application(app)
-# Run yourself with uvicorn and look at the docs!
+# ═══════════════════════════════════════════════════════════════════════════════
+# Compile to FastAPI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+fastapi_app = fastapi.compile(app)
+# Run with: uvicorn examples.wiring:fastapi_app --reload
+# Then visit: http://localhost:8000/docs

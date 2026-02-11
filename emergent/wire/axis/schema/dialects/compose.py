@@ -13,10 +13,13 @@ Any compiler with nodnod integration reads these.
             return TelegramIdentity(chat_id=self.chat_id)
 """
 
-from dataclasses import dataclass
-from typing import Any, Callable, TypeVar
+from dataclasses import dataclass, replace
+from typing import Any, Callable, TypeVar, TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
+
+if TYPE_CHECKING:
+    from emergent.wire.axis._capability import RequestBuildContext
 
 
 T = TypeVar("T")
@@ -45,6 +48,13 @@ class Node(ComposeCapability):
     default: Any = None
     map: Callable[[Any], Any] | None = None
 
+    def compile_request_build(self, ctx: "RequestBuildContext") -> "RequestBuildContext":
+        return replace(ctx,
+            compose_node=self.node_type,
+            compose_node_default=self.default,
+            compose_node_map=self.map,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Optional(ComposeCapability):
@@ -55,12 +65,13 @@ class Optional(ComposeCapability):
     """
     node_type: type
 
+    def compile_request_build(self, ctx: "RequestBuildContext") -> "RequestBuildContext":
+        return replace(ctx, compose_optional_node=self.node_type)
+
 
 @dataclass(frozen=True, slots=True)
 class Fallback(ComposeCapability):
     """Fallback chain — first successful node wins (SequentialEither).
-
-    Renamed from Either to avoid confusion with schema.Either (tagged union).
 
     Example:
         user: Annotated[User, compose.Fallback(CachedUser, DBUser, GuestUser)]
@@ -70,6 +81,9 @@ class Fallback(ComposeCapability):
 
     def __init__(self, *node_types: type) -> None:
         object.__setattr__(self, "node_types", node_types)
+
+    def compile_request_build(self, ctx: "RequestBuildContext") -> "RequestBuildContext":
+        return replace(ctx, compose_fallback_nodes=self.node_types)
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +97,9 @@ class Race(ComposeCapability):
 
     def __init__(self, *node_types: type) -> None:
         object.__setattr__(self, "node_types", node_types)
+
+    def compile_request_build(self, ctx: "RequestBuildContext") -> "RequestBuildContext":
+        return replace(ctx, compose_race_nodes=self.node_types)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,6 +119,9 @@ class Retrieve(ComposeCapability):
     """
 
     from_type: type
+
+    def compile_request_build(self, ctx: "RequestBuildContext") -> "RequestBuildContext":
+        return replace(ctx, compose_retrieve_type=self.from_type)
 
 
 __all__ = (

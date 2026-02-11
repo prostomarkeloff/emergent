@@ -12,7 +12,10 @@ The lambda receives a Proxy object, and operators build Expr AST:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Generic, TypeVar, Callable
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, Callable
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._sql import WindowBuilder
 
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -65,7 +68,70 @@ from emergent.wire.axis.query._aggregate import (
 T = TypeVar("T")
 
 
-class FieldProxy:
+def _wrap(value: Any) -> Expr:
+    """Wrap value as Expr if not already.
+
+    Converts:
+    - FieldProxy → Field expression
+    - Expr → unchanged
+    - other → Const(value)
+    """
+    if isinstance(value, FieldProxy):
+        return value._to_expr()
+    if isinstance(value, Expr):
+        return value
+    return Const(value)
+
+
+class _ComparableMixin:
+    """Shared comparison operators for FieldProxy and JsonFieldProxy.
+
+    Subclass must define _to_expr() -> Expr.
+    """
+
+    def _to_expr(self) -> Expr: ...  # type: ignore[empty-body]
+
+    def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
+        return Eq(self._to_expr(), _wrap(other))
+
+    def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
+        return Ne(self._to_expr(), _wrap(other))
+
+    def __lt__(self, other: Any) -> Expr:
+        return Lt(self._to_expr(), _wrap(other))
+
+    def __le__(self, other: Any) -> Expr:
+        return Le(self._to_expr(), _wrap(other))
+
+    def __gt__(self, other: Any) -> Expr:
+        return Gt(self._to_expr(), _wrap(other))
+
+    def __ge__(self, other: Any) -> Expr:
+        return Ge(self._to_expr(), _wrap(other))
+
+    # Logical operators (use & | ~ instead of and or not)
+
+    def __and__(self, other: Expr) -> Expr:
+        return And(self._to_expr(), other)
+
+    def __or__(self, other: Expr) -> Expr:
+        return Or(self._to_expr(), other)
+
+    def __invert__(self) -> Expr:
+        return Not(self._to_expr())
+
+    # Null checks
+
+    def is_null(self) -> Expr:
+        """Null check."""
+        return IsNull(self._to_expr())
+
+    def is_not_null(self) -> Expr:
+        """Not null check."""
+        return IsNotNull(self._to_expr())
+
+
+class FieldProxy(_ComparableMixin):
     """Proxy for field access that builds Expr on operators.
 
     Usage:
@@ -83,52 +149,8 @@ class FieldProxy:
 
     @staticmethod
     def wrap(value: Any) -> Expr:
-        """Wrap value as Expr if not already.
-
-        Converts:
-        - FieldProxy → Field expression
-        - Expr → unchanged
-        - other → Const(value)
-        """
-        if isinstance(value, FieldProxy):
-            return value._to_expr()
-        if isinstance(value, Expr):
-            return value
-        return Const(value)
-
-    # Alias for internal use
-    _wrap = wrap
-
-    # Comparison operators
-
-    def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Eq(self._to_expr(), self._wrap(other))
-
-    def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Ne(self._to_expr(), self._wrap(other))
-
-    def __lt__(self, other: Any) -> Expr:
-        return Lt(self._to_expr(), self._wrap(other))
-
-    def __le__(self, other: Any) -> Expr:
-        return Le(self._to_expr(), self._wrap(other))
-
-    def __gt__(self, other: Any) -> Expr:
-        return Gt(self._to_expr(), self._wrap(other))
-
-    def __ge__(self, other: Any) -> Expr:
-        return Ge(self._to_expr(), self._wrap(other))
-
-    # Logical operators (use & | ~ instead of and or not)
-
-    def __and__(self, other: Expr) -> Expr:
-        return And(self._to_expr(), other)
-
-    def __or__(self, other: Expr) -> Expr:
-        return Or(self._to_expr(), other)
-
-    def __invert__(self) -> Expr:
-        return Not(self._to_expr())
+        """Wrap value as Expr. Alias for module-level _wrap."""
+        return _wrap(value)
 
     # Collection methods
 
@@ -148,16 +170,6 @@ class FieldProxy:
         """String ends with: u.name.endswith("ice")"""
         return EndsWith(self._to_expr(), suffix)
 
-    # Null checks
-
-    def is_null(self) -> Expr:
-        """Null check: u.deleted_at.is_null()"""
-        return IsNull(self._to_expr())
-
-    def is_not_null(self) -> Expr:
-        """Not null check: u.email.is_not_null()"""
-        return IsNotNull(self._to_expr())
-
     # Ordering (for order_by)
 
     def asc(self) -> OrderSpec:
@@ -172,7 +184,7 @@ class FieldProxy:
 
     def between(self, low: Any, high: Any) -> Expr:
         """Range check: u.balance.between(100, 1000)"""
-        return Between(self._to_expr(), self._wrap(low), self._wrap(high))
+        return Between(self._to_expr(), _wrap(low), _wrap(high))
 
     # ─── Pattern Matching ───────────────────────────────────────────────────────
 
@@ -257,8 +269,32 @@ class FieldProxy:
         """STRING_AGG(field, sep): u.name.string_agg(', ')"""
         return AggregateExpr(StringAgg(separator), self.name)
 
+    # ─── Window Functions (field-specific) ───────────────────────────────────
 
-class JsonFieldProxy:
+    def lag(self, offset: int = 1, default: object = None) -> WindowBuilder:
+        """LAG(field, offset, default) — access previous row's value.
+
+        Usage:
+            .window(prev_balance=lambda u: u.balance.lag().over(order_by=u.id))
+        """
+        from emergent.wire.axis.query._window import Lag
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(Lag(offset, default), self.name)
+
+    def lead(self, offset: int = 1, default: object = None) -> WindowBuilder:
+        """LEAD(field, offset, default) — access next row's value.
+
+        Usage:
+            .window(next_balance=lambda u: u.balance.lead().over(order_by=u.id))
+        """
+        from emergent.wire.axis.query._window import Lead
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(Lead(offset, default), self.name)
+
+
+class JsonFieldProxy(_ComparableMixin):
     """Proxy for JSON path that supports comparison operators.
 
     Created by FieldProxy.json():
@@ -275,36 +311,6 @@ class JsonFieldProxy:
     def _to_expr(self) -> JsonExtract:
         return JsonExtract(self._base, self._path)
 
-    # Comparison operators
-
-    def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Eq(self._to_expr(), FieldProxy.wrap(other))
-
-    def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Ne(self._to_expr(), FieldProxy.wrap(other))
-
-    def __lt__(self, other: Any) -> Expr:
-        return Lt(self._to_expr(), FieldProxy.wrap(other))
-
-    def __le__(self, other: Any) -> Expr:
-        return Le(self._to_expr(), FieldProxy.wrap(other))
-
-    def __gt__(self, other: Any) -> Expr:
-        return Gt(self._to_expr(), FieldProxy.wrap(other))
-
-    def __ge__(self, other: Any) -> Expr:
-        return Ge(self._to_expr(), FieldProxy.wrap(other))
-
-    # Null checks
-
-    def is_null(self) -> Expr:
-        """JSON path value is null."""
-        return IsNull(self._to_expr())
-
-    def is_not_null(self) -> Expr:
-        """JSON path value is not null."""
-        return IsNotNull(self._to_expr())
-
 
 @dataclass(frozen=True, slots=True)
 class OrderSpec:
@@ -312,6 +318,21 @@ class OrderSpec:
 
     field: str
     ascending: bool = True
+
+
+def _entity_fields(entity: type) -> frozenset[str] | None:
+    """Extract known field names from entity, or None if not detectable.
+
+    Uses inspect_type from schema axis — handles dataclass, Pydantic,
+    TypedDict, NamedTuple. Returns None for unknown types (no validation).
+    """
+    from emergent.wire.axis.schema._inspect import inspect_type
+
+    try:
+        fields = inspect_type(entity)
+        return frozenset(fields.keys())
+    except TypeError:
+        return None
 
 
 class EntityProxy(Generic[T]):
@@ -322,14 +343,17 @@ class EntityProxy(Generic[T]):
         expr = (lambda u: u.balance > 100)(proxy)
     """
 
-    __slots__ = ("_entity",)
+    __slots__ = ("_entity", "_fields")
 
     def __init__(self, entity: type[T]) -> None:
         self._entity = entity
+        self._fields = _entity_fields(entity)
 
     def __getattr__(self, name: str) -> FieldProxy:
-        # Validate field exists on entity
-        # For now, just create proxy
+        if self._fields is not None and name not in self._fields:
+            raise AttributeError(
+                f"{self._entity.__name__} has no field {name!r}"
+            )
         return FieldProxy(name)
 
     def count(self) -> AggregateExpr:
@@ -339,6 +363,40 @@ class EntityProxy(Generic[T]):
             .aggregate(user_count=lambda u: u.count())
         """
         return AggregateExpr(Count(), None)
+
+    # ─── Window Functions (no field needed) ──────────────────────────────────
+
+    def row_number(self) -> WindowBuilder:
+        """ROW_NUMBER() window function.
+
+        Usage:
+            .window(rn=lambda u: u.row_number().over(partition_by=u.dept))
+        """
+        from emergent.wire.axis.query._window import RowNumber
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(RowNumber(), None)
+
+    def rank(self) -> WindowBuilder:
+        """RANK() window function."""
+        from emergent.wire.axis.query._window import Rank
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(Rank(), None)
+
+    def dense_rank(self) -> WindowBuilder:
+        """DENSE_RANK() window function."""
+        from emergent.wire.axis.query._window import DenseRank
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(DenseRank(), None)
+
+    def ntile(self, num_buckets: int) -> WindowBuilder:
+        """NTILE(n) window function."""
+        from emergent.wire.axis.query._window import Ntile
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(Ntile(num_buckets), None)
 
 
 def build_expr(entity: type[T], predicate: Callable[[EntityProxy[T]], Expr]) -> Expr:

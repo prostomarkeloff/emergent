@@ -21,7 +21,7 @@ Provider reads annotations for its profile, ignores others.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
@@ -43,92 +43,70 @@ class APICapability(SchemaAxisCapability):
 class ProfileConfig(APICapability):
     """Configuration for a specific API profile.
 
-    Created via api.profile(ProfileType).method() chain.
+    Immutable builder — chain methods return new ProfileConfig via replace().
+
+    Usage:
+        api.profile(InternalAPI).path_param()
+        api.profile(InternalAPI).filterable().sortable()
     """
     profile: type
-    path_param: bool = False
-    query_param: str | None = None  # param name if query param
+    is_path_param: bool = False
+    query_param_name: str | None = None  # param name if query param
     filterable: bool = False
     sortable: bool = False
     selectable: bool = False
     searchable: bool = False
     operators: tuple[str, ...] = ()  # allowed filter operators
 
-
-class ProfileBuilder:
-    """Builder for profile-scoped annotations.
-
-    Usage:
-        api.profile(InternalAPI).path_param().filterable()
-    """
-
-    __slots__ = ("profile_type", "_config")
-
-    def __init__(self, profile_type: type) -> None:
-        self.profile_type = profile_type
-        self._config: dict[str, Any] = {"profile": profile_type}
-
     def path_param(self) -> ProfileConfig:
         """Mark as path parameter: /resource/{id}"""
-        self._config["path_param"] = True
-        return ProfileConfig(**self._config)
+        return replace(self, is_path_param=True)
 
     def query_param(self, name: str | None = None) -> ProfileConfig:
         """Mark as query parameter: ?name=value
 
         If name is None, uses field name.
         """
-        self._config["query_param"] = name or ""  # empty string = use field name
-        return ProfileConfig(**self._config)
+        return replace(self, query_param_name=name or "")
 
-    def filterable(self, operators: tuple[str, ...] = ()) -> ProfileBuilder:
+    def with_filterable(self, operators: tuple[str, ...] = ()) -> ProfileConfig:
         """Mark as filterable field.
 
         Operators: "eq", "ne", "gt", "gte", "lt", "lte", "in", "contains"
         Empty = only equality.
         """
-        self._config["filterable"] = True
-        if operators:
-            self._config["operators"] = operators
-        return self
+        return replace(
+            self, filterable=True,
+            operators=operators if operators else self.operators,
+        )
 
-    def sortable(self) -> ProfileBuilder:
+    def with_sortable(self) -> ProfileConfig:
         """Mark as sortable field."""
-        self._config["sortable"] = True
-        return self
+        return replace(self, sortable=True)
 
-    def selectable(self) -> ProfileBuilder:
+    def with_selectable(self) -> ProfileConfig:
         """Mark as selectable (sparse fieldsets)."""
-        self._config["selectable"] = True
-        return self
+        return replace(self, selectable=True)
 
-    def searchable(self) -> ProfileBuilder:
+    def with_searchable(self) -> ProfileConfig:
         """Mark as participating in full-text search."""
-        self._config["searchable"] = True
-        return self
+        return replace(self, searchable=True)
 
     def build(self) -> ProfileConfig:
-        """Finalize configuration."""
-        return ProfileConfig(**self._config)
-
-    # Allow using builder directly as annotation (auto-builds)
-    def __hash__(self) -> int:
-        return hash(self.build())
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, ProfileBuilder):
-            return self.build() == other.build()
-        return False
+        """No-op for backward compatibility."""
+        return self
 
 
-def profile(profile_type: type[P]) -> ProfileBuilder:
+def profile(profile_type: type[P]) -> ProfileConfig:
     """Start building annotations for a specific API profile.
+
+    Returns an immutable ProfileConfig — chain methods return new instances.
 
     Usage:
         api.profile(InternalAPI).path_param()
-        api.profile(PartnerAPI).query_param("user_id").filterable()
+        api.profile(PartnerAPI).query_param("user_id").with_filterable()
     """
-    return ProfileBuilder(profile_type)
+    return ProfileConfig(profile=profile_type)
 
 
 # ─── Profile-Agnostic Annotations (shortcuts for single-API cases) ───────────
@@ -227,8 +205,6 @@ def get_profile_config(
     for ann in annotations:
         if isinstance(ann, ProfileConfig) and ann.profile is target_profile:
             return ann
-        if isinstance(ann, ProfileBuilder) and ann.profile_type is target_profile:
-            return ann.build()
     return None
 
 
@@ -237,8 +213,6 @@ def get_any_config(annotations: tuple[Any, ...]) -> ProfileConfig | None:
     for ann in annotations:
         if isinstance(ann, ProfileConfig):
             return ann
-        if isinstance(ann, ProfileBuilder):
-            return ann.build()
     return None
 
 
@@ -247,7 +221,6 @@ __all__ = (
     "APICapability",
     # Profile-scoped
     "ProfileConfig",
-    "ProfileBuilder",
     "profile",
     # Profile-agnostic
     "PathParam",

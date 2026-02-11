@@ -11,11 +11,11 @@ These are IGNORED by other compilers (SQLAlchemy, JSON Schema, etc.).
 
 from __future__ import annotations
 
-import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
+from emergent.wire.axis._capability import pydantic_metadata, pydantic_field
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import PydanticContext
@@ -37,11 +37,9 @@ class Strict(PydanticCapability):
     """Enable strict mode (no coercion)."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        from pydantic.fields import FieldInfo
-        fi = copy.deepcopy(ctx.field_info)
-        # strict is stored in metadata as Strict(strict=True)
-        fi.metadata.extend(FieldInfo(strict=True).metadata)
-        return replace(ctx, field_info=fi)
+        from pydantic.fields import FieldInfo as PydFieldInfo
+
+        return pydantic_metadata(ctx, *PydFieldInfo(strict=True).metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,27 +47,14 @@ class Coerce(PydanticCapability):
     """Explicitly allow coercion."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        from pydantic.fields import FieldInfo
-        fi = copy.deepcopy(ctx.field_info)
-        # strict=False stored in metadata
-        fi.metadata.extend(FieldInfo(strict=False).metadata)
-        return replace(ctx, field_info=fi)
+        from pydantic.fields import FieldInfo as PydFieldInfo
+
+        return pydantic_metadata(ctx, *PydFieldInfo(strict=False).metadata)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Field Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True, slots=True)
-class Alias(PydanticCapability):
-    """Field alias for serialization/deserialization."""
-    name: str
-
-    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        fi = copy.deepcopy(ctx.field_info)
-        fi.alias = self.name
-        return replace(ctx, field_info=fi)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,11 +67,10 @@ class AliasPath(PydanticCapability):
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
         from pydantic import AliasPath as PydAliasPath
-        fi = copy.deepcopy(ctx.field_info)
+
         first, *rest = self.path
-        # first must be str, rest can be str | int
-        fi.validation_alias = PydAliasPath(str(first), *rest)
-        return replace(ctx, field_info=fi)
+        alias = PydAliasPath(str(first), *rest)
+        return pydantic_field(ctx, lambda fi: setattr(fi, "validation_alias", alias))
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,9 +78,7 @@ class Exclude(PydanticCapability):
     """Exclude from serialization."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        fi = copy.deepcopy(ctx.field_info)
-        fi.exclude = True
-        return replace(ctx, field_info=fi)
+        return pydantic_field(ctx, lambda fi: setattr(fi, "exclude", True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +86,7 @@ class Include(PydanticCapability):
     """Explicitly include in serialization."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        fi = copy.deepcopy(ctx.field_info)
-        fi.exclude = False
-        return replace(ctx, field_info=fi)
+        return pydantic_field(ctx, lambda fi: setattr(fi, "exclude", False))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -125,9 +105,8 @@ class ValidatorBefore(PydanticCapability):
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
         from pydantic import BeforeValidator
-        fi = copy.deepcopy(ctx.field_info)
-        fi.metadata.append(BeforeValidator(self.func))
-        return replace(ctx, field_info=fi)
+
+        return pydantic_metadata(ctx, BeforeValidator(self.func))
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,9 +116,8 @@ class ValidatorAfter(PydanticCapability):
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
         from pydantic import AfterValidator
-        fi = copy.deepcopy(ctx.field_info)
-        fi.metadata.append(AfterValidator(self.func))
-        return replace(ctx, field_info=fi)
+
+        return pydantic_metadata(ctx, AfterValidator(self.func))
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,9 +127,8 @@ class ValidatorWrap(PydanticCapability):
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
         from pydantic import WrapValidator
-        fi = copy.deepcopy(ctx.field_info)
-        fi.metadata.append(WrapValidator(self.func))
-        return replace(ctx, field_info=fi)
+
+        return pydantic_metadata(ctx, WrapValidator(self.func))
 
 
 __all__ = (
@@ -160,7 +137,6 @@ __all__ = (
     "Strict",
     "Coerce",
     # Field Configuration
-    "Alias",
     "AliasPath",
     "Exclude",
     "Include",

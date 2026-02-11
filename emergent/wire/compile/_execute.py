@@ -251,17 +251,16 @@ async def execute_delegate_unified(
     Returns:
         Formatted response
     """
-    from emergent.wire.axis.surface.capabilities._base import ScopeEnricher
-    from emergent.wire.axis.surface.capabilities._delegate import resolve_handler_params
-    from emergent.wire.compile._rrc import chain_enrichers
+    from emergent.wire.axis.surface.enrichers import chain_enrichers
+    from emergent.wire.compile._delegate import resolve_handler_params
+    from emergent.wire.compile._capabilities import fold_handler_runtime
 
     _agent_cls = agent_cls or EventLoopAgent
     original = handler.codec.handler
 
-    # Collect enrichers
-    enrichers = tuple(
-        cap for cap in handler.capabilities if isinstance(cap, ScopeEnricher)
-    )
+    # Collect enrichers via fold
+    rt_ctx = fold_handler_runtime(handler.capabilities)
+    enrichers = rt_ctx.enrichers
 
     async with Scope() as scope:
         # 1. Inject framework context

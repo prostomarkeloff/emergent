@@ -1,12 +1,20 @@
-"""Unified capability processing — all adapters use this.
+"""Capability processing — contexts, protocols, and lookup helpers.
 
-Single dispatcher for capability application. Each capability type
-has a handler that transforms request/response or modifies behavior.
+Compile-time capability application uses fold() directly — the universal
+primitive. This module provides:
 
-    from emergent.wire.compile._capabilities import apply_response_capabilities
+1. Contexts and protocols for compile-time capabilities (FastAPICompileContext, etc.)
+2. Runtime response transform (apply_response_capabilities)
+3. Capability lookup helpers (find_capability, has_capability, etc.)
 
-    # Same for all targets
-    response = await apply_response_capabilities(response, handler.capabilities, ctx)
+Compile-time usage (in target compilers):
+
+    from emergent.wire.compile._core import fold
+    from emergent.wire.compile._capabilities import FastAPICompilable, FastAPICompileContext
+
+    # fold() IS the universal primitive — same for schema, surface, everything
+    ctx = fold(handler.capabilities, ctx, FastAPICompilable, "compile_fastapi",
+               trace=axes.trace)  # tracing is automatic
 """
 
 from __future__ import annotations
@@ -18,113 +26,43 @@ from emergent.wire.axis.surface.capabilities import (
     SurfaceCapability,
     ResponseTransform,
 )
-from emergent.wire.axis._capability import FastAPIRouteContext
+from emergent.wire.axis._capability import (
+    FastAPIRouteContext,
+    HandlerRuntimeContext,
+    HandlerRuntimeCompilable,
+)
+from emergent.wire.compile._core import fold
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Capability Context Protocol
+# Handler Runtime Fold
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class CapabilityContext(Protocol):
-    """Context for capability processing.
-
-    Each framework provides its own context implementation.
-    Capabilities can access framework-specific data through this.
-    """
-
-    @property
-    def framework(self) -> str:
-        """Framework identifier: 'fastapi', 'cli', 'telegrinder'."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class FastAPICapabilityContext:
-    """FastAPI capability context."""
-
-    request: Any  # fastapi.Request
-
-    @property
-    def framework(self) -> str:
-        return "fastapi"
-
-
-@dataclass(frozen=True, slots=True)
-class CLICapabilityContext:
-    """CLI capability context."""
-
-    namespace: Any  # argparse.Namespace
-
-    @property
-    def framework(self) -> str:
-        return "cli"
-
-
-@dataclass(frozen=True, slots=True)
-class TelegrinderCapabilityContext:
-    """Telegrinder capability context."""
-
-    ctx: Any  # telegrinder Context
-
-    @property
-    def framework(self) -> str:
-        return "telegrinder"
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Response Capability Processing
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def apply_response_capabilities(
-    response: Any,
+def fold_handler_runtime(
     capabilities: tuple[SurfaceCapability, ...],
-) -> Any:
-    """Apply response-transforming capabilities.
-
-    Pure function that transforms response based on capabilities.
-    Called by all adapters after execute_rrc/execute_stateful_done.
-
-    Currently handles:
-    - ResponseTransform: apply_response() method
-
-    Args:
-        response: Response to transform
-        capabilities: Handler capabilities
-
-    Returns:
-        Transformed response
-    """
-    for cap in capabilities:
-        if isinstance(cap, ResponseTransform):
-            response = cap.apply_response(response)
-
-    return response
+) -> HandlerRuntimeContext:
+    """Fold handler capabilities into runtime context (enrichers + transforms)."""
+    return fold(
+        capabilities,
+        HandlerRuntimeContext(),
+        HandlerRuntimeCompilable,
+        "compile_handler_runtime",
+    )
 
 
-async def apply_response_capabilities_async(
-    response: Any,
+def apply_response_capabilities[T](
+    response: T,
     capabilities: tuple[SurfaceCapability, ...],
-    ctx: CapabilityContext | None = None,
-) -> Any:
-    """Apply response-transforming capabilities (async version).
+) -> T:
+    """Apply response-transforming capabilities via fold.
 
-    Some capabilities may need async processing (e.g., EditMessage in Telegram).
-    This version supports both sync and async capability handlers.
-
-    Args:
-        response: Response to transform
-        capabilities: Handler capabilities
-        ctx: Framework-specific context (optional, for async capabilities)
-
-    Returns:
-        Transformed response
+    Runtime function — transforms response after execution.
+    Uses fold to extract ResponseTransform instances, then applies sequentially.
     """
-    for cap in capabilities:
-        if isinstance(cap, ResponseTransform):
-            response = cap.apply_response(response)
-
+    rt_ctx = fold_handler_runtime(capabilities)
+    for transform in rt_ctx.response_transforms:
+        response = transform.apply_response(response)
     return response
 
 
@@ -133,53 +71,12 @@ async def apply_response_capabilities_async(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def find_capability[C: SurfaceCapability](
-    capabilities: tuple[SurfaceCapability, ...],
-    cap_type: type[C],
-) -> C | None:
-    """Find first capability of given type.
-
-    Generic helper for capability lookup. Use instead of manual loops.
-
-    Example:
-        timeout = find_capability(handler.capabilities, TimeoutCapability)
-        if timeout:
-            handler = with_timeout(handler, timeout.seconds)
-    """
-    for cap in capabilities:
-        if isinstance(cap, cap_type):
-            return cap
-    return None
-
-
-def find_all_capabilities[C: SurfaceCapability](
-    capabilities: tuple[SurfaceCapability, ...],
-    cap_type: type[C],
-) -> list[C]:
-    """Find all capabilities of given type.
-
-    Example:
-        middlewares = find_all_capabilities(handler.capabilities, MiddlewareCapability)
-    """
-    return [cap for cap in capabilities if isinstance(cap, cap_type)]
-
-
-def has_capability(
-    capabilities: tuple[SurfaceCapability, ...],
-    cap_type: type[SurfaceCapability],
-) -> bool:
-    """Check if capabilities include given type.
-
-    Example:
-        if has_capability(handler.capabilities, StreamingCapability):
-            return streaming_response(...)
-    """
-    return any(isinstance(cap, cap_type) for cap in capabilities)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Route Registration Context — for compile-time capabilities
-# ═══════════════════════════════════════════════════════════════════════════════
+# Capability lookup — delegate to canonical surface helpers (avoid duplication)
+from emergent.wire.axis.surface.capabilities._helpers import (
+    find_capability,
+    find_all_capabilities,
+    has_capability,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -189,7 +86,12 @@ def has_capability(
 
 @dataclass
 class FastAPICompileContext:
-    """Context for FastAPI compilation. Tracks state during compilation."""
+    """Context for FastAPI compilation. Tracks state during compilation.
+
+    Used with fold():
+        ctx = fold(capabilities, ctx, FastAPICompilable, "compile_fastapi",
+                   trace=axes.trace)
+    """
 
     app: Any  # fastapi.FastAPI
     trigger: Any  # HTTPRouteTrigger
@@ -207,17 +109,6 @@ class FastAPICompilable(Protocol):
         ...
 
 
-def apply_fastapi_capabilities(
-    ctx: FastAPICompileContext,
-    capabilities: tuple[SurfaceCapability, ...],
-) -> FastAPICompileContext:
-    """Apply FastAPI compile capabilities. Compiler just calls this."""
-    for cap in capabilities:
-        if isinstance(cap, FastAPICompilable):
-            ctx = cap.compile_fastapi(ctx)
-    return ctx
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI Route Context — for route-level capabilities (Tag, Summary, etc.)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -225,24 +116,18 @@ def apply_fastapi_capabilities(
 
 @runtime_checkable
 class FastAPIRouteCompilable(Protocol):
-    """Protocol for capabilities that affect FastAPI route configuration."""
+    """Protocol for capabilities that affect FastAPI route configuration.
+
+    Used with fold():
+        route_ctx = fold(capabilities, route_ctx, FastAPIRouteCompilable,
+                         "compile_fastapi_route", trace=axes.trace)
+    """
 
     def compile_fastapi_route(
         self, ctx: "FastAPIRouteContext"
     ) -> "FastAPIRouteContext":
         """Transform route context."""
         ...
-
-
-def apply_fastapi_route_capabilities(
-    ctx: "FastAPIRouteContext",
-    capabilities: tuple[SurfaceCapability, ...],
-) -> "FastAPIRouteContext":
-    """Apply FastAPI route capabilities. Returns modified route context."""
-    for cap in capabilities:
-        if isinstance(cap, FastAPIRouteCompilable):
-            ctx = cap.compile_fastapi_route(ctx)
-    return ctx
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -480,24 +365,18 @@ def _add_generic_mount_docs(
 
 
 __all__ = (
-    # Context
-    "CapabilityContext",
-    "FastAPICapabilityContext",
-    "CLICapabilityContext",
-    "TelegrinderCapabilityContext",
     # FastAPI compile (app-level)
     "FastAPICompileContext",
     "FastAPICompilable",
-    "apply_fastapi_capabilities",
     # FastAPI route (route-level)
     "FastAPIRouteContext",
     "FastAPIRouteCompilable",
-    "apply_fastapi_route_capabilities",
     # Mount capability
     "Mount",
-    # Processing
+    # Handler runtime fold
+    "fold_handler_runtime",
+    # Runtime response processing
     "apply_response_capabilities",
-    "apply_response_capabilities_async",
     # Lookup
     "find_capability",
     "find_all_capabilities",

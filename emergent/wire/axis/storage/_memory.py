@@ -21,20 +21,20 @@ K = TypeVar("K")
 V = TypeVar("V")
 
 
-class MemoryStorage(Generic[K, V]):
-    """In-memory storage with all capabilities.
+class BaseTTLStorage(Generic[K, V]):
+    """Base storage with TTL support and (value, expires_at) tuples.
 
-    Implements: Get, Set, SetWithTTL, Delete, SetNX, DeletePattern
-
-    For testing and single-instance use only.
+    Subclasses override `_persist()` to add durability.
     """
 
-    def __init__(self) -> None:
-        self._data: dict[K, tuple[V, datetime | None]] = {}  # (value, expires_at)
+    _data: dict[K, tuple[V, datetime | None]]
 
     def _is_expired(self, expires_at: datetime | None) -> bool:
         """Check if entry is expired."""
         return expires_at is not None and datetime.now() > expires_at
+
+    def _persist(self) -> None:
+        """Called after every write. Override for durability."""
 
     # Get
     async def get(self, key: K) -> Result[Option[V], Never]:
@@ -44,6 +44,7 @@ class MemoryStorage(Generic[K, V]):
         value, expires_at = entry
         if self._is_expired(expires_at):
             del self._data[key]
+            self._persist()
             return Ok(Nothing())
         return Ok(Some(value))
 
@@ -51,27 +52,28 @@ class MemoryStorage(Generic[K, V]):
     async def set(self, key: K, value: V, ttl: timedelta | None = None) -> Result[None, Never]:
         expires_at = datetime.now() + ttl if ttl else None
         self._data[key] = (value, expires_at)
+        self._persist()
         return Ok(None)
 
     # Delete
     async def delete(self, key: K) -> Result[None, Never]:
         self._data.pop(key, None)
+        self._persist()
         return Ok(None)
 
     # SetNX
     async def set_nx(self, key: K, value: V, ttl: timedelta | None = None) -> Result[bool, Never]:
         """Set if not exists. Returns True if set."""
-        # Check existing
         entry = self._data.get(key)
         if entry is not None:
             _, expires_at = entry
             if not self._is_expired(expires_at):
                 return Ok(False)
-            # Expired — remove and continue
             del self._data[key]
 
         expires_at = datetime.now() + ttl if ttl else None
         self._data[key] = (value, expires_at)
+        self._persist()
         return Ok(True)
 
     # DeletePattern (string keys only)
@@ -83,6 +85,8 @@ class MemoryStorage(Generic[K, V]):
         ]
         for key in keys_to_delete:
             del self._data[key]
+        if keys_to_delete:
+            self._persist()
         return Ok(len(keys_to_delete))
 
     # Keys
@@ -97,4 +101,16 @@ class MemoryStorage(Generic[K, V]):
         return Ok(matching)  # type: ignore[return-value]
 
 
-__all__ = ("MemoryStorage",)
+class MemoryStorage(BaseTTLStorage[K, V]):
+    """In-memory storage with all capabilities.
+
+    Implements: Get, Set, SetWithTTL, Delete, SetNX, DeletePattern
+
+    For testing and single-instance use only.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[K, tuple[V, datetime | None]] = {}
+
+
+__all__ = ("BaseTTLStorage", "MemoryStorage")

@@ -2,13 +2,13 @@
 
 Patterns are pre-built combinations of universal capabilities.
 
-    from emergent.wire.axis.schema import Id, Email, CreatedAt
+    from emergent.wire.axis.schema import Id, Email, Slug
 
     @dataclass
     class User:
         id: Annotated[int, Id]
         email: Annotated[str, Email]
-        created_at: Annotated[datetime, CreatedAt]
+        slug: Annotated[str, Slug]
 """
 
 from emergent.wire.axis.schema._universal import (
@@ -60,8 +60,8 @@ RequiredShort = (MinLen(1), MaxLen(100))
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-# Positive number
-Positive = (Min(0),)
+# Non-negative number (>= 0)
+NonNegative = (Min(0),)
 
 # Percentage (0-100)
 Percentage = (Min(0), Max(100))
@@ -90,7 +90,7 @@ __all__ = (
     "Medium",
     "RequiredShort",
     # Numeric
-    "Positive",
+    "NonNegative",
     "Percentage",
     "Probability",
     # Indexed

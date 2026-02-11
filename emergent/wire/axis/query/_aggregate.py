@@ -20,6 +20,11 @@ from __future__ import annotations
 
 from abc import ABC
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._proxy import FieldProxy, OrderSpec
+    from emergent.wire.axis.query._window import WindowSpec
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -130,10 +135,30 @@ class AggregateExpr:
     Created by FieldProxy methods:
         u.balance.sum()  → AggregateExpr(Sum(), "balance")
         u.count()        → AggregateExpr(Count(), None)
+
+    Can be used in window context via .over():
+        u.balance.sum().over(partition_by=u.department)
     """
 
     func: AggregateFunc
     field: str | None  # None for COUNT(*)
+
+    def over(
+        self,
+        partition_by: FieldProxy | tuple[FieldProxy, ...] | None = None,
+        order_by: OrderSpec | tuple[OrderSpec, ...] | FieldProxy | tuple[FieldProxy, ...] | None = None,
+    ) -> WindowSpec:
+        """Create window specification from this aggregate.
+
+        Usage:
+            u.balance.sum().over(partition_by=u.department, order_by=u.salary.desc())
+
+        Returns:
+            WindowSpec with this aggregate function.
+        """
+        from emergent.wire.axis.query._sql import WindowBuilder
+
+        return WindowBuilder(self.func, self.field).over(partition_by, order_by)
 
 
 __all__ = (

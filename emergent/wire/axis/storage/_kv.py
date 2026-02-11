@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol
 
-from kungfu import Result, Ok, Error, Option, Some, Nothing
+from kungfu import Result, Option
 
 from emergent.wire.axis.storage._codec import Codec
+from emergent.wire.axis.storage._result import map_option
 from emergent.wire.axis.storage._capabilities import (
     Get as GetCap,
     SetWithTTL as SetCap,
@@ -74,20 +75,11 @@ class KV[T, E]:
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get typed value by key."""
-        match await self.backend.get(key):
-            case Ok(Some(data)):
-                return Ok(Some(self.codec.decode(data)))
-            case Ok(Nothing()):
-                return Ok(Nothing())
-            case Error(e):
-                return Error(e)
-            case _:
-                return Ok(Nothing())
+        return map_option(await self.backend.get(key), self.codec.decode)
 
     async def set(self, key: str, value: T, ttl: timedelta | None = None) -> Result[None, E]:
         """Set typed value."""
-        data = self.codec.encode(value)
-        return await self.backend.set(key, data, ttl)
+        return await self.backend.set(key, self.codec.encode(value), ttl)
 
     async def delete(self, key: str) -> Result[None, E]:
         """Delete key."""
@@ -106,25 +98,15 @@ class KVNX[T, E]:
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get typed value by key."""
-        match await self.backend.get(key):
-            case Ok(Some(data)):
-                return Ok(Some(self.codec.decode(data)))
-            case Ok(Nothing()):
-                return Ok(Nothing())
-            case Error(e):
-                return Error(e)
-            case _:
-                return Ok(Nothing())
+        return map_option(await self.backend.get(key), self.codec.decode)
 
     async def set(self, key: str, value: T, ttl: timedelta | None = None) -> Result[None, E]:
         """Set typed value."""
-        data = self.codec.encode(value)
-        return await self.backend.set(key, data, ttl)
+        return await self.backend.set(key, self.codec.encode(value), ttl)
 
     async def set_nx(self, key: str, value: T, ttl: timedelta | None = None) -> Result[bool, E]:
         """Set if not exists. Returns True if set."""
-        data = self.codec.encode(value)
-        return await self.backend.set_nx(key, data, ttl)
+        return await self.backend.set_nx(key, self.codec.encode(value), ttl)
 
     async def delete(self, key: str) -> Result[None, E]:
         """Delete key."""

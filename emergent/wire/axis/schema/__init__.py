@@ -21,7 +21,7 @@ Unified inspection for ANY structured type (dataclass, Pydantic, TypedDict, Name
     for name, info in fields.items():
         print(f"{name}: {info.base_type}")
         print(f"  universal: {info.universal}")
-        print(f"  sql: {info.dialect('sql')}")
+        print(f"  sql: {info.dialect(SQLCapability)}")
 
 Custom composition with `first_match`:
 
@@ -45,6 +45,11 @@ from emergent.wire.axis.schema._universal import (
     schema_meta,
     get_schema_meta,
     get_schema_capability,
+    # Schema-level capabilities
+    SchemaName,
+    SchemaDoc,
+    Abstract,
+    # Field-level capabilities
     Identity,
     Unique,
     Ref,
@@ -57,10 +62,17 @@ from emergent.wire.axis.schema._universal import (
     MaxLen,
     Pattern,
     OneOf,
-    Either,
+    Nested,
     Embedded,
     Doc,
     Deprecated,
+    ReadOnly,
+    WriteOnly,
+    Sensitive,
+    Immutable,
+    Nullable,
+    Alias,
+    Computed,
 )
 
 from emergent.wire.axis._capability import (
@@ -75,13 +87,18 @@ from emergent.wire.axis._capability import (
     openapi_schema,
     argparse_arg,
     sqlalchemy_column,
+    pydantic_metadata,
+    pydantic_extra,
+    pydantic_field,
     combine,
+    ExtraColumnSpec,
+    ExtraFieldSpec,
+    UNSET,
 )
 
 from emergent.wire.axis.schema._compilable import (
     OpenAPISchema,
     SQLAlchemyConfig,
-    ProtobufSchema,
 )
 
 from emergent.wire.axis.schema._patterns import (
@@ -92,7 +109,7 @@ from emergent.wire.axis.schema._patterns import (
     Short,
     Medium,
     RequiredShort,
-    Positive,
+    NonNegative,
     Percentage,
     Probability,
     UniqueValue,
@@ -118,11 +135,59 @@ from emergent.wire.axis.schema._inspect import (
     unwrap_optional,
     unwrap_annotated,
     extract_capabilities,
-    # Dialect registry
-    DIALECT_BASES,
+    # Nested type helpers
+    is_structured_type,
+    unwrap_collection,
+    get_nested_info,
+    get_nested_type,
+)
+
+from emergent.wire.axis.schema._explain import (
+    schema_dict,
+    field_info_dict,
+    explain_schema,
+    explain_field,
+)
+
+from emergent.wire.axis.schema.dialects.sql import (
+    CompositeUnique,
+    CompositeIndex,
+)
+
+from emergent.wire.axis.schema.dialects.openapi import (
+    Discriminator,
 )
 
 from emergent.wire.axis.schema import dialects
+
+# Helpers — pure functions for schema navigation and capability composition
+from emergent.wire.axis.schema import _helpers as helpers
+from emergent.wire.axis.schema._helpers import (
+    # Navigation
+    get_identity_field,
+    get_required_fields,
+    get_optional_fields,
+    partition_fields,
+    field_by_name,
+    field_path_type,
+    fields_with_capability,
+    get_refs,
+    fields_by_dialect,
+    # Composition
+    merge_capabilities,
+    override_capability,
+    remove_capability,
+    deduplicate_capabilities,
+    filter_by_dialect,
+    filter_universal,
+    # Queries
+    find_capability,
+    find_all_capabilities,
+    has_capability,
+    # Schema meta composition
+    compose_schema_meta,
+    get_nested_schema_meta,
+)
 
 __all__ = (
     # Base
@@ -132,6 +197,13 @@ __all__ = (
     "schema_meta",
     "get_schema_meta",
     "get_schema_capability",
+    # Schema-level
+    "SchemaName",
+    "SchemaDoc",
+    "CompositeUnique",
+    "CompositeIndex",
+    "Discriminator",
+    "Abstract",
     # Universal
     "Identity",
     "Unique",
@@ -145,10 +217,21 @@ __all__ = (
     "MaxLen",
     "Pattern",
     "OneOf",
-    "Either",
+    "Nested",
     "Embedded",
     "Doc",
     "Deprecated",
+    # Access control
+    "ReadOnly",
+    "WriteOnly",
+    "Sensitive",
+    "Immutable",
+    # Nullability
+    "Nullable",
+    # Naming
+    "Alias",
+    # Computed
+    "Computed",
     # Contexts
     "PydanticContext",
     "OpenAPIContext",
@@ -159,15 +242,21 @@ __all__ = (
     "OpenAPICompilable",
     "ArgparseCompilable",
     "SQLAlchemyCompilable",
-    # Helpers (pydantic uses FieldInfo.merge_field_infos directly)
+    # Helpers
     "openapi_schema",
     "argparse_arg",
     "sqlalchemy_column",
+    "pydantic_metadata",
+    "pydantic_extra",
+    "pydantic_field",
     "combine",
+    # Spec types (generic)
+    "ExtraColumnSpec",
+    "ExtraFieldSpec",
+    "UNSET",
     # TypedDicts
     "OpenAPISchema",
     "SQLAlchemyConfig",
-    "ProtobufSchema",
     # Patterns
     "Id",
     "Email",
@@ -176,7 +265,7 @@ __all__ = (
     "Short",
     "Medium",
     "RequiredShort",
-    "Positive",
+    "NonNegative",
     "Percentage",
     "Probability",
     "UniqueValue",
@@ -199,7 +288,42 @@ __all__ = (
     "unwrap_optional",
     "unwrap_annotated",
     "extract_capabilities",
-    "DIALECT_BASES",
+    # Introspection — Nested type helpers
+    "is_structured_type",
+    "unwrap_collection",
+    "get_nested_info",
+    "get_nested_type",
     # Dialects
     "dialects",
+    # Helpers namespace
+    "helpers",
+    # Helper functions — Navigation
+    "get_identity_field",
+    "get_required_fields",
+    "get_optional_fields",
+    "partition_fields",
+    "field_by_name",
+    "field_path_type",
+    "fields_with_capability",
+    "get_refs",
+    "fields_by_dialect",
+    # Helper functions — Composition
+    "merge_capabilities",
+    "override_capability",
+    "remove_capability",
+    "deduplicate_capabilities",
+    "filter_by_dialect",
+    "filter_universal",
+    # Helper functions — Queries
+    "find_capability",
+    "find_all_capabilities",
+    "has_capability",
+    # Helper functions — Schema meta composition
+    "compose_schema_meta",
+    "get_nested_schema_meta",
+    # Explain
+    "schema_dict",
+    "field_info_dict",
+    "explain_schema",
+    "explain_field",
 )

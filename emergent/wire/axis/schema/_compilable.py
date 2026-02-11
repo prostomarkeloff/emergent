@@ -57,20 +57,7 @@ class SQLAlchemyConfig(TypedDict, total=False):
     server_default: str
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Protobuf
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class ProtobufSchema(TypedDict, total=False):
-    """Protobuf field options."""
-    field_number: int
-    packed: bool
-    deprecated: bool
-
-
 __all__ = (
     "OpenAPISchema",
     "SQLAlchemyConfig",
-    "ProtobufSchema",
 )

@@ -30,8 +30,8 @@ import asyncio
 import functools
 import inspect
 import re
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Protocol, TypeGuard, runtime_checkable
 
@@ -222,18 +222,54 @@ def chain_purifiers[**P, R](
     return result
 
 
+type BridgeCapabilityHandler = Callable[
+    [BridgeCapability, BridgeContext[object, ..., object]],
+    BridgeContext[object, ..., object],
+]
+
+
+def fold_bridge[T, **P, R](
+    ctx: BridgeContext[T, P, R],
+    capabilities: Sequence[BridgeCapability],
+    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+) -> BridgeContext[T, P, R]:
+    """Universal bridge-level capability fold — THE bridge primitive.
+
+    Two-level dispatch mirroring compile.fold_field:
+    1. Custom handlers override (keyed by capability type)
+    2. BridgeCompilable protocol dispatch (fallback)
+
+    Args:
+        ctx: Starting BridgeContext
+        capabilities: Capabilities to apply
+        handlers: Optional custom handlers keyed by capability type
+
+    Returns:
+        Final accumulated context after all capabilities applied
+    """
+    current = ctx
+    for cap in capabilities:
+        cap_type = type(cap)
+        if handlers and cap_type in handlers:
+            current = handlers[cap_type](cap, current)  # type: ignore[assignment]
+        elif isinstance(cap, BridgeCompilable):
+            current = cap.compile_bridge(current)
+        if current.skip:
+            return current
+    return current
+
+
 def apply_bridge_capabilities[T, **P, R](
     ctx: BridgeContext[T, P, R],
     capabilities: Sequence[BridgeCapability],
+    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
 ) -> BridgeContext[T, P, R]:
-    """Apply BridgeCompilable capabilities to context."""
-    current = ctx
-    for cap in capabilities:
-        if isinstance(cap, BridgeCompilable):
-            current = cap.compile_bridge(current)
-            if current.skip:
-                return current
-    return current
+    """Apply BridgeCompilable capabilities to context.
+
+    Thin wrapper around fold_bridge. The handlers parameter enables
+    custom per-type overrides without modifying capabilities.
+    """
+    return fold_bridge(ctx, capabilities, handlers)
 
 
 def apply_purifiers[**P, R](
@@ -568,6 +604,161 @@ class InjectKwargAsync[V](BridgeCapability):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Context Manager Purifiers — THE MISSING PRIMITIVE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class WithContext(BridgeCapability):
+    """Run handler inside sync context manager.
+
+    THE universal primitive for legacy code that uses globals/thread-locals.
+
+    Handler signature is preserved — context manager sets up environment,
+    handler uses globals/thread-locals as usual.
+
+    Examples::
+
+        # Flask: request context
+        WithContext(lambda: app.request_context(environ))
+
+        # Thread-local stack
+        WithContext(lambda: local_stack.push(current_value))
+
+        # Class initialization
+        @contextmanager
+        def ensure_init(cls, db):
+            if cls._db is None:
+                cls.init(db)
+            yield
+
+        WithContext(lambda: ensure_init(UserService, real_db))
+
+        # Set global (no restore)
+        @contextmanager
+        def set_db(db):
+            import myapp
+            myapp.db = db
+            yield  # No cleanup — permanent for handler
+
+        WithContext(lambda: set_db(real_db))
+    """
+
+    factory: Callable[[], AbstractAsyncContextManager[object]]
+
+    def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
+        make_ctx = self.factory
+
+        @functools.wraps(handler)
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+            async with make_ctx():
+                return await _call_handler(handler, *args, **kwargs)
+
+        return wrapped
+
+
+@dataclass(frozen=True, slots=True)
+class WithContextSync(BridgeCapability):
+    """Run handler inside SYNC context manager (converted to async).
+
+    For legacy context managers that aren't async.
+
+    Example::
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def flask_context(app, environ):
+            with app.request_context(environ):
+                yield
+
+        WithContextSync(lambda: flask_context(app, environ))
+    """
+
+    factory: Callable[[], AbstractContextManager[object]]
+
+    def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
+        make_ctx = self.factory
+
+        @functools.wraps(handler)
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+            with make_ctx():
+                return await _call_handler(handler, *args, **kwargs)
+
+        return wrapped
+
+
+@dataclass(frozen=True, slots=True)
+class SetupTeardown(BridgeCapability):
+    """Call setup before handler, teardown after.
+
+    Simpler than context manager when you don't need the protocol.
+
+    Example::
+
+        SetupTeardown(
+            setup=lambda: MyClass.init(db),
+            teardown=lambda: MyClass.cleanup(),  # Optional
+        )
+    """
+
+    setup: Callable[[], object]
+    teardown: Callable[[], object] | None = None
+
+    def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
+        do_setup = self.setup
+        do_teardown = self.teardown
+
+        @functools.wraps(handler)
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+            do_setup()
+            try:
+                return await _call_handler(handler, *args, **kwargs)
+            finally:
+                if do_teardown is not None:
+                    do_teardown()
+
+        return wrapped
+
+
+@dataclass(frozen=True, slots=True)
+class SetGlobal(BridgeCapability):
+    """Set module global before handler (no restore).
+
+    For late-bound globals that need initialization.
+    Simpler than IsolateGlobal when you don't need isolation.
+
+    Example::
+
+        # db.py has: db = None
+        SetGlobal("myapp.db", "db", factory=lambda: Database(url))
+    """
+
+    module_path: str
+    attr_name: str
+    factory: Callable[[], object]
+
+    def purify[**P, R](self, handler: AnyHandler[P, R]) -> AsyncHandler[P, R]:
+        import importlib
+
+        module = importlib.import_module(self.module_path)
+        attr = self.attr_name
+        get_value = self.factory
+        # Set once flag
+        _initialized = False
+
+        @functools.wraps(handler)
+        async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
+            nonlocal _initialized
+            if not _initialized:
+                setattr(module, attr, get_value())
+                _initialized = True
+            return await _call_handler(handler, *args, **kwargs)
+
+        return wrapped
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # WrapAsDelegate — THIN, preserves handler signature
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -609,6 +800,9 @@ __all__ = (
     "Purifier",
     # Base
     "BridgeCapability",
+    # Fold primitive
+    "BridgeCapabilityHandler",
+    "fold_bridge",
     # Execution helpers
     "ensure_async",
     "call_handler",
@@ -626,13 +820,20 @@ __all__ = (
     "SetRequestTypeByName",
     "SetResponseTypeByName",
     "SetCodecByName",
-    # Purifier capabilities
+    # Purifier capabilities — Handler wrapping
     "WrapAsync",
     "CatchErrors",
+    # Purifier capabilities — Global/Module state
     "IsolateGlobal",
     "IsolateGlobalAsync",
+    "SetGlobal",
+    # Purifier capabilities — Dependency injection
     "InjectKwarg",
     "InjectKwargAsync",
+    # Purifier capabilities — Context management (THE KEY PRIMITIVE)
+    "WithContext",
+    "WithContextSync",
+    "SetupTeardown",
     # Delegate wrapping (THIN — framework handles params)
     "WrapAsDelegate",
 )

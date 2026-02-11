@@ -29,6 +29,7 @@ from emergent.wire.axis.query._api import (
     OffsetMod,
     SelectMod,
     SearchMod,
+    IncludeMod,
 )
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -388,7 +389,7 @@ class HTTPAPIProvider(Generic[T]):
             elif isinstance(mod, SearchMod):
                 params["q"] = mod.query
 
-            else:  # IncludeMod
+            elif isinstance(mod, IncludeMod):
                 params["include"] = ",".join(mod.relations)
 
         method = "POST" if body else "GET"
@@ -457,23 +458,21 @@ class HTTPAPIProvider(Generic[T]):
 
     def _parse_entity(self, data: dict[str, Any]) -> T:
         """Parse response data into entity."""
-        if dataclasses.is_dataclass(self.entity):
-            # Get field names from dataclass
-            field_names = {f.name for f in dataclasses.fields(self.entity)}
-            filtered = {k: v for k, v in data.items() if k in field_names}
-            return self.entity(**filtered)  # type: ignore
-        # Assume entity has from_dict or similar
-        if hasattr(self.entity, "from_dict"):
-            return self.entity.from_dict(data)  # type: ignore
-        raise ValueError(f"Cannot parse entity {self.entity}")
+        if not dataclasses.is_dataclass(self.entity):
+            raise TypeError(
+                f"{self.entity.__name__} must be a dataclass"
+            )
+        field_names = {f.name for f in dataclasses.fields(self.entity)}
+        filtered = {k: v for k, v in data.items() if k in field_names}
+        return self.entity(**filtered)  # type: ignore
 
     def _serialize_entity(self, entity: T) -> dict[str, Any]:
         """Serialize entity to dict."""
-        if dataclasses.is_dataclass(entity):
-            return dataclasses.asdict(entity)  # type: ignore
-        if hasattr(entity, "to_dict"):
-            return entity.to_dict()  # type: ignore
-        raise ValueError(f"Cannot serialize entity {entity}")
+        if not dataclasses.is_dataclass(entity):
+            raise TypeError(
+                f"{type(entity).__name__} must be a dataclass instance"
+            )
+        return dataclasses.asdict(entity)  # type: ignore
 
 
 # ─── Builder ─────────────────────────────────────────────────────────────────

@@ -1,102 +1,105 @@
 """Surface capabilities — modifiers for Trigger × Codec space.
 
-Categories:
-    Compile-time:
-        - TriggerTransform: Prefix, StripPrefix, URLPath
-        - HandlerTransform: wraps handler at compile time
+RESTRUCTURED:
+    - enrichers/   — runtime middleware (ScopeEnricher and implementations)
+    - transforms/  — compile/runtime transforms (Trigger, Handler, Response)
+    - dialects/    — target-specific (http, telegram)
 
-    Runtime:
-        - ResponseTransform: AsDict, AsStr
-        - ScopeEnricher: sequential scope enrichment (middleware pattern)
-
-    Transport-specific:
-        - OpenAPI (HTTP): Tag, BearerAuth, ApiKeyAuth, OAuth2Auth, etc.
-        - Telegram: tg.EditMessage, tg.AnswerCallback, tg.Silent
+This module re-exports for backwards compatibility.
 
 Usage:
     from emergent.wire.axis.surface import capabilities as C
+    from emergent.wire.axis.surface import enrichers
+    from emergent.wire.axis.surface import transforms
+    from emergent.wire.axis.surface.dialects import http, telegram
 
     endpoint(runner).expose(
-        HTTPRouteTrigger("/users", "GET"),
-        rrc(ListUsers, UsersResponse),
-        # Compile-time
-        C.Prefix.of("api", "v1"),
-        C.Tag.of("users"),
-        # Runtime enrichers
-        C.enricher.Timeout(seconds=5.0),
-        C.enricher.Auth(inject=User, runner=auth_runner, ...),
-        C.enricher.Retry(policy=RetryPolicy.exponential(times=3)),
+        trigger, codec,
+        # Transforms
+        transforms.Prefix.of("api", "v1"),
+        transforms.AsDict(),
+        # Enrichers
+        enrichers.Timeout(seconds=5.0),
+        enrichers.Retry(policy=RetryPolicy.exponential(times=3)),
+        # Dialects
+        http.Tag.of("users"),
+        telegram.EditMessage(),
     )
-
-    # Telegram-specific
-    endpoint(runner).expose(
-        TelegrindTrigger(CallbackDataMarkup("game:<id>")),
-        rrc(MoveRequest, Response),
-        tg.EditMessage(),
-        C.AsDict(),
-    )
-
-Enrichers use combinators.py for operations (timeout, retry, rate_limit)
-and emergent.cache for caching.
 """
 
-from emergent.wire.axis.surface.capabilities._base import (
-    SurfaceCapability,
-    TriggerTransform,
-    HandlerTransform,
-    ResponseTransform,
+# Base
+from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
+
+# Enrichers (re-export for backwards compatibility)
+from emergent.wire.axis.surface.enrichers import (
     ScopeEnricher,
     EnricherNext,
 )
+from emergent.wire.axis.surface import enrichers as enricher  # C.enricher.Timeout
 
-# Enricher implementations
-from emergent.wire.axis.surface.capabilities import _enricher as enricher
-
-from emergent.wire.axis.surface.capabilities._trigger import (
+# Transforms (re-export for backwards compatibility)
+from emergent.wire.axis.surface.transforms import (
+    TriggerTransform,
+    HandlerTransform,
+    ResponseTransform,
     URLPath,
     Prefix,
     StripPrefix,
-)
-
-from emergent.wire.axis.surface.capabilities._handler import (
-    Timeout,
-)
-
-from emergent.wire.axis.surface.capabilities._response import (
     AsDict,
     AsStr,
 )
+from emergent.wire.axis.surface.transforms import Timeout  # compile-time handler timeout
 
-from emergent.wire.axis.surface.capabilities._delegate import (
-    resolve_handler_params,
-)
-
-from emergent.wire.axis.surface.capabilities._openapi import (
-    # Tags
+# Dialects (re-export for backwards compatibility)
+from emergent.wire.axis.surface.dialects.http import (
     Tag,
-    # Security
     BearerAuth,
     ApiKeyAuth,
     OAuth2Auth,
-    # Operation meta
     Summary,
     OperationId,
     Deprecated,
+    ResponseStatus,
+    ResponseHeader,
+    ContentType,
+    CORS,
+    TrustedHost,
+    GZip,
 )
 
-# Transport-specific namespaces
-from emergent.wire.axis.surface.capabilities import _telegrinder as tg
+# CLI dialect
+from emergent.wire.axis.surface.dialects.cli import (
+    Help as CLIHelp,
+    Description as CLIDescription,
+    Epilog as CLIEpilog,
+    Hidden as CLIHidden,
+)
 
-__all__ = (
+# Helpers
+from emergent.wire.axis.surface.capabilities import _helpers as helpers
+from emergent.wire.axis.surface.capabilities._helpers import (
+    find_capability,
+    find_all_capabilities,
+    has_capability,
+    merge_capabilities,
+    override_capability,
+    remove_capability,
+    deduplicate_capabilities,
+    filter_by_protocol,
+)
+
+__all__: list[str] = [
     # Base
     "SurfaceCapability",
-    "TriggerTransform",
-    "HandlerTransform",
-    "ResponseTransform",
+    # Enricher protocol
     "ScopeEnricher",
     "EnricherNext",
     # Enricher implementations namespace
     "enricher",
+    # Transform protocols
+    "TriggerTransform",
+    "HandlerTransform",
+    "ResponseTransform",
     # Trigger transforms
     "URLPath",
     "Prefix",
@@ -106,9 +109,7 @@ __all__ = (
     # Response transforms
     "AsDict",
     "AsStr",
-    # Delegate support
-    "resolve_handler_params",
-    # OpenAPI
+    # HTTP dialect (OpenAPI)
     "Tag",
     "BearerAuth",
     "ApiKeyAuth",
@@ -116,6 +117,35 @@ __all__ = (
     "Summary",
     "OperationId",
     "Deprecated",
-    # Transport-specific namespaces
-    "tg",
-)
+    # HTTP route configuration
+    "ResponseStatus",
+    "ResponseHeader",
+    "ContentType",
+    # HTTP application-level middleware
+    "CORS",
+    "TrustedHost",
+    "GZip",
+    # CLI dialect
+    "CLIHelp",
+    "CLIDescription",
+    "CLIEpilog",
+    "CLIHidden",
+    # Helpers namespace
+    "helpers",
+    # Helper functions
+    "find_capability",
+    "find_all_capabilities",
+    "has_capability",
+    "merge_capabilities",
+    "override_capability",
+    "remove_capability",
+    "deduplicate_capabilities",
+    "filter_by_protocol",
+]
+
+# Telegram dialect (optional)
+try:
+    from emergent.wire.axis.surface.dialects import telegram as tg
+    __all__.append("tg")
+except ImportError:
+    pass

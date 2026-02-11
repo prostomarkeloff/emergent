@@ -31,20 +31,71 @@ Compilers are pure functions: (Application, Axes) → FrameworkArtifact
 from emergent.wire.compile._core import (
     ScopeSetup,
     Axes,
+    ItemHandler,
+    CapabilityHandler,
+    fold,
+    fold_field,
+    traced_fold,
     FieldConstraints,
     extract_constraints,
     extract_all_constraints,
-    scan_all_codecs,
+)
+
+# Trace (self-describing compilation)
+from emergent.wire.compile._trace import (
+    TraceCollector,
+    ListCollector,
+    FoldStep,
+    FoldTrace,
+    FieldPhaseTrace,
+    FieldTrace,
+    TypeTrace,
+    ScanEvent,
+    WrapEvent,
+    CapabilityEvent,
+)
+
+# Explain (query trace data)
+from emergent.wire.compile._explain import (
+    # Dict layer
+    trace_dict,
+    field_dict,
+    type_dict,
+    # Human-readable layer
+    explain,
+    explain_field,
+    explain_type,
+    # Structured query
+    get_field_trace,
+    get_phase_trace,
+    changed_fields,
+    active_capabilities,
+)
+
+# Open-world compiler infrastructure
+from emergent.wire.compile._phase import (
+    CompilationPhase,
+    FieldCompilation,
+    compile_fields,
+    PYDANTIC_PHASE,
+    OPENAPI_PHASE,
+    ARGPARSE_PHASE,
+    REQUEST_BUILD_PHASE,
+    TG_INPUT_PHASE,
+    TG_RENDER_PHASE,
+    FASTAPI_PHASES,
+    CLI_PHASES,
+    TG_PHASES,
+)
+
+from emergent.wire.compile._target import (
+    CodecAdapter,
+    TargetCompiler,
 )
 
 # Capabilities
 from emergent.wire.compile._capabilities import (
-    CapabilityContext,
-    FastAPICapabilityContext,
-    CLICapabilityContext,
-    TelegrinderCapabilityContext,
     apply_response_capabilities,
-    apply_response_capabilities_async,
     find_capability,
     find_all_capabilities,
     has_capability,
@@ -60,6 +111,13 @@ from emergent.wire.compile._generate import (
     to_datanode,
     to_datanode_auto,
     to_datanode_from_context,
+    to_telegram_fields,
+)
+
+# Schema generation (OpenAPI, JSON Schema)
+from emergent.wire.compile._schema import (
+    to_openapi_schema,
+    to_json_schema,
 )
 
 # RRC
@@ -83,6 +141,11 @@ from emergent.wire.compile._request import (
     build_request_sync,
 )
 
+# Delegate support
+from emergent.wire.compile._delegate import (
+    resolve_handler_params,
+)
+
 # Unified execution (makes adapters trivial)
 from emergent.wire.compile._execute import (
     ValueGetter,
@@ -101,17 +164,55 @@ __all__ = (
     # Core
     "ScopeSetup",
     "Axes",
+    "ItemHandler",
+    "CapabilityHandler",
+    "fold",
+    "fold_field",
+    "traced_fold",
     "FieldConstraints",
     "extract_constraints",
     "extract_all_constraints",
-    "scan_all_codecs",
+    # Trace
+    "TraceCollector",
+    "ListCollector",
+    "FoldStep",
+    "FoldTrace",
+    "FieldPhaseTrace",
+    "FieldTrace",
+    "TypeTrace",
+    "ScanEvent",
+    "WrapEvent",
+    "CapabilityEvent",
+    # Explain (dict layer)
+    "trace_dict",
+    "field_dict",
+    "type_dict",
+    # Explain (human-readable)
+    "explain",
+    "explain_field",
+    "explain_type",
+    # Explain (structured query)
+    "get_field_trace",
+    "get_phase_trace",
+    "changed_fields",
+    "active_capabilities",
+    # Open-world compiler infrastructure
+    "CompilationPhase",
+    "FieldCompilation",
+    "compile_fields",
+    "PYDANTIC_PHASE",
+    "OPENAPI_PHASE",
+    "ARGPARSE_PHASE",
+    "REQUEST_BUILD_PHASE",
+    "TG_INPUT_PHASE",
+    "TG_RENDER_PHASE",
+    "FASTAPI_PHASES",
+    "CLI_PHASES",
+    "TG_PHASES",
+    "CodecAdapter",
+    "TargetCompiler",
     # Capabilities
-    "CapabilityContext",
-    "FastAPICapabilityContext",
-    "CLICapabilityContext",
-    "TelegrinderCapabilityContext",
     "apply_response_capabilities",
-    "apply_response_capabilities_async",
     "find_capability",
     "find_all_capabilities",
     "has_capability",
@@ -124,6 +225,10 @@ __all__ = (
     "to_datanode",
     "to_datanode_auto",
     "to_datanode_from_context",
+    "to_telegram_fields",
+    # Schema generation
+    "to_openapi_schema",
+    "to_json_schema",
     # RRC
     "execute_rrc",
     # Stateful
@@ -136,6 +241,8 @@ __all__ = (
     # Request building
     "build_request",
     "build_request_sync",
+    # Delegate support
+    "resolve_handler_params",
     # Unified execution
     "ValueGetter",
     "ScopeInjector",

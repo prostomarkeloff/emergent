@@ -13,6 +13,7 @@ Provider compiles Expr to backend-specific form:
 
 from __future__ import annotations
 
+import dataclasses as _dc
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
@@ -31,6 +32,24 @@ class Expr(ABC):
     def evaluate(self, obj: Any) -> Any:
         """Evaluate expression against an object (for interpreted mode)."""
         ...
+
+    def children(self) -> tuple[Expr, ...]:
+        """Return all Expr sub-expressions.
+
+        Inspects dataclass fields automatically — no overrides needed.
+        Leaf nodes (Field, Const) return ().
+        Binary ops (Eq, And, ...) return (left, right).
+        Between returns (field, low, high). Etc.
+        """
+        return tuple(
+            getattr(self, f.name)
+            for f in _dc.fields(self)  # type: ignore[arg-type]
+            if isinstance(getattr(self, f.name), Expr)
+        )
+
+    def __str__(self) -> str:
+        from emergent.wire.axis.query._serialize import expr_repr
+        return expr_repr(self)
 
     def __and__(self, other: "Expr") -> "Expr":
         """Logical AND: (u.active == True) & (u.balance > 0)"""
@@ -55,7 +74,12 @@ class Field(Expr):
     name: str
 
     def evaluate(self, obj: Any) -> Any:
-        return getattr(obj, self.name)
+        try:
+            return getattr(obj, self.name)
+        except AttributeError:
+            raise AttributeError(
+                f"Field {self.name!r} not found on {type(obj).__name__}"
+            ) from None
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,8 +22,8 @@ from emergent.wire.axis.surface.codecs.stateful import (
     get_transitions,
     parse_transition_result,
 )
-from emergent.wire.axis.surface.capabilities import ScopeEnricher
-from emergent.wire.axis.surface.capabilities._enricher import chain_enrichers
+from emergent.wire.axis.surface.enrichers import chain_enrichers
+from emergent.wire.compile._capabilities import fold_handler_runtime
 
 if TYPE_CHECKING:
     from nodnod import Scope
@@ -94,11 +94,9 @@ async def execute_stateful_done(
             raise TypeError(f"No from_domain in {response_type}")
         raise TypeError(f"Response type {response_type} has no from_domain")
 
-    # Extract ScopeEnricher capabilities
-    enrichers = tuple(
-        cap for cap in handler.capabilities
-        if isinstance(cap, ScopeEnricher)
-    )
+    # Extract enrichers via fold
+    rt_ctx = fold_handler_runtime(handler.capabilities)
+    enrichers = rt_ctx.enrichers
 
     # Chain enrichers and execute
     if enrichers:

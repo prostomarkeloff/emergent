@@ -1,4 +1,4 @@
-"""Type generation from schema axis — pure context transforms.
+"""Type generation from schema axis — thin assemblers over compile_fields.
 
     from emergent.wire.compile import to_pydantic, to_argparse_args
 
@@ -11,20 +11,24 @@
 
 from __future__ import annotations
 
-import copy
 import types
 from dataclasses import dataclass, fields as dc_fields, MISSING
 from typing import Callable, Mapping, TYPE_CHECKING
 
 from emergent.wire.compile._core import Axes
+from emergent.wire.compile._phase import (
+    compile_fields,
+    PYDANTIC_PHASE,
+    ARGPARSE_PHASE,
+    TG_RENDER_PHASE,
+)
 
 from emergent.wire.axis._capability import (
     Capability,
     PydanticContext,
     ArgparseContext,
-    PydanticCompilable,
-    ArgparseCompilable,
     ArgparseKwargValue,
+    TelegrinderRenderContext,
 )
 
 if TYPE_CHECKING:
@@ -47,67 +51,87 @@ def to_pydantic(
 ) -> type["BaseModel"]:
     """Generate Pydantic model from dataclass + capabilities.
 
-    Uses Pydantic's FieldInfo.merge_field_infos directly — no wrappers.
+    Uses Annotated[type, Field(...)] for proper Pydantic v2 support.
     Capabilities modify FieldInfo via compile_pydantic().
+
+    Thin assembler over compile_fields + PYDANTIC_PHASE.
     """
+    phase = PYDANTIC_PHASE.with_handlers(handlers) if handlers else PYDANTIC_PHASE
+    compiled = compile_fields(cls, axes, [phase])
+    return _assemble_pydantic(cls, compiled, phase)
+
+
+def _assemble_pydantic(
+    cls: type,
+    compiled: list,
+    phase: object,
+) -> type["BaseModel"]:
+    """Assemble Pydantic model from compiled field results."""
+    from typing import Annotated
+
     try:
-        from pydantic import BaseModel
-        from pydantic.fields import FieldInfo
+        from pydantic import BaseModel, Field
     except ImportError:
         raise ImportError("pydantic required")
 
-    fields_dict = axes.schema(cls)
+    from emergent.wire.axis.schema.dialects.compose import ComposeCapability
+
     original_fields = {f.name: f for f in dc_fields(cls)}
+    annotations: dict[str, type] = {}
 
-    # Build annotations and field defaults for type() construction
-    annotations: dict[str, type | types.UnionType] = {}
-    field_infos: dict[str, FieldInfo] = {}
+    for fc in compiled:
+        ctx: PydanticContext = fc[phase]
+        schema_field_info = fc.info
 
-    for name, schema_field_info in fields_dict.items():
-        # Start with empty FieldInfo - capabilities will add constraints
-        ctx = PydanticContext(
-            field_name=name,
-            field_type=schema_field_info.base_type,
-            field_info=FieldInfo(),
-        )
+        # Skip compose.Node fields — resolved at runtime by nodnod, not from request body
+        if schema_field_info.has(ComposeCapability):
+            continue
 
-        # Apply capabilities
-        for cap in schema_field_info.capabilities:
-            cap_type = type(cap)
-            if handlers and cap_type in handlers:
-                ctx = handlers[cap_type](cap, ctx)
-            elif isinstance(cap, PydanticCompilable):
-                ctx = cap.compile_pydantic(ctx)
-
-        # Determine final type
-        actual_type: type | types.UnionType = ctx.field_type
+        # Determine base type
+        base_type: type | types.UnionType = ctx.field_type
         if schema_field_info.is_optional:
-            actual_type = ctx.field_type | None
+            base_type = ctx.field_type | None
+
+        # Build Field() kwargs from FieldInfo
+        field_kwargs: dict[str, object] = {}
+
+        # Copy constraints from ctx.field_info metadata
+        if ctx.field_info.metadata:
+            field_kwargs["metadata"] = list(ctx.field_info.metadata)
+
+        # Copy capability-set properties from compiled FieldInfo
+        if ctx.field_info.alias is not None:
+            field_kwargs["alias"] = ctx.field_info.alias
+        if ctx.field_info.json_schema_extra:
+            field_kwargs["json_schema_extra"] = ctx.field_info.json_schema_extra
+        if ctx.field_info.repr is not True:
+            field_kwargs["repr"] = ctx.field_info.repr
+        if ctx.field_info.deprecated:
+            field_kwargs["deprecated"] = ctx.field_info.deprecated
+        if ctx.field_info.description:
+            field_kwargs["description"] = ctx.field_info.description
 
         # Handle defaults from original dataclass field
+        name = fc.name
         orig_field = original_fields.get(name)
-        final_field_info = ctx.field_info
-
         if orig_field:
             if orig_field.default is not MISSING:
-                # Copy FieldInfo and set default (avoids deprecated merge_field_infos)
-                final_field_info = copy.deepcopy(final_field_info)
-                final_field_info.default = orig_field.default
+                field_kwargs["default"] = orig_field.default
             elif orig_field.default_factory is not MISSING:
-                # Copy and set default_factory
-                final_field_info = copy.deepcopy(final_field_info)
-                final_field_info.default_factory = orig_field.default_factory
+                field_kwargs["default_factory"] = orig_field.default_factory
             elif schema_field_info.is_optional:
-                # Optional without explicit default → default=None
-                final_field_info = copy.deepcopy(final_field_info)
-                final_field_info.default = None
+                field_kwargs["default"] = None
+        elif schema_field_info.is_optional:
+            field_kwargs["default"] = None
 
-        annotations[name] = actual_type
-        field_infos[name] = final_field_info
+        # Use Annotated[type, Field(...)] for proper Pydantic v2 model creation
+        if field_kwargs:
+            annotations[name] = Annotated[base_type, Field(**field_kwargs)]  # type: ignore[assignment]
+        else:
+            annotations[name] = base_type  # type: ignore[assignment]
 
-    # Build model via type() to avoid create_model's typing limitations
-    namespace: dict[str, FieldInfo | dict[str, type | types.UnionType] | str] = {
-        **field_infos,
+    # Build model via type() with Annotated annotations
+    namespace: dict[str, dict[str, type] | str] = {
         "__annotations__": annotations,
         "__module__": cls.__module__,
     }
@@ -134,12 +158,23 @@ def to_argparse_args(
     axes: Axes,
     handlers: Mapping[type[Capability], ArgparseHandler] | None = None,
 ) -> list[ArgSpec]:
-    """Generate argparse specs from dataclass or Pydantic model + capabilities."""
-    import dataclasses
-    from emergent.wire.axis.schema.dialects import cli as cli_dialect
-    from emergent.wire.axis._capability import argparse_arg
+    """Generate argparse specs from dataclass or Pydantic model + capabilities.
 
-    fields_dict = axes.schema(cls)
+    Thin assembler over compile_fields + ARGPARSE_PHASE.
+    """
+    phase = ARGPARSE_PHASE.with_handlers(handlers) if handlers else ARGPARSE_PHASE
+    compiled = compile_fields(cls, axes, [phase])
+    return _assemble_argparse(cls, compiled, phase)
+
+
+def _assemble_argparse(
+    cls: type,
+    compiled: list,
+    phase: object,
+) -> list[ArgSpec]:
+    """Assemble argparse specs from compiled field results."""
+    import dataclasses
+
     result: list[ArgSpec] = []
 
     # Get original dataclass fields if available (for defaults)
@@ -147,36 +182,16 @@ def to_argparse_args(
     if dataclasses.is_dataclass(cls):
         original_fields = {f.name: f for f in dc_fields(cls)}
 
-    for name, field_info in fields_dict.items():
-        ctx = ArgparseContext(field_name=name, field_type=field_info.base_type)
+    from emergent.wire.axis.schema.dialects.compose import ComposeCapability
 
-        for cap in field_info.capabilities:
-            cap_type = type(cap)
-            if handlers and cap_type in handlers:
-                ctx = handlers[cap_type](cap, ctx)
-            elif isinstance(cap, ArgparseCompilable):
-                ctx = cap.compile_argparse(ctx)
-            elif isinstance(cap, cli_dialect.Help):
-                ctx = argparse_arg(ctx, help=cap.text)
-            elif isinstance(cap, cli_dialect.Metavar):
-                ctx = argparse_arg(ctx, metavar=cap.name)
-            elif isinstance(cap, cli_dialect.Choices):
-                ctx = argparse_arg(ctx, choices=list(cap.values))
-            elif isinstance(cap, cli_dialect.Nargs):
-                ctx = argparse_arg(ctx, nargs=cap.count)
-            elif isinstance(cap, cli_dialect.Action):
-                ctx = argparse_arg(ctx, action=cap.action)
-            elif isinstance(cap, cli_dialect.Append):
-                ctx = argparse_arg(ctx, action="append")
-            elif isinstance(cap, cli_dialect.Count):
-                ctx = argparse_arg(ctx, action="count", default=0)
-            elif isinstance(cap, cli_dialect.Env):
-                import os
-                env_val = os.environ.get(cap.var)
-                if env_val is not None:
-                    ctx = argparse_arg(ctx, default=env_val)
-            elif isinstance(cap, cli_dialect.Required):
-                ctx = argparse_arg(ctx, required=True)
+    for fc in compiled:
+        ctx: ArgparseContext = fc[phase]
+        field_info = fc.info
+        name = fc.name
+
+        # Skip compose.Node fields — resolved at runtime by nodnod, not from CLI
+        if field_info.has(ComposeCapability):
+            continue
 
         kwargs = dict(ctx.kwargs)
         orig_field = original_fields.get(name)
@@ -186,17 +201,13 @@ def to_argparse_args(
         if orig_field and (orig_field.default is not MISSING or orig_field.default_factory is not MISSING):
             has_default = True
 
-        cli_caps = field_info.dialect("cli")
-        flag_cap = next((c for c in cli_caps if isinstance(c, cli_dialect.Flag)), None)
-        positional_cap = next((c for c in cli_caps if isinstance(c, cli_dialect.Positional)), None)
-
-        if positional_cap is not None:
-            arg_name = positional_cap.name or name
-            result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=True))
-        elif flag_cap is not None:
-            arg_name = flag_cap.names[0] if flag_cap.names else f"--{name.replace('_', '-')}"
-            if len(flag_cap.names) > 1:
-                kwargs["aliases"] = list(flag_cap.names[1:])
+        # Post-fold: read from ctx instead of re-querying capabilities
+        if ctx.is_positional:
+            result.append(ArgSpec(name=ctx.field_name, dest=name, kwargs=kwargs, is_positional=True))
+        elif ctx.arg_names is not None:
+            arg_name = ctx.arg_names[0]
+            if len(ctx.arg_names) > 1:
+                kwargs["aliases"] = list(ctx.arg_names[1:])
             if orig_field and orig_field.default is not MISSING:
                 default_val: ArgparseKwargValue = orig_field.default  # type: ignore[assignment]
                 kwargs["default"] = default_val
@@ -305,6 +316,23 @@ def to_datanode_from_context(
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Telegram Render Fields
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def to_telegram_fields(
+    cls: type,
+    axes: Axes,
+) -> list[TelegrinderRenderContext]:
+    """Generate Telegram render specs from dataclass + capabilities.
+
+    Thin assembler over compile_fields + TG_RENDER_PHASE.
+    """
+    compiled = compile_fields(cls, axes, [TG_RENDER_PHASE])
+    return [fc[TG_RENDER_PHASE] for fc in compiled]
+
+
 __all__ = (
     "to_pydantic",
     "to_argparse_args",
@@ -314,4 +342,5 @@ __all__ = (
     "to_datanode",
     "to_datanode_auto",
     "to_datanode_from_context",
+    "to_telegram_fields",
 )

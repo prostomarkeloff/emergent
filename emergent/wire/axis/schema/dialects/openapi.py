@@ -1,6 +1,8 @@
 """OpenAPI dialect — OpenAPI-specific capabilities.
 
 These are IGNORED by other compilers (SQLAlchemy, Pydantic, etc.).
+For cross-target capabilities (ReadOnly, WriteOnly, Deprecated, etc.)
+use universal capabilities from emergent.wire.axis.schema.
 
     from emergent.wire.axis.schema.dialects import openapi
 
@@ -12,13 +14,14 @@ These are IGNORED by other compilers (SQLAlchemy, Pydantic, etc.).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
-    from emergent.wire.axis._capability import OpenAPIContext
+    from emergent.wire.axis._capability import OpenAPIContext, OpenAPISchemaContext, JsonSchemaValue
 
 # Type for OpenAPI example values
 ExampleValue = str | int | float | bool | None | list["ExampleValue"] | dict[str, "ExampleValue"]
@@ -102,7 +105,10 @@ class Title(OpenAPICapability):
 
 @dataclass(frozen=True, slots=True)
 class Description(OpenAPICapability):
-    """Schema description."""
+    """OpenAPI-only description.
+
+    For cross-target descriptions, use universal Doc() instead.
+    """
     description: str
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
@@ -125,7 +131,10 @@ class Examples(OpenAPICapability):
 
 @dataclass(frozen=True, slots=True)
 class Default(OpenAPICapability):
-    """Default value in schema."""
+    """Default value in OpenAPI schema.
+
+    For Python-level defaults, use field(default=...) instead.
+    """
     value: ExampleValue
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
@@ -134,67 +143,31 @@ class Default(OpenAPICapability):
 
 
 @dataclass(frozen=True, slots=True)
-class ReadOnly(OpenAPICapability):
-    """Field is read-only."""
-
-    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        from emergent.wire.axis._capability import openapi_schema
-        return openapi_schema(ctx, readOnly=True)
-
-
-@dataclass(frozen=True, slots=True)
-class WriteOnly(OpenAPICapability):
-    """Field is write-only (e.g., password)."""
-
-    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        from emergent.wire.axis._capability import openapi_schema
-        return openapi_schema(ctx, writeOnly=True)
-
-
-@dataclass(frozen=True, slots=True)
-class Deprecated(OpenAPICapability):
-    """Mark field as deprecated."""
-
-    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        from emergent.wire.axis._capability import openapi_schema
-        return openapi_schema(ctx, deprecated=True)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Schema Composition
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True, slots=True)
-class Ref(OpenAPICapability):
-    """Explicit $ref to another schema.
-
-    Example:
-        address: Annotated[Address, openapi.Ref("#/components/schemas/Address")]
-    """
-    ref: str
-
-    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        from emergent.wire.axis._capability import openapi_schema
-        return openapi_schema(ctx, **{"$ref": self.ref})
-
-
-@dataclass(frozen=True, slots=True)
 class Discriminator(OpenAPICapability):
-    """Discriminator for polymorphic schemas.
+    """Polymorphism discriminator for inheritance.
 
     Example:
-        pet: Annotated[Pet, openapi.Discriminator("petType", {"dog": Dog, "cat": Cat})]
-    """
-    property_name: str
-    mapping: dict[str, type] | None = None
+        @schema_meta(Discriminator("type", {"dog": Dog, "cat": Cat}))
+        @dataclass
+        class Pet: ...
 
-    def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        from emergent.wire.axis._capability import openapi_schema, JsonSchemaValue
-        disc: dict[str, JsonSchemaValue] = {"propertyName": self.property_name}
+    OpenAPI: discriminator object
+    """
+
+    field: str
+    mapping: MappingProxyType[str, type]
+
+    def __init__(self, field: str, mapping: dict[str, type]) -> None:
+        object.__setattr__(self, "field", field)
+        object.__setattr__(self, "mapping", MappingProxyType(mapping))
+
+    def compile_openapi_schema(
+        self, ctx: "OpenAPISchemaContext"
+    ) -> "OpenAPISchemaContext":
+        disc: dict[str, "JsonSchemaValue"] = {"propertyName": self.field}
         if self.mapping:
             disc["mapping"] = {k: v.__name__ for k, v in self.mapping.items()}
-        return openapi_schema(ctx, discriminator=disc)
+        return replace(ctx, schema={**ctx.schema, "discriminator": disc})
 
 
 __all__ = (
@@ -209,10 +182,6 @@ __all__ = (
     "Description",
     "Examples",
     "Default",
-    "ReadOnly",
-    "WriteOnly",
-    "Deprecated",
-    # Composition
-    "Ref",
+    # Schema-level
     "Discriminator",
 )

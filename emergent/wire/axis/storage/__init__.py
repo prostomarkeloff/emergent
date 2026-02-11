@@ -53,7 +53,7 @@ from emergent.wire.axis.storage._capabilities import (
 )
 
 # Memory implementation
-from emergent.wire.axis.storage._memory import MemoryStorage
+from emergent.wire.axis.storage._memory import BaseTTLStorage, MemoryStorage
 
 # File implementation (persistent)
 from emergent.wire.axis.storage._file import FileStorage
@@ -89,6 +89,52 @@ from emergent.wire.axis.storage._pubsub import (
     pubsub,
 )
 
+# Lock Pattern
+from emergent.wire.axis.storage._lock import (
+    LockBackend,
+    LockBackendExtend,
+    Lock,
+    LockExtend,
+    lock,
+    lock_extend,
+)
+
+# Counter Pattern
+from emergent.wire.axis.storage._counter import (
+    CounterBackend,
+    CounterBackendFull,
+    Counter,
+    CounterFull,
+    counter,
+    counter_full,
+)
+
+# Result combinators
+from emergent.wire.axis.storage._result import (
+    map_option,
+    map_result,
+)
+
+# KV Composition Helpers
+from emergent.wire.axis.storage._compose import (
+    PrefixKV,
+    TieredKV,
+    FallbackKV,
+    ReadonlyKV,
+    prefix_kv,
+    tiered_kv,
+    fallback_kv,
+    readonly_kv,
+)
+
+# Explain
+from emergent.wire.axis.storage._explain import (
+    StorageExplainHandler,
+    storage_dict,
+    explain_storage,
+    STORAGE_EXPLAIN,
+)
+
 # Contrib backends
 from emergent.wire.axis.storage import contrib
 
@@ -116,6 +162,7 @@ __all__ = (
     "BatchDelete",
     "DeletePattern",
     # Memory
+    "BaseTTLStorage",
     "MemoryStorage",
     # File (persistent)
     "FileStorage",
@@ -142,6 +189,37 @@ __all__ = (
     "PubSubBackend",
     "PubSub",
     "pubsub",
+    # Lock Pattern
+    "LockBackend",
+    "LockBackendExtend",
+    "Lock",
+    "LockExtend",
+    "lock",
+    "lock_extend",
+    # Counter Pattern
+    "CounterBackend",
+    "CounterBackendFull",
+    "Counter",
+    "CounterFull",
+    "counter",
+    "counter_full",
+    # KV Composition
+    "PrefixKV",
+    "TieredKV",
+    "FallbackKV",
+    "ReadonlyKV",
+    "prefix_kv",
+    "tiered_kv",
+    "fallback_kv",
+    "readonly_kv",
+    # Result combinators
+    "map_option",
+    "map_result",
+    # Explain
+    "StorageExplainHandler",
+    "storage_dict",
+    "explain_storage",
+    "STORAGE_EXPLAIN",
     # Contrib
     "contrib",
 )

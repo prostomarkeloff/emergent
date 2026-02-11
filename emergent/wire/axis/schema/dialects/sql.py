@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
-    from emergent.wire.axis._capability import SQLAlchemyContext
+    from emergent.wire.axis._capability import SQLAlchemyContext, SQLAlchemyTableContext
 
 
 class SQLCapability(SchemaAxisCapability):
@@ -177,32 +177,78 @@ class ForeignKey(SQLCapability):
 
 @dataclass(frozen=True, slots=True)
 class TableName(SQLCapability):
-    """Override table name.
+    """Override SQL table name.
 
-    Table-level — no compile_sqlalchemy (read directly by table compiler).
+    SQL-specific — only affects SQLAlchemy table name.
+    Use SchemaName for multi-target (Pydantic title + OpenAPI + SQL).
+
+    Example:
+        @schema_meta(sql.TableName("user_accounts"))
+        @dataclass
+        class User: ...
     """
     name: str
 
+    def compile_sqlalchemy_table(
+        self, ctx: "SQLAlchemyTableContext"
+    ) -> "SQLAlchemyTableContext":
+        from emergent.wire.axis._capability import sqlalchemy_table
 
-@dataclass(frozen=True, slots=True)
-class CompositeIndex(SQLCapability):
-    """Index across multiple columns.
-
-    Table-level — no compile_sqlalchemy (read directly by table compiler).
-    """
-    columns: tuple[str, ...]
-    name: str | None = None
-    unique: bool = False
+        return sqlalchemy_table(ctx, table_name=self.name)
 
 
 @dataclass(frozen=True, slots=True)
 class CompositeUnique(SQLCapability):
-    """Unique constraint across multiple columns.
+    """Unique constraint across multiple fields.
 
-    Table-level — no compile_sqlalchemy (read directly by table compiler).
+    Example:
+        @schema_meta(CompositeUnique("email", "tenant_id"))
+        @dataclass
+        class User: ...
+
+    SQL: UNIQUE(email, tenant_id)
     """
-    columns: tuple[str, ...]
+
+    fields: tuple[str, ...]
     name: str | None = None
+
+    def __init__(self, *fields: str, name: str | None = None) -> None:
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "name", name)
+
+    def compile_sqlalchemy_table(
+        self, ctx: "SQLAlchemyTableContext"
+    ) -> "SQLAlchemyTableContext":
+        return replace(ctx, constraints=(*ctx.constraints, self.fields))
+
+
+@dataclass(frozen=True, slots=True)
+class CompositeIndex(SQLCapability):
+    """Index across multiple fields.
+
+    Example:
+        @schema_meta(CompositeIndex("status", "created_at", name="idx_status_date"))
+        @dataclass
+        class Order: ...
+
+    SQL: CREATE INDEX
+    """
+
+    fields: tuple[str, ...]
+    name: str | None = None
+    unique: bool = False
+
+    def __init__(
+        self, *fields: str, name: str | None = None, unique: bool = False
+    ) -> None:
+        object.__setattr__(self, "fields", fields)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "unique", unique)
+
+    def compile_sqlalchemy_table(
+        self, ctx: "SQLAlchemyTableContext"
+    ) -> "SQLAlchemyTableContext":
+        return replace(ctx, indexes=(*ctx.indexes, self.fields))
 
 
 __all__ = (

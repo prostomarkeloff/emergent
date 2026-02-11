@@ -47,9 +47,11 @@ Levels 1-5 are libraries. Level 6 is your code. Juniors write Level 6. LLMs gene
 
 | Document | Purpose |
 |----------|---------|
+| [Introduction](introduction/) | The six axes model and why emergent exists |
 | [Philosophy](philosophy.md) | Why programs should be graphs |
 | [Guide](guide.md) | Build a checkout system step by step |
 | [Reference](reference.md) | API for code generation |
+| [Extending](extending/) | Add support for new frameworks |
 
 ---
 
