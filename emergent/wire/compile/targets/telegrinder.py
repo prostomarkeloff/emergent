@@ -203,6 +203,19 @@ def enhance_command_with_args(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _inject_tg_context(scope: Scope, ctx: Context) -> None:
+    """Inject telegrinder context into scope for nodnod composition.
+
+    When ``per_event_scope`` is already an ancestor, Update and API are
+    reachable through the parent chain — only Context is added.
+    Otherwise Update and API are injected explicitly.
+    """
+    if not scope.has_parent(ctx.per_event_scope):
+        scope.inject(Update, ctx.update)
+        scope.inject(API, ctx.api)
+    scope.inject(Context, ctx)
+
+
 async def compose_store_key(
     key_node: type,
     agent_cls: type[Agent],
@@ -226,11 +239,10 @@ async def compose_store_key(
             return str(value)
         raise RuntimeError(f"Failed to compose key_node: {key_node.__name__}")
 
-    new_scope = scope_layer.parent.create_child("tg-store-key") if scope_layer else Scope()
+    parent = scope_layer.parent if scope_layer else ctx.per_event_scope
+    new_scope = parent.create_child("tg-store-key")
     async with new_scope:
-        new_scope.inject(Context, ctx)
-        new_scope.inject(Update, ctx.update)
-        new_scope.inject(API, ctx.api)
+        _inject_tg_context(new_scope, ctx)
 
         composer = Composer.create(new_scope, agent_cls)
         success, value = await composer.compose(key_node)
@@ -269,11 +281,10 @@ async def _compose_node(
         composer = Composer.create(scope, agent_cls)
         return await composer.compose(compose_type)
 
-    new_scope = scope_layer.parent.create_child("tg-compose") if scope_layer else Scope()
+    parent = scope_layer.parent if scope_layer else ctx.per_event_scope
+    new_scope = parent.create_child("tg-compose")
     async with new_scope:
-        new_scope.inject(Context, ctx)
-        new_scope.inject(Update, ctx.update)
-        new_scope.inject(API, ctx.api)
+        _inject_tg_context(new_scope, ctx)
         composer = Composer.create(new_scope, agent_cls)
         return await composer.compose(compose_type)
 
@@ -420,9 +431,7 @@ def wrap_rrc_telegrinder(
 
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
-            scope.inject(Context, ctx)
-            scope.inject(Update, ctx.update)
-            scope.inject(API, ctx.api)
+            _inject_tg_context(scope, ctx)
 
         response = await execute_rrc_unified(
             handler=handler,
@@ -466,14 +475,11 @@ class HasActiveFlowState(ABCRule):
 
     async def check(self, ctx: Context) -> bool:
         try:
-            scope = Scope()
+            # Use per_event_scope as parent — it already has Update & API
+            # injected by telegrinder's dispatch.  We only add Context
+            # (same as telegrinder's own run_agent does for local scopes).
+            scope = ctx.per_event_scope.create_child("check-active-flow")
             scope.inject(Context, ctx)
-            scope.inject(Update, ctx.update)
-            scope.inject(API, ctx.api)
-            update_cute = ctx.get("update_cute")
-            if update_cute is not None:
-                incoming = update_cute.incoming_update
-                scope.inject(type(incoming), incoming)
 
             store_key = await compose_store_key(
                 self.key_node, self._agent_cls, ctx, scope=scope,
@@ -483,7 +489,7 @@ class HasActiveFlowState(ABCRule):
                     return True
                 case _:
                     return False
-        except RuntimeError:
+        except Exception:
             return False
 
 
@@ -517,29 +523,17 @@ def wrap_stateful_telegrinder(
         # Transitions that declare ``scope: Scope`` receive this scope,
         # and nodnod node composition reuses it instead of creating ad-hoc ones.
         layer = axes.scope_layer
-        scope = layer.parent.create_child("tg-stateful") if layer else Scope()
+        parent = layer.parent if layer else ctx.per_event_scope
+        scope = parent.create_child("tg-stateful")
         async with scope:
-            scope.inject(Context, ctx)
-            scope.inject(Update, ctx.update)
-            scope.inject(API, ctx.api)
-            # Inject incoming cute type so transitions can receive it
-            update_cute = ctx.get("update_cute")
-            if update_cute is not None:
-                incoming = update_cute.incoming_update
-                scope.inject(type(incoming), incoming)
+            _inject_tg_context(scope, ctx)
 
             store_key = await compose_store_key(
                 codec.key_node, agent_cls, ctx, scope=scope,
             )
 
             def inject_done_scope(done_scope: Scope) -> None:
-                done_scope.inject(Context, ctx)
-                done_scope.inject(Update, ctx.update)
-                done_scope.inject(API, ctx.api)
-                # Inject incoming cute type so finish() deps (UserId, etc.) can compose
-                if update_cute is not None:
-                    incoming = update_cute.incoming_update
-                    done_scope.inject(type(incoming), incoming)
+                _inject_tg_context(done_scope, ctx)
 
             async def _resolve() -> tuple[Any, dict[str, Any]] | None:
                 return await resolve_transition(
@@ -600,13 +594,7 @@ def wrap_delegate_telegrinder(
 
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
-            scope.inject(Context, ctx)
-            scope.inject(Update, ctx.update)
-            scope.inject(API, ctx.api)
-            # Inject incoming cute type (MessageCute / CallbackQueryCute)
-            # so delegate handlers can receive it via resolve_handler_params.
-            incoming = ctx.update_cute.incoming_update
-            scope.inject(type(incoming), incoming)
+            _inject_tg_context(scope, ctx)
 
         result = await execute_delegate_unified(
             handler=handler,
