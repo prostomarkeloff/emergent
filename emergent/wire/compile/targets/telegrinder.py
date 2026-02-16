@@ -206,13 +206,18 @@ def enhance_command_with_args(
 def _inject_tg_context(scope: Scope, ctx: Context) -> None:
     """Inject telegrinder context into scope for nodnod composition.
 
-    When ``per_event_scope`` is already an ancestor, Update and API are
-    reachable through the parent chain — only Context is added.
-    Otherwise Update and API are injected explicitly.
+    When ``per_event_scope`` is already an ancestor, all values are reachable
+    through the parent chain — only Context is added.
+
+    Otherwise, merges per_event_scope into this scope.  per_event_scope holds
+    Update, API, and all PER_EVENT composed nodes (MessageCute, etc.).
+    Values are re-keyed by ``value.cls`` so that ``scope.retrieve(MessageCute)``
+    finds what telegrinder already composed.
     """
     if not scope.has_parent(ctx.per_event_scope):
-        scope.inject(Update, ctx.update)
-        scope.inject(API, ctx.api)
+        for key, value in ctx.per_event_scope.items():
+            if key is not Scope:
+                scope[value.cls] = value
     scope.inject(Context, ctx)
 
 
@@ -475,16 +480,14 @@ class HasActiveFlowState(ABCRule):
 
     async def check(self, ctx: Context) -> bool:
         try:
-            # Use per_event_scope as parent — it already has Update & API
-            # injected by telegrinder's dispatch.  We only add Context
-            # (same as telegrinder's own run_agent does for local scopes).
             scope = ctx.per_event_scope.create_child("check-active-flow")
             scope.inject(Context, ctx)
 
             store_key = await compose_store_key(
                 self.key_node, self._agent_cls, ctx, scope=scope,
             )
-            match await self.store.get(store_key):
+            result = await self.store.get(store_key)
+            match result:
                 case Ok(Some(_)):
                     return True
                 case _:
@@ -547,6 +550,7 @@ def wrap_stateful_telegrinder(
                 inject_scope=inject_done_scope,
                 format_response=_format_tg_response,
                 axes=axes,
+                parent_scope=scope,
             )
         return response
 

@@ -20,9 +20,12 @@ All behavior is unified here. Adapters just provide:
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from nodnod import Scope
+
+logger = logging.getLogger("emergent.compile")
 
 from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
@@ -104,35 +107,39 @@ async def execute_rrc_unified(
 
     layer = axes.scope_layer
     scope = layer.parent.create_child("rrc") if layer else Scope()
-    async with scope:
-        # 1. Inject framework context
-        result = inject_scope(scope)
-        if result is not None and hasattr(result, "__await__"):
-            await result
+    try:
+        async with scope:
+            # 1. Inject framework context
+            result = inject_scope(scope)
+            if result is not None and hasattr(result, "__await__"):
+                await result
 
-        # Compute mapped_scopes from family
-        mapped = _family_mapped(layer, scope)
+            # Compute mapped_scopes from family
+            mapped = _family_mapped(layer, scope)
 
-        # Compose request-tier nodes after framework injection
-        if layer and layer.compose:
+            # Compose request-tier nodes after framework injection
+            if layer and layer.compose:
+                composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
+                await composer.compose_batch(set(layer.compose))
+
             composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
-            await composer.compose_batch(set(layer.compose))
 
-        composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
+            # 2. Build request using unified function
+            request = await build_request(
+                request_cls=req_cls,
+                get_value=get_value,
+                agent_cls=composer.agent_cls,
+                scope=scope,
+            )
 
-        # 2. Build request using unified function
-        request = await build_request(
-            request_cls=req_cls,
-            get_value=get_value,
-            agent_cls=composer.agent_cls,
-            scope=scope,
-        )
+            # 3. Inject request for enrichers
+            scope.inject(req_cls, request)
 
-        # 3. Inject request for enrichers
-        scope.inject(req_cls, request)
-
-        # 4. Execute with enrichers
-        response = await execute_rrc(handler, request, scope)
+            # 4. Execute with enrichers
+            response = await execute_rrc(handler, request, scope)
+    except Exception:
+        logger.exception("RRC execution failed for %s", req_cls.__name__)
+        raise
 
     # 5. Apply response capabilities
     response = apply_response_capabilities(response, handler.capabilities)
@@ -156,6 +163,7 @@ async def execute_stateful_unified(
     inject_scope: ScopeInjector,
     format_response: ResponseFormatter | None = None,
     axes: Axes | None = None,
+    parent_scope: Scope | None = None,
 ) -> tuple[Any, bool]:
     """Unified stateful turn execution.
 
@@ -165,51 +173,67 @@ async def execute_stateful_unified(
         resolve_transition: Async function returning (method, composed_params) or None
         inject_scope: Inject framework types into scope
         format_response: Optional response formatter
+        parent_scope: Optional parent scope for the done phase. When provided,
+            the done scope inherits from it so application-level nodes
+            (e.g. ConfigNode) remain composable.
 
     Returns:
         (response, is_done)
     """
     codec = handler.codec
 
-    # 1. Load state
-    state = await load_state(codec, store_key)
+    try:
+        # 1. Load state
+        state = await load_state(codec, store_key)
 
-    # 2. Resolve transition
-    resolved = await resolve_transition()
-    if resolved is None:
-        raise RuntimeError("No transition resolvable")
+        # 2. Resolve transition
+        resolved = await resolve_transition()
+        if resolved is None:
+            raise RuntimeError("No transition resolvable")
 
-    method, composed = resolved
+        method, composed = resolved
 
-    # 3. Execute transition
-    new_state, response, is_terminal = await execute_stateful_turn(
-        handler, state, method, composed
-    )
+        # 3. Execute transition
+        new_state, response, is_terminal = await execute_stateful_turn(
+            handler, state, method, composed
+        )
 
-    # 4. Continue or Done
-    if not is_terminal:
-        await save_state(codec, store_key, state, new_state)
-        if response is not None and format_response is not None:
-            response = format_response(
-                apply_response_capabilities(response, handler.capabilities)
-            )
-        return response, False
+        # 4. Continue or Done
+        if not is_terminal:
+            await save_state(codec, store_key, state, new_state)
+            if response is not None and format_response is not None:
+                response = format_response(
+                    apply_response_capabilities(response, handler.capabilities)
+                )
+            return response, False
 
-    # 5. Cancelled — delete state, skip Op execution
-    if isinstance(new_state, Cancelled):
+        # 5. Cancelled — delete state, skip Op execution
+        if isinstance(new_state, Cancelled):
+            await delete_state(codec, store_key)
+            return response, True
+
+        # 6. Done — execute with enrichers
+        layer = axes.scope_layer if axes else None
+        if layer:
+            done_scope = layer.parent.create_child("stateful-done")
+        elif parent_scope is not None:
+            done_scope = parent_scope.create_child("stateful-done")
+        else:
+            done_scope = Scope()
+        async with done_scope:
+            result = inject_scope(done_scope)
+            if result is not None and hasattr(result, "__await__"):
+                await result
+            final = await execute_stateful_done(handler, new_state, done_scope)
+
         await delete_state(codec, store_key)
-        return response, True
-
-    # 6. Done — execute with enrichers
-    layer = axes.scope_layer if axes else None
-    done_scope = layer.parent.create_child("stateful-done") if layer else Scope()
-    async with done_scope:
-        result = inject_scope(done_scope)
-        if result is not None and hasattr(result, "__await__"):
-            await result
-        final = await execute_stateful_done(handler, new_state, done_scope)
-
-    await delete_state(codec, store_key)
+    except Exception:
+        logger.exception(
+            "Stateful execution failed for %s (store_key=%s)",
+            codec.flow.__name__,
+            store_key,
+        )
+        raise
 
     # 7. Apply response capabilities
     final = apply_response_capabilities(final, handler.capabilities)
@@ -296,33 +320,37 @@ async def execute_delegate_unified(
 
     layer = axes.scope_layer if axes else None
     scope = layer.parent.create_child("delegate") if layer else Scope()
-    async with scope:
-        # 1. Inject framework context
-        result = inject_scope(scope)
-        if result is not None and hasattr(result, "__await__"):
-            await result
+    try:
+        async with scope:
+            # 1. Inject framework context
+            result = inject_scope(scope)
+            if result is not None and hasattr(result, "__await__"):
+                await result
 
-        # Compute mapped_scopes from family
-        mapped = _family_mapped(layer, scope)
+            # Compute mapped_scopes from family
+            mapped = _family_mapped(layer, scope)
 
-        # Compose request-tier nodes after framework injection
-        if layer and layer.compose:
-            pre_composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
-            await pre_composer.compose_batch(set(layer.compose))
+            # Compose request-tier nodes after framework injection
+            if layer and layer.compose:
+                pre_composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
+                await pre_composer.compose_batch(set(layer.compose))
 
-        composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
+            composer = Composer.create(scope, agent_cls, mapped_scopes=mapped)
 
-        # 2. Core execution — resolve params via compose dialect
-        async def core(s: Scope) -> Any:
-            c = Composer.create(s, composer.agent_cls, mapped_scopes=mapped)
-            kwargs = await c.resolve_params(original)
-            return await _call_delegate(original, **kwargs)
+            # 2. Core execution — resolve params via compose dialect
+            async def core(s: Scope) -> Any:
+                c = Composer.create(s, composer.agent_cls, mapped_scopes=mapped)
+                kwargs = await c.resolve_params(original)
+                return await _call_delegate(original, **kwargs)
 
-        # 3. Execute with enrichers
-        if enrichers:
-            response = await chain_enrichers(enrichers, core)(scope)
-        else:
-            response = await core(scope)
+            # 3. Execute with enrichers
+            if enrichers:
+                response = await chain_enrichers(enrichers, core)(scope)
+            else:
+                response = await core(scope)
+    except Exception:
+        logger.exception("Delegate execution failed for %s", original)
+        raise
 
     # 4. Apply response capabilities
     response = apply_response_capabilities(response, handler.capabilities)

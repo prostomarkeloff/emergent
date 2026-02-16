@@ -99,7 +99,7 @@ async def resolve_handler_params(
                     pass  # Skip if not in scope
 
         else:
-            # Fallback: try to get by type from scope
+            # Fallback: try to get by type from scope, then compose as node
             base_type = _get_base_type(param_type)
             if base_type is not None:
                 inject_result = scope.retrieve(base_type)
@@ -107,7 +107,10 @@ async def resolve_handler_params(
                     case Some(v):
                         result[name] = v.value
                     case Nothing():
-                        pass  # Skip if not in scope
+                        # Type not in scope — try composing as nodnod node
+                        success, value = await _compose_node(base_type, scope, agent_cls)
+                        if success:
+                            result[name] = value
 
     return result
 
