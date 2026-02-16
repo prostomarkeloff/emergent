@@ -731,7 +731,7 @@ def _generate_flow_class(
         """Build a send function for message transitions based on ShowMode."""
         if _show_mode is ShowMode.EDIT:
             async def _send(text: str, kb: AnyKeyboard | None) -> int:
-                if kb is not None and not isinstance(kb, InlineKeyboard):
+                if kb is not None and not isinstance(kb.get_markup(), InlineKeyboardMarkup):
                     # Reply keyboard can't be used with edit — fall back to send
                     warnings.warn(
                         "ShowMode.EDIT: widget returned a reply keyboard "
@@ -797,7 +797,7 @@ def _generate_flow_class(
         """Build a send function for callback transitions based on ShowMode."""
         if _show_mode is ShowMode.EDIT:
             async def _send_cb(text: str, kb: AnyKeyboard | None) -> int:
-                if kb is not None and not isinstance(kb, InlineKeyboard):
+                if kb is not None and not isinstance(kb.get_markup(), InlineKeyboardMarkup):
                     # Reply keyboard can't be used with edit — fall back to send
                     warnings.warn(
                         "ShowMode.EDIT: widget returned a reply keyboard "
@@ -1038,7 +1038,7 @@ def _generate_flow_class(
                 if _shows_progress:
                     text = _progress_prefix(step) + text
                 if kb is not None:
-                    if not isinstance(kb, InlineKeyboard):
+                    if not isinstance(kb.get_markup(), InlineKeyboardMarkup):
                         # Reply keyboard can't be used with edit — fall back to send
                         warnings.warn(
                             "ShowMode.EDIT: widget returned a reply keyboard "
