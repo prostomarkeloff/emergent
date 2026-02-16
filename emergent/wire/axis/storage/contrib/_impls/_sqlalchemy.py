@@ -60,7 +60,6 @@ from sqlalchemy.engine import CursorResult
 from kungfu import Result, Ok, Error, Option, Some, Nothing
 
 from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
-from emergent.wire.compile._core import fold_field
 from emergent.wire.axis._capability import (
     SQLAlchemyContext, SQLAlchemyCompilable,
     ConstraintsContext, ConstraintsCompilable,
@@ -138,6 +137,8 @@ def _python_type_to_sqlalchemy(
 
 def _get_identity_field(fields: dict[str, FieldInfo]) -> str | None:
     """Find field marked with Identity capability via fold."""
+    from emergent.wire.compile._core import fold_field
+
     for name, info in fields.items():
         ctx = fold_field(
             info,
@@ -187,6 +188,8 @@ def compile_model(
     Returns:
         SQLAlchemy model class
     """
+    from emergent.wire.compile._core import fold_field
+
     if not dataclasses.is_dataclass(entity):
         raise TypeError(f"{entity} must be a dataclass")
 

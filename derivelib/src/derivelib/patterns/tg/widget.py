@@ -2030,6 +2030,49 @@ def options(field_name: str) -> Callable[[F], F]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Either — widget combinator
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class Either:
+    """Try primary widget, fall back to secondary on Reject.
+
+        phone: Annotated[str, Either(
+            ContactInput("Share phone:"),
+            TextInput("Or type it:"),
+        )]
+    """
+
+    primary: FlowWidget
+    secondary: FlowWidget
+
+    @property
+    def prompt(self) -> str:
+        return self.primary.prompt
+
+    @property
+    def needs_callback(self) -> bool:
+        return self.primary.needs_callback or self.secondary.needs_callback
+
+    async def render(self, ctx: WidgetContext) -> tuple[str, AnyKeyboard | None]:
+        text, kb = await self.primary.render(ctx)
+        return f"{text}\n\n{self.secondary.prompt}", kb
+
+    async def handle_message(self, message: MessageCute, ctx: WidgetContext) -> WidgetResult:
+        result = await self.primary.handle_message(message, ctx)
+        if isinstance(result, Reject):
+            return await self.secondary.handle_message(message, ctx)
+        return result
+
+    async def handle_callback(self, value: str, ctx: WidgetContext) -> WidgetResult:
+        result = await self.primary.handle_callback(value, ctx)
+        if isinstance(result, Reject):
+            return await self.secondary.handle_callback(value, ctx)
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Exports
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2102,6 +2145,8 @@ __all__ = (
     "OPTIONS_ENTRIES_ATTR",
     # Conditional
     "Case",
+    # Combinator
+    "Either",
     # Widget helpers (from uilib.helpers)
     "reject_text",
     "no_options_reject",
