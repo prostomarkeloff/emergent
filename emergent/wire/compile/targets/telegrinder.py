@@ -466,7 +466,18 @@ class HasActiveFlowState(ABCRule):
 
     async def check(self, ctx: Context) -> bool:
         try:
-            store_key = await compose_store_key(self.key_node, self._agent_cls, ctx)
+            scope = Scope()
+            scope.inject(Context, ctx)
+            scope.inject(Update, ctx.update)
+            scope.inject(API, ctx.api)
+            update_cute = ctx.get("update_cute")
+            if update_cute is not None:
+                incoming = update_cute.incoming_update
+                scope.inject(type(incoming), incoming)
+
+            store_key = await compose_store_key(
+                self.key_node, self._agent_cls, ctx, scope=scope,
+            )
             match await self.store.get(store_key):
                 case Ok(Some(_)):
                     return True
