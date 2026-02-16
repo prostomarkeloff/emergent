@@ -30,6 +30,7 @@ from typing import Any, Callable, cast
 
 from kungfu import Ok, Some, Nothing
 from telegrinder.bot.cute_types.base import BaseCute
+from telegrinder.bot.cute_types.callback_query import CallbackQueryCute
 from telegrinder.bot.cute_types.message import MessageCute
 from telegrinder.bot.dispatch import Dispatch
 from telegrinder.bot.dispatch.context import Context
@@ -58,16 +59,40 @@ from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
 from emergent.wire.compile._core import Axes, fold_field, fold
 from emergent.wire.compile._target import CodecAdapter, TargetCompiler
-from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
-from emergent.wire.compile._request import compose_node_value
-from emergent.wire.compile._stateful import (
-    execute_stateful_turn,
-    execute_stateful_done,
-    load_state,
-    save_state,
-    delete_state,
+from emergent.wire.compile._execute import (
+    execute_rrc_unified,
+    execute_immediate_unified,
+    execute_stateful_unified,
 )
+from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
+from emergent.graph._family import ScopeFamily
 from emergent.wire.axis.schema._inspect import inspect_dataclass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Response Formatting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Types that telegrinder's return manager already handles natively.
+_PASSTHROUGH_TYPES = (str, int, float, bool, bytes, dict, list, tuple, type(None))
+
+
+def _format_tg_response(response: object) -> object:
+    """Convert response to str for telegrinder's return manager.
+
+    Only converts types that:
+    1. Are NOT primitives/collections (return manager handles those)
+    2. Are NOT from telegrinder itself (HTML etc. have dedicated managers)
+    3. Define a custom __str__ (not the default object.__str__)
+    """
+    tp = type(response)
+    if tp in _PASSTHROUGH_TYPES:
+        return response
+    if getattr(tp, "__module__", "").startswith("telegrinder"):
+        return response
+    if tp.__str__ is not object.__str__:
+        return str(response)
+    return response
 from emergent.wire.axis._capability import (
     TelegrinderInputCompilable, TelegrinderInputContext,
     TelegrinderHandlerContext, TelegrinderCompilable,
@@ -182,60 +207,75 @@ async def compose_store_key(
     key_node: type,
     agent_cls: type[Agent],
     ctx: Context,
+    *,
+    scope: Scope | None = None,
+    scope_layer: ScopeLayer | None = None,
 ) -> str:
     """Compose key_node to get store key string.
 
     Uses nodnod's agent system with Context and Update injected into scope.
+    When *scope* is provided, reuses it instead of creating a new one.
+    When *scope_layer* is provided, creates a child of the app scope.
     """
-    agent = agent_cls.build({key_node})
+    from emergent.graph._compose import Composer
 
-    async with Scope() as scope:
-        # Inject Context, Update, and API so nodes can access them
-        scope.inject(Context, ctx)
-        scope.inject(Update, ctx.update)
-        scope.inject(API, ctx.api)
+    if scope is not None:
+        composer = Composer.create(scope, agent_cls)
+        success, value = await composer.compose(key_node)
+        if success:
+            return str(value)
+        raise RuntimeError(f"Failed to compose key_node: {key_node.__name__}")
 
-        await agent.run(local_scope=scope, mapped_scopes={})
+    new_scope = scope_layer.parent.create_child("tg-store-key") if scope_layer else Scope()
+    async with new_scope:
+        new_scope.inject(Context, ctx)
+        new_scope.inject(Update, ctx.update)
+        new_scope.inject(API, ctx.api)
 
-        result = scope.retrieve(key_node)
-        match result:
-            case Some(value):
-                return str(value.value)
-            case Nothing():
-                raise RuntimeError(f"Failed to compose key_node: {key_node.__name__}")
+        composer = Composer.create(new_scope, agent_cls)
+        success, value = await composer.compose(key_node)
+        if success:
+            return str(value)
+        raise RuntimeError(f"Failed to compose key_node: {key_node.__name__}")
 
 
 def _get_cute_value(compose_type: type, update_cute: Any) -> tuple[bool, Any]:
-    """Extract cute type value from update_cute."""
+    """Extract cute type value from update_cute via incoming_update."""
     if update_cute is None:
         return False, "no update_cute"
 
-    is_message = compose_type is MessageCute or (
-        hasattr(compose_type, "__name__") and "Message" in compose_type.__name__
-    )
-    if is_message:
-        cute_value = update_cute.message
-        if cute_value is not None:
-            return True, cute_value.unwrap()
-        return False, "no message"
-
-    return False, f"unsupported cute: {compose_type}"
+    incoming = update_cute.incoming_update
+    if isinstance(incoming, compose_type):
+        return True, incoming
+    return False, f"update is {type(incoming).__name__}, not {compose_type.__name__}"
 
 
 async def _compose_node(
     compose_type: type,
     agent_cls: type[Agent],
     ctx: Context,
+    *,
+    scope: Scope | None = None,
+    scope_layer: ScopeLayer | None = None,
 ) -> tuple[bool, Any]:
     """Compose nodnod node with Context and Update injected.
 
-    Delegates to unified compose_node_value() with telegrinder-specific scope setup.
+    When *scope* is provided, reuses it instead of creating a new one.
+    When *scope_layer* is provided, creates a child of the app scope.
     """
-    async with Scope() as scope:
-        scope.inject(Context, ctx)
-        scope.inject(Update, ctx.update)
-        scope.inject(API, ctx.api)
-        return await compose_node_value(compose_type, agent_cls, scope)
+    from emergent.graph._compose import Composer
+
+    if scope is not None:
+        composer = Composer.create(scope, agent_cls)
+        return await composer.compose(compose_type)
+
+    new_scope = scope_layer.parent.create_child("tg-compose") if scope_layer else Scope()
+    async with new_scope:
+        new_scope.inject(Context, ctx)
+        new_scope.inject(Update, ctx.update)
+        new_scope.inject(API, ctx.api)
+        composer = Composer.create(new_scope, agent_cls)
+        return await composer.compose(compose_type)
 
 
 async def compose_param(
@@ -245,11 +285,21 @@ async def compose_param(
     agent_cls: type[Agent],
     ctx: Context,
     update_cute: Any,
+    *,
+    scope: Scope | None = None,
 ) -> Any:
     """Compose single __transition__ parameter.
 
-    Handles Context, Cute types, and nodnod nodes.
+    Handles Scope, Context, Cute types, and nodnod nodes.
+    When *scope* is provided, threads it to nodnod composition and
+    resolves ``scope: Scope`` params directly.
     """
+    # Thread the compiler's scope to transitions that request it
+    if compose_type is Scope:
+        if scope is not None:
+            return scope
+        return wrap(original_type, False, "no scope available")
+
     is_context = compose_type is Context
     try:
         is_cute = issubclass(compose_type, BaseCute)
@@ -265,7 +315,7 @@ async def compose_param(
         return wrap(original_type, success, value)
 
     if is_node:
-        success, value = await _compose_node(compose_type, agent_cls, ctx)
+        success, value = await _compose_node(compose_type, agent_cls, ctx, scope=scope)
         return wrap(original_type, success, value)
 
     # For non-node types, try to get from context
@@ -280,8 +330,14 @@ async def try_compose_transition(
     method: Callable[..., Any],
     agent_cls: type[Agent],
     ctx: Context,
+    *,
+    scope: Scope | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Try to compose params for transition. Returns (composed, all_satisfied)."""
+    """Try to compose params for transition. Returns (composed, all_satisfied).
+
+    When *scope* is provided, threads it to compose_param for nodnod
+    composition reuse and ``scope: Scope`` resolution.
+    """
     from kungfu import Option, Result
     from typing import get_origin
 
@@ -294,9 +350,14 @@ async def try_compose_transition(
         origin = get_origin(original_type)
         is_optional = origin is Option or origin is Result
 
-        result = await compose_param(
-            name, original_type, compose_type, agent_cls, ctx, update_cute
-        )
+        try:
+            result = await compose_param(
+                name, original_type, compose_type, agent_cls, ctx, update_cute,
+                scope=scope,
+            )
+        except RuntimeError:
+            all_satisfied = False
+            break
         composed[name] = result
 
         if not is_optional:
@@ -310,10 +371,17 @@ async def resolve_transition(
     transitions: list[Callable[..., Any]],
     agent_cls: type[Agent],
     ctx: Context,
+    *,
+    scope: Scope | None = None,
 ) -> tuple[Callable[..., Any], dict[str, Any]] | None:
-    """Resolve first transition whose deps are satisfiable."""
+    """Resolve first transition whose deps are satisfiable.
+
+    When *scope* is provided, threads it through to transitions.
+    """
     for method in transitions:
-        composed, satisfied = await try_compose_transition(method, agent_cls, ctx)
+        composed, satisfied = await try_compose_transition(
+            method, agent_cls, ctx, scope=scope,
+        )
         if satisfied:
             return method, composed
     return None
@@ -361,6 +429,7 @@ def wrap_rrc_telegrinder(
             axes=axes,
             get_value=lambda name: ctx.get(name),
             inject_scope=inject_scope,
+            format_response=_format_tg_response,
         )
 
         # EditMessage capability — edit instead of sending new message
@@ -433,31 +502,44 @@ def wrap_stateful_telegrinder(
     transitions = get_transitions(codec.flow)
 
     async def _handler(ctx: Context) -> object:
-        store_key = await compose_store_key(codec.key_node, agent_cls, ctx)
-        state = await load_state(codec, store_key)
+        # Single scope for the entire handler — no duplicates.
+        # Transitions that declare ``scope: Scope`` receive this scope,
+        # and nodnod node composition reuses it instead of creating ad-hoc ones.
+        layer = axes.scope_layer
+        scope = layer.parent.create_child("tg-stateful") if layer else Scope()
+        async with scope:
+            scope.inject(Context, ctx)
+            scope.inject(Update, ctx.update)
+            scope.inject(API, ctx.api)
+            # Inject incoming cute type so transitions can receive it
+            update_cute = ctx.get("update_cute")
+            if update_cute is not None:
+                incoming = update_cute.incoming_update
+                scope.inject(type(incoming), incoming)
 
-        resolved = await resolve_transition(transitions, agent_cls, ctx)
-        if resolved is None:
-            raise RuntimeError("No transition resolvable")
+            store_key = await compose_store_key(
+                codec.key_node, agent_cls, ctx, scope=scope,
+            )
 
-        method, composed = resolved
+            def inject_done_scope(done_scope: Scope) -> None:
+                done_scope.inject(Context, ctx)
+                done_scope.inject(Update, ctx.update)
+                done_scope.inject(API, ctx.api)
 
-        new_state, response, is_terminal = await execute_stateful_turn(
-            handler, state, method, composed
-        )
+            async def _resolve() -> tuple[Any, dict[str, Any]] | None:
+                return await resolve_transition(
+                    transitions, agent_cls, ctx, scope=scope,
+                )
 
-        if not is_terminal:
-            await save_state(codec, store_key, state, new_state)
-            return response
-
-        async with Scope() as done_scope:
-            done_scope.inject(Context, ctx)
-            done_scope.inject(Update, ctx.update)
-            done_scope.inject(API, ctx.api)
-            final = await execute_stateful_done(handler, state, done_scope)
-
-        await delete_state(codec, store_key)
-        return final
+            response, _is_done = await execute_stateful_unified(
+                handler=handler,
+                store_key=store_key,
+                resolve_transition=_resolve,
+                inject_scope=inject_done_scope,
+                format_response=_format_tg_response,
+                axes=axes,
+            )
+        return response
 
     # Rule: trigger_rules OR has_active_state
     rule = create_stateful_rule(trigger, codec)
@@ -477,7 +559,7 @@ def wrap_immediate_telegrinder(
     """Wrap Immediate codecs for telegrinder."""
 
     async def _handler(ctx: Context) -> object:
-        return execute_immediate_unified(handler)
+        return execute_immediate_unified(handler, format_response=_format_tg_response)
 
     return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
 
@@ -499,16 +581,31 @@ def wrap_delegate_telegrinder(
     """Wrap DelegateCodec handler for telegrinder."""
     from emergent.wire.compile._execute import execute_delegate_unified
 
+    tg_ctx = fold_tg_handler_ctx(handler.capabilities)
+
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
             scope.inject(Context, ctx)
             scope.inject(Update, ctx.update)
             scope.inject(API, ctx.api)
+            # Inject incoming cute type (MessageCute / CallbackQueryCute)
+            # so delegate handlers can receive it via resolve_handler_params.
+            incoming = ctx.update_cute.incoming_update
+            scope.inject(type(incoming), incoming)
 
-        return await execute_delegate_unified(
+        result = await execute_delegate_unified(
             handler=handler,
             inject_scope=inject_scope,
+            axes=axes,
         )
+
+        if tg_ctx.answer_callback and trigger.view == "callback_query":
+            await ctx.update_cute.incoming_update.answer(
+                text=tg_ctx.answer_callback_text,
+                show_alert=tg_ctx.answer_callback_show_alert,
+            )
+
+        return result
 
     return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
 
@@ -553,6 +650,7 @@ def telegrinder_compile(
     app: Application,
     axes: Axes | None = None,
     compiler: TargetCompiler[TelegrindTrigger] | None = None,
+    family: ScopeFamily[Tier] | None = None,
 ) -> Dispatch:
     """Compile wire Application to telegrinder Dispatch.
 
@@ -561,15 +659,32 @@ def telegrinder_compile(
         axes: Axes context (default: Axes.default())
         compiler: TargetCompiler (default: TELEGRINDER_COMPILER). Pass custom
                   compiler to add/swap/remove codec adapters.
+        family: Optional ScopeFamily for tiered scope management. When provided,
+                an App scope is composed once at startup and Request scopes
+                inherit from it. mapped_scopes routes node results to tiers.
 
     Returns:
         telegrinder Dispatch
     """
-    axes = axes or Axes.default()
+    base_axes = axes or Axes.default()
     _compiler = compiler or TELEGRINDER_COMPILER
+    request_axes = base_axes
     dp = Dispatch()
 
-    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
+    if family is not None:
+        from types import MappingProxyType
+
+        app_scope = Scope(detail="tg-app")
+        layer = ScopeLayer(
+            scopes=MappingProxyType({App: app_scope}),
+            family=family,
+            leaf=Request,
+        )
+        request_axes = base_axes.with_scope_layer(layer)
+        dp._scope_app = app_scope  # type: ignore[attr-defined]
+        dp._scope_app_types = family.types_for(App)  # type: ignore[attr-defined]
+
+    for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(dp, trigger, handler, route)
 
     return dp
@@ -585,17 +700,20 @@ class CommandInfo:
     """Info about a command for help generation."""
     name: str
     args: list[str]
-    request_cls: type | None = None
-    decorator_description: str | None = None
-    decorator_order: int = 100
+    description: str
+    order: int = 100
 
 
 def extract_command_info[C](
     trigger: TelegrindTrigger,
     handler: Handler[C],
 ) -> CommandInfo | None:
-    """Extract command info from trigger and handler."""
-    from emergent.wire.axis.schema.dialects.tg.help import get_command
+    """Extract command info from trigger and handler.
+
+    Reads ONLY from HelpMeta capability. No codec sniffing.
+    No HelpMeta = not visible in help.
+    """
+    from emergent.wire.axis.surface.dialects.telegram import HelpMeta
 
     cmd_rule: Command | None = None
     for rule in trigger.rules:
@@ -606,46 +724,29 @@ def extract_command_info[C](
     if cmd_rule is None:
         return None
 
-    names_list = list(cmd_rule.names) if cmd_rule.names else []
-    name = names_list[0] if names_list else "unknown"
+    name = list(cmd_rule.names)[0] if cmd_rule.names else "unknown"
 
-    args: list[str] = []
-    request_cls: type | None = None
-    decorator_description: str | None = None
-    decorator_order: int = 100
+    # Args from the Command rule itself (no codec sniffing)
+    args = [a.name for a in cmd_rule.arguments]
 
-    if isinstance(handler.codec, RequestResponseCodec):
-        request_cls = handler.codec.request
-        generated, _ = generate_command_args(request_cls)
-        args = [a.name for a in generated]
+    # HelpMeta capability is THE source
+    for cap in handler.capabilities:
+        if isinstance(cap, HelpMeta):
+            if cap.hidden:
+                return None
+            return CommandInfo(
+                name=name,
+                args=args,
+                description=cap.description,
+                order=cap.order,
+            )
 
-        help_meta = get_command(request_cls)
-        decorator_description = help_meta.description
-        decorator_order = help_meta.order
-    elif isinstance(handler.codec, StatefulCodec):
-        request_cls = handler.codec.flow
-        # Stateful flows don't have command args
-        args = []
-
-        help_meta = get_command(request_cls)
-        decorator_description = help_meta.description
-        decorator_order = help_meta.order
-
-    return CommandInfo(
-        name=name,
-        args=args,
-        request_cls=request_cls,
-        decorator_description=decorator_description,
-        decorator_order=decorator_order,
-    )
+    return None  # No HelpMeta = not visible in help
 
 
 def generate_help_from_command_rules(
     app: Application,
     *,
-    get_description: Callable[[type], str] | None = None,
-    descriptions: dict[type, Callable[[], str]] | None = None,
-    order: list[type] | None = None,
     template: str = "/{name} {args}",
     header: str = "",
     footer: str = "",
@@ -653,53 +754,25 @@ def generate_help_from_command_rules(
 ) -> str:
     """Generate help text from Application's Telegram command rules.
 
-    Supports two approaches:
-    1. Decorators on request classes (@tg.help.command, @tg.help.hidden)
-    2. Explicit parameters (get_description, descriptions, order)
-
-    Explicit parameters ALWAYS override decorators.
+    Capability-driven: reads ONLY from HelpMeta capabilities.
+    No HelpMeta on an exposure = excluded from help.
     """
-    from emergent.wire.axis.schema.dialects.tg.help import is_hidden
-
     commands: list[CommandInfo] = []
 
-    for trigger, handler in scan(app, TelegrindTrigger, RequestResponseCodec):
+    for trigger, handler in scan(app, TelegrindTrigger):
         info = extract_command_info(trigger, handler)
-        if info and info.request_cls and not is_hidden(info.request_cls):
+        if info is not None:
             commands.append(info)
 
-    for trigger, handler in scan(app, TelegrindTrigger, ImmediateCodec):
-        info = extract_command_info(trigger, handler)
-        if info:
-            commands.append(info)
-
-    for trigger, handler in scan(app, TelegrindTrigger, StatefulCodec):
-        info = extract_command_info(trigger, handler)
-        if info and info.request_cls and not is_hidden(info.request_cls):
-            commands.append(info)
-
-    if order:
-        order_map = {cls: i for i, cls in enumerate(order)}
-        commands.sort(key=lambda c: order_map.get(c.request_cls, 999) if c.request_cls else 999)
-    else:
-        commands.sort(key=lambda c: c.decorator_order)
+    commands.sort(key=lambda c: c.order)
 
     lines: list[str] = []
     for cmd in commands:
-        desc = ""
-        if cmd.request_cls:
-            if descriptions and cmd.request_cls in descriptions:
-                desc = descriptions[cmd.request_cls]()
-            elif get_description:
-                desc = get_description(cmd.request_cls)
-            elif cmd.decorator_description:
-                desc = cmd.decorator_description
-
         args_str = " ".join(f"<{arg}>" for arg in cmd.args)
         line = template.format(
             name=cmd.name,
             args=args_str,
-            description=desc,
+            description=cmd.description,
         ).strip()
         lines.append(line)
 

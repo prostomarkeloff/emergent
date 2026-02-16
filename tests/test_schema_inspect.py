@@ -524,3 +524,130 @@ class TestGetNestedType:
     def test_primitive_returns_none(self):
         fi = FieldInfo(name="x", base_type=int, is_optional=False, capabilities=())
         assert get_nested_type(fi) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration: Full inspect pipeline — multi-format types with nested structures
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationInspectFullPipeline:
+    """Inspect complex entities with nested types, optional fields, patterns,
+    and multiple type formats (dataclass + pydantic + TypedDict) — verify
+    the full pipeline from inspect_type through to FieldInfo queries."""
+
+    def test_deep_nested_dataclass_inspection(self):
+        """Nested dataclass → inspect_type → get_nested_info → recursive inspect."""
+
+        @dataclass
+        class Street:
+            name: Annotated[str, MaxLen(200)]
+            number: int
+
+        @dataclass
+        class Address:
+            street: Street
+            city: Annotated[str, MaxLen(100)]
+            zip_code: Annotated[str, MinLen(5), MaxLen(10)]
+
+        @dataclass
+        class Company:
+            id: Annotated[int, Identity]
+            name: Annotated[str, Unique, MaxLen(255)]
+            hq: Address
+            branches: list[Address]
+
+        fields = inspect_type(Company)
+        assert len(fields) == 4
+
+        # hq field → nested structured type
+        hq_nested = get_nested_info(fields["hq"])
+        assert hq_nested is not None
+        assert "street" in hq_nested
+        assert "city" in hq_nested
+        assert hq_nested["city"].get(MaxLen).value == 100
+
+        # street inside hq → deeper nesting
+        street_nested = get_nested_info(hq_nested["street"])
+        assert street_nested is not None
+        assert "name" in street_nested
+        assert street_nested["name"].get(MaxLen).value == 200
+
+        # branches → list[Address] → unwrap collection
+        branch_type = get_nested_type(fields["branches"])
+        assert branch_type is Address
+        branch_fields = get_nested_info(fields["branches"])
+        assert branch_fields is not None
+        assert "zip_code" in branch_fields
+
+    def test_mixed_type_formats_same_capabilities(self):
+        """Same capabilities on dataclass vs TypedDict produce equivalent FieldInfo."""
+
+        @dataclass
+        class UserDC:
+            email: Annotated[str, Unique, MaxLen(255)]
+            age: Annotated[int, Min(0)]
+
+        class UserTD(TypedDict):
+            email: Annotated[str, Unique, MaxLen(255)]
+            age: Annotated[int, Min(0)]
+
+        dc_fields = inspect_type(UserDC)
+        td_fields = inspect_type(UserTD)
+
+        # Same field names
+        assert set(dc_fields.keys()) == set(td_fields.keys())
+
+        # Same capabilities
+        for name in ("email", "age"):
+            dc_caps = {type(c).__name__ for c in dc_fields[name].capabilities}
+            td_caps = {type(c).__name__ for c in td_fields[name].capabilities}
+            assert dc_caps == td_caps
+
+    def test_optional_and_default_detection_across_formats(self):
+        """Optional detection works consistently across formats."""
+
+        @dataclass
+        class Cfg:
+            required: str
+            optional: str | None = None
+            with_default: int = 42
+            annotated_opt: Annotated[int | None, Doc("maybe")] = None
+
+        fields = inspect_type(Cfg)
+
+        assert fields["required"].is_optional is False
+        assert fields["required"].has_default is False
+
+        assert fields["optional"].is_optional is True
+        assert fields["optional"].has_default is True
+
+        assert fields["with_default"].is_optional is False
+        assert fields["with_default"].has_default is True
+
+        assert fields["annotated_opt"].is_optional is True
+        assert fields["annotated_opt"].has_default is True
+        assert fields["annotated_opt"].has(Doc)
+
+    def test_extract_capabilities_with_pattern_tuples(self):
+        """Pattern tuples in Annotated are expanded into individual capabilities."""
+        from emergent.wire.axis.schema._patterns import Email, Slug
+
+        @dataclass
+        class Entity:
+            email: Annotated[str, Email]
+            slug: Annotated[str, Slug]
+
+        fields = inspect_type(Entity)
+
+        # Email pattern → Unique + MaxLen(255)
+        assert fields["email"].has(Unique)
+        assert fields["email"].get(MaxLen).value == 255
+        assert len(fields["email"].capabilities) == 2
+
+        # Slug pattern → Unique + MaxLen(100) + Pattern
+        assert fields["slug"].has(Unique)
+        assert fields["slug"].has(MaxLen)
+        from emergent.wire.axis.schema._universal import Pattern as PatternCap
+        assert fields["slug"].has(PatternCap)
+        assert len(fields["slug"].capabilities) == 3

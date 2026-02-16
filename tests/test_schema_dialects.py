@@ -1792,3 +1792,152 @@ class TestGetNestedSchemaMetaEdgeCases:
         names = [c for c in result if isinstance(c, SchemaName)]
         assert len(names) == 1
         assert names[0].value == "order_items"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration: Cross-dialect compilation on a single entity
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationCrossDialectCompilation:
+    """Compile all dialect capabilities for a richly-annotated entity
+    and verify each target receives the correct output."""
+
+    def test_full_entity_all_dialects(self):
+        """Entity with SQL, OpenAPI, CLI capabilities — compile each dialect."""
+        from emergent.wire.axis.schema.dialects.sql import (
+            Index, PrimaryKey, ForeignKey, Type, ServerDefault,
+        )
+        from emergent.wire.axis.schema.dialects.openapi import Description, Format
+        from emergent.wire.axis.schema.dialects.cli import Help
+
+        from emergent.wire.axis.schema._universal import (
+            Identity, Unique, MaxLen, MinLen, Doc, Ref,
+            SchemaName, schema_meta,
+        )
+        from emergent.wire.axis.schema._inspect import inspect_type
+        from emergent.wire.compile._core import fold_field
+
+        @schema_meta(SchemaName("employees"))
+        @dataclass
+        class Employee:
+            id: Annotated[int, Identity, PrimaryKey(autoincrement=True)]
+            email: Annotated[str, Unique, MaxLen(255), Index("idx_email"),
+                             Description("Employee email"), Format("email"),
+                             Help("Work email address")]
+            name: Annotated[str, MinLen(1), MaxLen(100), Doc("Full name"),
+                            Help("Employee full name")]
+            department_id: Annotated[int | None, Ref(target="departments.id"),
+                                     ForeignKey("departments.id", ondelete="SET NULL")] = None
+            created_at: Annotated[str, ServerDefault("CURRENT_TIMESTAMP"),
+                                  Type("TIMESTAMP")] = ""
+
+        fields = inspect_type(Employee)
+        assert len(fields) == 5
+
+        from emergent.wire.axis._capability import (
+            OpenAPICompilable, SQLAlchemyCompilable, ArgparseCompilable,
+        )
+
+        # SQL compilation for email
+        email_sql = fold_field(
+            fields["email"],
+            SQLAlchemyContext(field_name="email", field_type=str),
+            SQLAlchemyCompilable,
+            "compile_sqlalchemy",
+        )
+        assert email_sql.column_kwargs.get("unique") is True
+        assert email_sql.column_kwargs.get("index") is True
+
+        # OpenAPI compilation for email
+        from emergent.wire.axis._capability import OpenAPIContext as OACtx
+        email_openapi = fold_field(
+            fields["email"],
+            OACtx(field_name="email", field_type=str),
+            OpenAPICompilable,
+            "compile_openapi",
+        )
+        assert email_openapi.schema.get("maxLength") == 255
+        assert email_openapi.schema.get("description") == "Employee email"
+        assert email_openapi.schema.get("format") == "email"
+
+        # Argparse compilation for email
+        email_argparse = fold_field(
+            fields["email"],
+            ArgparseContext(field_name="email", field_type=str),
+            ArgparseCompilable,
+            "compile_argparse",
+        )
+        assert email_argparse.kwargs.get("help") == "Work email address"
+
+        # SQL compilation for department_id (ForeignKey)
+        dept_sql = fold_field(
+            fields["department_id"],
+            SQLAlchemyContext(field_name="department_id", field_type=int),
+            SQLAlchemyCompilable,
+            "compile_sqlalchemy",
+        )
+        assert dept_sql.column_kwargs.get("fk_target") == "departments.id"
+        assert dept_sql.column_kwargs.get("fk_ondelete") == "SET NULL"
+
+        # SQL compilation for created_at
+        created_sql = fold_field(
+            fields["created_at"],
+            SQLAlchemyContext(field_name="created_at", field_type=str),
+            SQLAlchemyCompilable,
+            "compile_sqlalchemy",
+        )
+        assert created_sql.column_kwargs.get("server_default") == "CURRENT_TIMESTAMP"
+        assert created_sql.column_kwargs.get("type_") == "TIMESTAMP"
+
+    def test_pydantic_dialect_compilation(self):
+        """Pydantic dialect capabilities compile to field metadata."""
+        from emergent.wire.axis.schema.dialects.pydantic import Strict, Coerce
+
+        from emergent.wire.axis.schema._inspect import inspect_type
+        from emergent.wire.compile._core import fold_field
+
+        @dataclass
+        class Config:
+            timeout: Annotated[int, Strict()]
+            name: Annotated[str, Coerce()]
+
+        fields = inspect_type(Config)
+
+        from emergent.wire.axis._capability import PydanticContext, PydanticCompilable
+        from pydantic.fields import FieldInfo as PydFieldInfo
+
+        timeout_pyd = fold_field(
+            fields["timeout"],
+            PydanticContext(
+                field_name="timeout",
+                field_type=int,
+                field_info=PydFieldInfo(annotation=int),
+            ),
+            PydanticCompilable,
+            "compile_pydantic",
+        )
+        # Pydantic context should still be valid after fold
+        assert timeout_pyd.field_info is not None
+
+    def test_extra_column_and_field_specs(self):
+        """ExtraColumnSpec and ExtraFieldSpec compile through table/model contexts."""
+        from emergent.wire.axis.schema._universal import SchemaName, schema_meta
+
+        name_cap = SchemaName("test_table")
+        table_ctx = SQLAlchemyTableContext(class_name="Test")
+        result = name_cap.compile_sqlalchemy_table(table_ctx)
+        assert result.table_name == "test_table"
+
+        # ExtraColumnSpec with required args
+        spec = ExtraColumnSpec(name="version", column_type=int)
+        assert spec.name == "version"
+        assert spec.column_type is int
+        assert spec.nullable is True
+        assert spec.default is None
+
+        # ExtraFieldSpec with required args + default
+        fspec = ExtraFieldSpec(name="version", field_type=int, default=1)
+        assert fspec.name == "version"
+        assert fspec.field_type is int
+        assert fspec.default == 1

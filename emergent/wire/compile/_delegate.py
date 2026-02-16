@@ -153,18 +153,13 @@ async def _compose_node(
     agent_cls: type[Agent],
 ) -> tuple[bool, Any]:
     """Compose a nodnod node and return its value."""
-    try:
-        agent = agent_cls.build({node_type})
-        await agent.run(local_scope=scope, mapped_scopes={})
+    from emergent.graph._compose import Composer
 
-        result = scope.retrieve(node_type)
-        match result:
-            case Some(value):
-                return True, value.value
-            case Nothing():
-                return False, None
-    except Exception:
-        return False, None
+    composer = Composer.create(scope, agent_cls)
+    success, value = await composer.compose(node_type)
+    if success:
+        return True, value
+    return False, None
 
 
 __all__ = (

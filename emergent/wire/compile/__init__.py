@@ -156,6 +156,15 @@ from emergent.wire.compile._execute import (
     execute_immediate_unified,
 )
 
+# Scope tiers
+from emergent.wire.compile._lifetime import (
+    Tier,
+    App,
+    Request,
+    ScopeTiers,
+    ScopeLayer,
+)
+
 # Targets subpackage
 from emergent.wire.compile import targets
 
@@ -250,6 +259,12 @@ __all__ = (
     "execute_rrc_unified",
     "execute_stateful_unified",
     "execute_immediate_unified",
+    # Scope tiers
+    "Tier",
+    "App",
+    "Request",
+    "ScopeTiers",
+    "ScopeLayer",
     # Targets
     "targets",
 )

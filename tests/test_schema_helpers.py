@@ -415,3 +415,121 @@ class TestGetNestedSchemaMetaCaps:
         caps = get_nested_schema_meta(fi)
         name = next(c for c in caps if isinstance(c, SchemaName))
         assert name.value == "inline_addr"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration: Full helper pipeline on complex entity graph
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationHelpersPipeline:
+    """Use navigation + composition + query helpers together on a
+    multi-entity domain model."""
+
+    def test_full_navigation_composition_query_pipeline(self):
+        """Navigate → compose → query on complex entity."""
+        from emergent.wire.axis.schema._universal import (
+            MinLen, Doc, Deprecated, ReadOnly, Sensitive,
+        )
+        from emergent.wire.axis.schema.dialects.sql import Index, SQLCapability
+
+        @schema_meta(SchemaName("accounts"))
+        @dataclass
+        class Account:
+            id: Annotated[int, Identity]
+            email: Annotated[str, Unique, MaxLen(255), Doc("Email"), Index("idx_email")]
+            name: Annotated[str, MinLen(1), MaxLen(100)]
+            password: Annotated[str, Sensitive(), MaxLen(128)]
+            legacy_field: Annotated[str, Deprecated(reason="Use name"), MaxLen(50)] = ""
+            bio: str | None = None
+
+        # Navigation
+        id_field = get_identity_field(Account)
+        assert id_field is not None
+        assert id_field.name == "id"
+
+        required, optional = partition_fields(Account)
+        req_names = {f.name for f in required}
+        opt_names = {f.name for f in optional}
+        assert req_names == {"id", "email", "name", "password", "legacy_field"}
+        assert opt_names == {"bio"}
+
+        # fields_with_capability
+        unique_fields = fields_with_capability(Account, Unique)
+        assert len(unique_fields) == 1
+        assert unique_fields[0][0] == "email"
+
+        # fields_by_dialect
+        sql_fields = fields_by_dialect(Account, SQLCapability)
+        assert len(sql_fields) == 1
+        assert sql_fields[0][0] == "email"
+
+        # Queries on field capabilities
+        email_info = field_by_name(Account, "email")
+        assert email_info is not None
+        caps = email_info.capabilities
+
+        found_maxlen = find_capability(caps, MaxLen)
+        assert found_maxlen is not None
+        assert found_maxlen.value == 255
+
+        from emergent.wire.axis.schema._universal import UniversalCapability
+        all_universal = find_all_capabilities(caps, UniversalCapability)
+        assert len(all_universal) >= 2  # Unique + MaxLen + Doc at minimum
+
+        assert has_capability(caps, Unique) is True
+        assert has_capability(caps, Deprecated) is False
+
+        # Composition: merge email caps with password caps
+        pwd_info = field_by_name(Account, "password")
+        assert pwd_info is not None
+        merged = merge_capabilities(caps, pwd_info.capabilities)
+        # MaxLen from password (128) overrides MaxLen from email (255)
+        ml = find_capability(merged, MaxLen)
+        assert ml is not None
+        assert ml.value == 128
+
+        # Override
+        overridden = override_capability(caps, MaxLen(500))
+        ml2 = find_capability(overridden, MaxLen)
+        assert ml2 is not None
+        assert ml2.value == 500
+
+        # Filter
+        universal_only = filter_universal(caps)
+        dialect_only = filter_by_dialect(caps, SQLCapability)
+        assert len(dialect_only) == 1  # Index
+        assert all(not isinstance(c, SQLCapability) for c in universal_only)
+
+    def test_nested_schema_meta_composition(self):
+        """compose_schema_meta and get_nested_schema_meta on related entities."""
+
+        @schema_meta(SchemaName("addresses"))
+        @dataclass
+        class Addr:
+            city: str
+            zip_code: str
+
+        @schema_meta(SchemaName("users"))
+        @dataclass
+        class Usr:
+            id: Annotated[int, Identity]
+            home: Annotated[Addr, Nested(meta=(SchemaName("home_addr"),))]
+            work: Annotated[Addr, Nested()]
+
+        fields = inspect_type(Usr)
+
+        # home has Nested with meta override
+        home_meta = get_nested_schema_meta(fields["home"])
+        home_name = next(c for c in home_meta if isinstance(c, SchemaName))
+        assert home_name.value == "home_addr"
+
+        # work has Nested without override → inherits from Addr
+        work_meta = get_nested_schema_meta(fields["work"])
+        work_name = next(c for c in work_meta if isinstance(c, SchemaName))
+        assert work_name.value == "addresses"
+
+        # compose_schema_meta with override
+        composed = compose_schema_meta(Usr, (SchemaName("admins"),))
+        name = next(c for c in composed if isinstance(c, SchemaName))
+        assert name.value == "admins"

@@ -14,6 +14,7 @@ Graph — computation graphs with auto-parallelization.
 
 from nodnod import scalar_node as node
 
+from emergent.graph._compose import Composer
 from emergent.graph._run import (
     TypedScope,
     Run,
@@ -25,6 +26,7 @@ from emergent.graph._compiled import (
     Compiled,
     graph,
 )
+from emergent.graph._family import ScopeFamily
 from emergent.graph._visualize import (
     to_mermaid,
     to_tree,
@@ -37,6 +39,7 @@ from emergent.graph._visualize import (
 
 __all__ = (
     "node",
+    "Composer",
     "TypedScope",
     "run",
     "Run",
@@ -44,6 +47,8 @@ __all__ = (
     "graph",
     "Compiled",
     "CompiledRun",
+    # Scope families
+    "ScopeFamily",
     # Visualization
     "to_mermaid",
     "to_tree",

@@ -246,3 +246,77 @@ class TestIntrospection:
         assert len(q.aggregates) == 2
         aliases = {s.alias for s in q.aggregates}
         assert aliases == {"total", "cnt"}
+
+
+# ─── Integration: Complex Query Chains ──────────────────────────────────────
+
+
+class TestIntegrationComplexQueryChain:
+    def test_filter_order_limit_offset_distinct_select_chain(self):
+        q = (
+            relational(User)
+            .filter(lambda u: u.balance > 0)
+            .order_by(lambda u: u.balance.desc())
+            .limit(10)
+            .offset(5)
+            .distinct()
+            .select(lambda u: u.id, lambda u: u.name)
+        )
+        assert len(q.ops) == 6
+        assert isinstance(q.ops[0], Filter)
+        assert isinstance(q.ops[1], OrderBy)
+        assert isinstance(q.ops[2], Limit)
+        assert isinstance(q.ops[3], Offset)
+        assert isinstance(q.ops[4], Distinct)
+        assert isinstance(q.ops[5], Select)
+
+    def test_introspection_on_complex_chain(self):
+        q = (
+            relational(User)
+            .filter(lambda u: u.balance > 0)
+            .filter(lambda u: u.name != "admin")
+            .order_by(lambda u: u.balance.desc(), lambda u: u.name)
+            .limit(10)
+            .offset(5)
+        )
+        assert len(q.filters) == 2
+        assert len(q.ordering) == 2
+        assert q.ordering[0] == OrderSpec("balance", ascending=False)
+        assert q.ordering[1] == OrderSpec("name", ascending=True)
+        assert q.limit_value == 10
+        assert q.offset_value == 5
+
+    def test_filter_join_group_by_having_aggregate(self):
+        q = (
+            relational(User)
+            .filter(lambda u: u.balance > 0)
+            .join(Post, on=lambda u, p: u.id == p.author_id)
+            .group_by(lambda u: u.name)
+            .having(lambda u: u.balance > 100)
+            .aggregate(total=lambda u: u.balance.sum(), cnt=lambda u: u.count())
+        )
+        assert len(q.ops) == 5
+        assert isinstance(q.ops[0], Filter)
+        assert isinstance(q.ops[1], Join)
+        assert isinstance(q.ops[2], GroupBy)
+        assert isinstance(q.ops[3], Having)
+        assert isinstance(q.ops[4], Aggregate)
+        assert q.has_aggregates is True
+        assert len(q.aggregates) == 2
+        aliases = {s.alias for s in q.aggregates}
+        assert aliases == {"total", "cnt"}
+
+    def test_immutability_after_chaining(self):
+        q0 = relational(User)
+        q1 = q0.filter(lambda u: u.balance > 0)
+        q2 = q1.order_by(lambda u: u.name)
+        q3 = q2.limit(10)
+        q4 = q3.offset(5)
+        # Original queries are unchanged
+        assert q0.ops == ()
+        assert len(q1.ops) == 1
+        assert len(q2.ops) == 2
+        assert len(q3.ops) == 3
+        assert len(q4.ops) == 4
+        # Entity preserved
+        assert q4.entity is User

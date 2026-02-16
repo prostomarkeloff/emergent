@@ -220,3 +220,117 @@ class TestOpenWorld:
 
         text = explain_schema(NoCaps)
         assert "=== NoCaps ===" in text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration: Full explain pipeline with all dialect groups
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationExplainComplexSchema:
+    """Full entity with all three dialects — verify schema_dict, explain_schema,
+    field_info_dict, and explain_field all produce consistent output."""
+
+    def test_dict_and_text_consistency(self):
+        """schema_dict and explain_schema agree on structure."""
+
+        @schema_meta(SchemaName("orders"), Deprecated(reason="Use v2"))
+        @dataclass
+        class Order:
+            id: Annotated[int, Identity]
+            total: Annotated[float, MinLen(0)]
+            status: Annotated[str, MaxLen(20), Doc("Order status"), Help("Status flag"), Description("Current status"), Index("idx_status")]
+            notes: str | None = None
+
+        d = schema_dict(Order)
+        assert d["name"] == "Order"
+        assert len(d["fields"]) == 4
+        assert "meta" in d
+        # Meta has SchemaName and Deprecated
+        meta_types = {m["type"] for m in d["meta"]}
+        assert "SchemaName" in meta_types
+        assert "Deprecated" in meta_types
+
+        text = explain_schema(Order)
+        assert "=== Order ===" in text
+        assert "Identity" in text
+        assert "MaxLen" in text
+        assert "cli:" in text
+        assert "openapi:" in text
+        assert "sql:" in text
+        assert "SchemaName" in text
+
+    def test_multi_dialect_field_info(self):
+        """field_info_dict with explicit dialect selection."""
+
+        @dataclass
+        class Cfg:
+            host: Annotated[str, MaxLen(255), Help("Server host"), Description("Server hostname"), Index("idx_host")]
+
+        fields = inspect_type(Cfg)
+        fi = fields["host"]
+
+        # All dialects
+        d_all = field_info_dict(fi)
+        assert "universal" in d_all
+        assert "cli" in d_all
+        assert "openapi" in d_all
+        assert "sql" in d_all
+
+        # Only CLI
+        d_cli = field_info_dict(fi, dialects={"cli": CLICapability})
+        assert "cli" in d_cli
+        assert "openapi" not in d_cli
+        assert "sql" not in d_cli
+
+
+class TestIntegrationExplainMultiEntity:
+    """Multiple related entities — explain each, verify cross-references."""
+
+    def test_related_entities_explain(self):
+        """Parent-child entities with Ref — both explain correctly."""
+
+        @schema_meta(SchemaName("teams"))
+        @dataclass
+        class Team:
+            id: Annotated[int, Identity]
+            name: Annotated[str, Unique, MaxLen(100)]
+
+        @schema_meta(SchemaName("players"))
+        @dataclass
+        class Player:
+            id: Annotated[int, Identity]
+            name: Annotated[str, MaxLen(50)]
+            team_id: Annotated[int | None, Ref(target="teams.id")] = None
+
+        team_dict = schema_dict(Team)
+        player_dict = schema_dict(Player)
+
+        assert team_dict["name"] == "Team"
+        assert player_dict["name"] == "Player"
+
+        # Player has Ref field
+        team_id_field = next(f for f in player_dict["fields"] if f["name"] == "team_id")
+        assert team_id_field["optional"] is True
+        ref_caps = [c for c in team_id_field["universal"] if c["type"] == "Ref"]
+        assert len(ref_caps) == 1
+
+        # Both explain without error
+        team_text = explain_schema(Team)
+        player_text = explain_schema(Player)
+        assert "teams" in team_text.lower() or "Team" in team_text
+        assert "Ref" in player_text
+
+    def test_explain_field_with_all_dialects(self):
+        """explain_field shows dialect info for a fully-annotated field."""
+
+        @dataclass
+        class Widget:
+            label: Annotated[str, MaxLen(100), Doc("Widget label"), Help("Label"), Description("Display label"), Index("idx_label")]
+
+        text = explain_field(Widget, "label")
+        assert "label" in text
+        assert "MaxLen" in text
+        assert "cli:" in text
+        assert "openapi:" in text
+        assert "sql:" in text

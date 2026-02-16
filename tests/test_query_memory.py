@@ -495,3 +495,101 @@ class TestMemoryKVIntKeys:
         await prov.set(users_kv.set(1, ALICE))
         assert await prov.delete(users_kv.delete("1")) is False  # wrong type
         assert await prov.delete(users_kv.delete(1)) is True
+
+
+# ─── Integration: Relational Complex Pipeline ───────────────────────────────
+
+
+class TestIntegrationRelationalComplexPipeline:
+    @pytest.fixture
+    def prov(self):
+        users = [
+            User(id=i, name=f"user_{i}", balance=float(i * 25), active=(i % 2 == 0))
+            for i in range(1, 11)
+        ]
+        return MemoryRelationalProvider[User](data=users, key_fn=lambda u: u.id)
+
+    @pytest.mark.asyncio
+    async def test_filter_order_limit_top3(self, prov):
+        q = (
+            relational(User)
+            .filter(lambda u: u.active == True)
+            .order_by(lambda u: u.balance.desc())
+            .limit(3)
+        )
+        result = await prov.fetch_many(q)
+        assert len(result) == 3
+        # Active users: ids 2,4,6,8,10 with balances 50,100,150,200,250
+        assert result[0].balance == 250.0
+        assert result[1].balance == 200.0
+        assert result[2].balance == 150.0
+
+    @pytest.mark.asyncio
+    async def test_aggregate_active_count_and_sum(self, prov):
+        q = (
+            relational(User)
+            .filter(lambda u: u.active == True)
+            .aggregate(
+                cnt=lambda u: u.count(),
+                total=lambda u: u.balance.sum(),
+                avg_bal=lambda u: u.balance.avg(),
+            )
+        )
+        result = await prov.aggregate(q)
+        assert result["cnt"] == 5
+        assert result["total"] == 50.0 + 100.0 + 150.0 + 200.0 + 250.0
+        assert abs(result["avg_bal"] - 150.0) < 0.01
+
+    @pytest.mark.asyncio
+    async def test_delete_where_low_balance(self, prov):
+        q = relational(User).filter(lambda u: u.balance < 50)
+        deleted = await prov.delete_where(q)
+        assert deleted == 1  # only user_1 (balance=25) is below 50
+        remaining = await prov.fetch_many(relational(User))
+        assert len(remaining) == 9
+
+    @pytest.mark.asyncio
+    async def test_upsert_existing_and_new(self, prov):
+        # Upsert existing user (id=1)
+        updated = User(id=1, name="user_1_updated", balance=999.0, active=True)
+        result = await prov.upsert(updated)
+        assert result.name == "user_1_updated"
+        assert len(prov.data) == 10  # count unchanged
+
+        # Upsert new user (id=99)
+        new_user = User(id=99, name="newcomer", balance=500.0, active=True)
+        result = await prov.upsert(new_user)
+        assert result.name == "newcomer"
+        assert len(prov.data) == 11
+
+
+class TestIntegrationKVWithRelational:
+    @pytest.mark.asyncio
+    async def test_relational_to_kv_roundtrip(self):
+        # Setup relational provider
+        rel_prov = MemoryRelationalProvider[User](
+            data=[ALICE, BOB, CHARLIE],
+            key_fn=lambda u: u.id,
+        )
+
+        # Query relational for active users
+        active = await rel_prov.fetch_many(
+            relational(User).filter(lambda u: u.active == True)
+        )
+        assert len(active) == 2  # ALICE and CHARLIE
+
+        # Store in KV by id
+        kv_prov = MemoryKVProvider[int, User]()
+        users_kv = kv(User, key=lambda u: u.id)
+        for user in active:
+            await kv_prov.set(users_kv.set(user.id, user))
+
+        # Retrieve from KV and verify
+        for user in active:
+            retrieved = await kv_prov.get(users_kv.get(user.id))
+            assert retrieved is not None
+            assert retrieved.name == user.name
+            assert retrieved.balance == user.balance
+
+        # Verify BOB not in KV (inactive)
+        assert await kv_prov.get(users_kv.get(BOB.id)) is None

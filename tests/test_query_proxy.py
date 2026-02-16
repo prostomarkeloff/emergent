@@ -287,3 +287,56 @@ class TestBuildOrder:
     def test_explicit_asc(self):
         spec = build_order(User, lambda u: u.balance.asc())
         assert spec == OrderSpec("balance", ascending=True)
+
+
+# ─── Integration: Proxy to Evaluation ───────────────────────────────────────
+
+
+class TestIntegrationProxyToEvaluation:
+    def test_proxy_built_expr_evaluates_correctly(self):
+        expr = build_expr(User, lambda u: (u.balance > 50) & (u.active == True))
+        alice = User(id=1, name="alice", balance=100.0, active=True)
+        bob = User(id=2, name="bob", balance=30.0, active=True)
+        charlie = User(id=3, name="charlie", balance=200.0, active=False)
+
+        assert expr.evaluate(alice) is True
+        assert expr.evaluate(bob) is False   # balance <= 50
+        assert expr.evaluate(charlie) is False  # not active
+
+    def test_proxy_expr_matches_hand_built(self):
+        proxy_expr = build_expr(User, lambda u: u.name == "alice")
+        # Hand-built using FieldProxy (which wraps to Field/Const internally)
+        hand_expr = FieldProxy("name") == "alice"
+
+        alice = User(id=1, name="alice", balance=100.0)
+        bob = User(id=2, name="bob", balance=50.0)
+
+        assert proxy_expr.evaluate(alice) == hand_expr.evaluate(alice)
+        assert proxy_expr.evaluate(bob) == hand_expr.evaluate(bob)
+
+    def test_proxy_compound_logic(self):
+        # (balance > 50) | (name == "bob")
+        expr = build_expr(User, lambda u: (u.balance > 50) | (u.name == "bob"))
+        assert expr.evaluate(User(id=1, name="alice", balance=100.0)) is True
+        assert expr.evaluate(User(id=2, name="bob", balance=10.0)) is True
+        assert expr.evaluate(User(id=3, name="charlie", balance=10.0)) is False
+
+    def test_proxy_chained_comparisons(self):
+        expr = build_expr(User, lambda u: (u.balance > 50) & (u.active == True))
+        assert isinstance(expr, And)
+        left = expr.left
+        right = expr.right
+        assert isinstance(left, Gt)
+        assert isinstance(right, Eq)
+        # Verify field references via children
+        left_children = left.children()
+        assert len(left_children) == 2
+        assert left_children[0].evaluate(User(id=1, name="x", balance=99.0)) == 99.0
+
+    def test_proxy_negation(self):
+        expr = build_expr(User, lambda u: ~(u.active == True))
+        assert isinstance(expr, Not)
+        alice_active = User(id=1, name="alice", balance=100.0, active=True)
+        alice_inactive = User(id=2, name="alice", balance=100.0, active=False)
+        assert expr.evaluate(alice_active) is False
+        assert expr.evaluate(alice_inactive) is True

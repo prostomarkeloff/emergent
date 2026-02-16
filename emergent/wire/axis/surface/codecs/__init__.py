@@ -39,6 +39,7 @@ from emergent.wire.axis.surface.codecs.stateful import (
     StatefulCodec,
     StatefulBuilder,
     Done,
+    Cancelled,
     StateStore,
     stateful,
     transition,
@@ -67,6 +68,7 @@ __all__ = (
     "StatefulCodec",
     "StatefulBuilder",
     "Done",
+    "Cancelled",
     "StateStore",
     "stateful",
     # Multi-transition

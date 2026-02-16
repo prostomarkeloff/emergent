@@ -8,15 +8,12 @@ app = fastapi_compile(wire_app, axes)
 
 from __future__ import annotations
 
-from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 import fastapi
 from kungfu import Some, Nothing
 from nodnod import Scope
-from nodnod.agent.base import Agent
-
 from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface._scan import scan_endpoint, scan_stack, StackView
 from emergent.wire.axis.surface._app import Application
@@ -54,6 +51,18 @@ from emergent.wire.compile._stateful import (
     load_state,
     save_state,
     delete_state,
+)
+from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
+
+from emergent.graph._family import ScopeFamily
+from emergent.wire.compile.targets.pure import (
+    STARTUP_COMPILER,
+    SHUTDOWN_COMPILER,
+    EXCEPTION_COMPILER,
+    WEBSOCKET_COMPILER,
+    ExceptionRoute,
+    WebSocketRoute,
+    app_scope_lifespan,
 )
 
 
@@ -203,34 +212,34 @@ def wrap_stateful_fastapi(
     axes: Axes,
 ) -> FastAPIRoute:
     """Wrap StatefulCodec handler for FastAPI."""
+    from emergent.graph._compose import Composer
+
     codec = handler.codec
-    agent_cls = cast(type[Agent], codec.agent_cls)
     transitions = get_transitions(codec.flow)
     pydantic_types = _get_pydantic_types_from_transitions(transitions)
 
     async def _route(request: fastapi.Request) -> Any:
-        # 1. Compose key_node → store key
-        async with Scope() as scope:
-            scope.inject(fastapi.Request, request)
-            agent = agent_cls.build({codec.key_node})
-            await agent.run(local_scope=scope, mapped_scopes={})
+        layer = axes.scope_layer
 
-            key_result = scope.retrieve(codec.key_node)
-            match key_result:
-                case Some(value):
-                    store_key = str(value.value)
-                case Nothing():
-                    return fastapi.Response(
-                        content="Session key resolution failed", status_code=400
-                    )
+        # 1. Compose key_node → store key
+        key_scope = layer.parent.create_child("stateful-key") if layer else Scope()
+        async with key_scope:
+            key_scope.inject(fastapi.Request, request)
+            composer = Composer.create(key_scope, codec.agent_cls)
+
+            success, key_value = await composer.compose(codec.key_node)
+            if not success:
+                raise RuntimeError(f"Session key resolution failed: {key_value}")
+            store_key = str(key_value)
 
         # 2. Load state
         state = await load_state(codec, store_key)
 
         # 3. Setup scope, resolve transition
-        async with Scope() as scope:
-            await setup_fastapi_scope(scope, request, pydantic_types)
-            resolved = await resolve_transition(transitions, scope, agent_cls)
+        transition_scope = layer.parent.create_child("stateful-transition") if layer else Scope()
+        async with transition_scope:
+            await setup_fastapi_scope(transition_scope, request, pydantic_types)
+            resolved = await resolve_transition(transitions, transition_scope, codec.agent_cls)
 
         # 4. Execute transition
         match resolved:
@@ -239,20 +248,18 @@ def wrap_stateful_fastapi(
                     handler, state, method, composed
                 )
             case Nothing():
-                return fastapi.Response(
-                    content="No transition resolvable", status_code=400
-                )
+                raise RuntimeError("No transition resolvable")
 
         # 5. Continue or Done
         if not is_terminal:
             await save_state(codec, store_key, state, new_state)
             if response is not None:
-                response = apply_response_capabilities(response, handler.capabilities)
-                return response
-            return fastapi.Response(status_code=200)
+                return apply_response_capabilities(response, handler.capabilities)
+            return None
 
         # 6. Done — execute with enrichers
-        async with Scope() as done_scope:
+        done_scope = layer.parent.create_child("stateful-done") if layer else Scope()
+        async with done_scope:
             await setup_fastapi_scope(done_scope, request, pydantic_types)
             final = await execute_stateful_done(handler, new_state, done_scope)
 
@@ -319,6 +326,7 @@ def wrap_delegate_fastapi(
         return await execute_delegate_unified(
             handler=handler,
             inject_scope=inject_scope,
+            axes=axes,
         )
 
     return FastAPIRoute(endpoint=_route)
@@ -582,6 +590,7 @@ def fastapi_compile(
     app: Application,
     axes: Axes | None = None,
     compiler: TargetCompiler[HTTPRouteTrigger] | None = None,
+    family: ScopeFamily[Tier] | None = None,
 ) -> fastapi.FastAPI:
     """Compile wire Application to FastAPI app.
 
@@ -597,6 +606,9 @@ def fastapi_compile(
         axes: Axes context (default: Axes.default())
         compiler: TargetCompiler (default: FASTAPI_COMPILER). Pass custom
                   compiler to add/swap/remove codec adapters.
+        family: Optional ScopeFamily for tiered scope management. When provided,
+                an App scope is composed once at startup and Request scopes
+                inherit from it. mapped_scopes routes node results to tiers.
 
     Returns:
         FastAPI application
@@ -608,35 +620,52 @@ def fastapi_compile(
         FastAPIAppContext,
         FastAPIAppCompilable,
     )
-    from emergent.wire.axis.surface.triggers.lifecycle import (
-        StartupTrigger,
-        ShutdownTrigger,
-    )
-    from emergent.wire.axis.surface.triggers.exception import ExceptionTrigger
-    from emergent.wire.axis.surface.triggers.websocket import WebSocketTrigger
-    from emergent.wire.axis.surface._scan import scan
 
-    axes = axes or Axes.default()
+    base_axes = axes or Axes.default()
     _compiler = compiler or FASTAPI_COMPILER
 
-    # 1. Collect lifecycle handlers sorted by order
+    # Build scope hierarchy from family
+    app_scope: Scope | None = None
+    request_axes = base_axes
+
+    if family is not None:
+        from types import MappingProxyType
+
+        app_scope = Scope(detail="app")
+        layer = ScopeLayer(
+            scopes=MappingProxyType({App: app_scope}),
+            family=family,
+            leaf=Request,
+        )
+        request_axes = base_axes.with_scope_layer(layer)
+
+    # 1. Collect lifecycle handlers sorted by order — via pure compilers
     startup_with_order = sorted(
-        [(t.order, _wrap_lifecycle(h)) for t, h in scan(app, StartupTrigger)],
+        [(route.order, route.handler) for _, _, route in STARTUP_COMPILER.scan_and_wrap(app, base_axes)],
         key=lambda x: x[0],
     )
     shutdown_with_order = sorted(
-        [(t.order, _wrap_lifecycle(h)) for t, h in scan(app, ShutdownTrigger)],
+        [(route.order, route.handler) for _, _, route in SHUTDOWN_COMPILER.scan_and_wrap(app, base_axes)],
         key=lambda x: x[0],
     )
 
     @asynccontextmanager
     async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
         del fastapi_app  # unused but required by FastAPI
-        for _order, handler_fn in startup_with_order:
-            await handler_fn()
-        yield
-        for _order, handler_fn in shutdown_with_order:
-            await handler_fn()
+        app_types = list(family.types_for(App)) if family else []
+        if app_scope is not None:
+            async with app_scope_lifespan(app_scope, app_types):
+                for _order, handler_fn in startup_with_order:
+                    await handler_fn()
+                yield
+                for _order, handler_fn in shutdown_with_order:
+                    await handler_fn()
+        else:
+            for _order, handler_fn in startup_with_order:
+                await handler_fn()
+            yield
+            for _order, handler_fn in shutdown_with_order:
+                await handler_fn()
 
     fapi = fastapi.FastAPI(lifespan=lifespan)
 
@@ -644,106 +673,46 @@ def fastapi_compile(
     app_ctx = fold(
         app.capabilities, FastAPIAppContext(),
         FastAPIAppCompilable, "compile_fastapi_app",
-        trace=axes.trace,
+        trace=base_axes.trace,
     )
 
     for middleware_cls, kwargs in app_ctx.middleware:
         fapi.add_middleware(middleware_cls, **kwargs)
 
-    # 3. Exception handlers
-    for exc_trigger, exc_handler in scan(app, ExceptionTrigger):  # pyright: ignore[reportUnknownVariableType]
-        fapi.add_exception_handler(
-            exc_trigger.exception_type,  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            _wrap_exception_handler(exc_handler),
-        )
+    # 3. Exception handlers — via pure compiler + FastAPI scope injection
+    for exc_trigger, _, exc_route in EXCEPTION_COMPILER.scan_and_wrap(app, base_axes):
+        async def _exc_handler(
+            request: fastapi.Request,
+            exc: Exception,
+            _route: ExceptionRoute = exc_route,
+            _app_scope: Scope | None = app_scope,
+        ) -> Any:
+            exc_scope = _app_scope.create_child("exception") if _app_scope else Scope()
+            async with exc_scope:
+                exc_scope.inject(fastapi.Request, request)
+                exc_scope.inject(type(exc), exc)
+                return await _route.handler(exc_scope)
+        fapi.add_exception_handler(exc_route.exception_type, _exc_handler)
 
-    # 4. WebSocket routes
-    for ws_trigger, ws_handler in scan(app, WebSocketTrigger):
-        fapi.add_api_websocket_route(
-            ws_trigger.path,
-            _wrap_websocket(ws_handler),
-            name=ws_trigger.name,
-        )
+    # 4. WebSocket routes — via pure compiler + FastAPI scope injection
+    for ws_trigger, _, ws_route in WEBSOCKET_COMPILER.scan_and_wrap(app, base_axes):
+        async def _ws_handler(
+            websocket: fastapi.WebSocket,
+            _route: WebSocketRoute = ws_route,
+            _app_scope: Scope | None = app_scope,
+        ) -> None:
+            ws_scope = _app_scope.create_child("websocket") if _app_scope else Scope()
+            async with ws_scope:
+                ws_scope.inject(fastapi.WebSocket, websocket)
+                await _route.handler(ws_scope)
+        fapi.add_api_websocket_route(ws_trigger.path, _ws_handler, name=ws_trigger.name)
 
     # 5. HTTP routes — via TargetCompiler, no isinstance chains
     mounted: set[tuple[int, str]] = set()
-    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
-        register_handler(fapi, trigger, handler, route, axes, mounted)
+    for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
+        register_handler(fapi, trigger, handler, route, request_axes, mounted)
 
     return fapi
-
-
-def _wrap_lifecycle(handler: Handler[Any]) -> Callable[[], Coroutine[Any, Any, None]]:
-    """Wrap lifecycle handler for lifespan context manager."""
-    import inspect
-
-    codec = handler.codec
-
-    # DelegateCodec — call the handler directly
-    if hasattr(codec, "handler"):
-        fn = codec.handler
-
-        async def _lifecycle() -> None:
-            if inspect.iscoroutinefunction(fn):
-                await fn()
-            else:
-                fn()
-
-        return _lifecycle
-
-    # ImmediateFactoryCodec — call the factory
-    if hasattr(codec, "factory"):
-        fn = codec.factory
-
-        async def _lifecycle_factory() -> None:
-            result = fn()
-            if inspect.isawaitable(result):
-                await result
-
-        return _lifecycle_factory
-
-    msg = f"Unsupported codec for lifecycle: {type(codec)}"
-    raise ValueError(msg)
-
-
-def _wrap_exception_handler(handler: Handler[Any]) -> Any:
-    """Wrap exception handler for FastAPI."""
-    import inspect
-
-    codec = handler.codec
-
-    if hasattr(codec, "handler"):
-        fn = codec.handler
-
-        async def _exc_handler(request: fastapi.Request, exc: Exception) -> Any:
-            if inspect.iscoroutinefunction(fn):
-                return await fn(exc)
-            else:
-                return fn(exc)
-
-        return _exc_handler
-
-    raise ValueError(f"Unsupported codec for exception handler: {type(codec)}")
-
-
-def _wrap_websocket(handler: Handler[Any]) -> Any:
-    """Wrap WebSocket handler for FastAPI."""
-    import inspect
-
-    codec = handler.codec
-
-    if hasattr(codec, "handler"):
-        fn = codec.handler
-
-        async def _ws_handler(websocket: Any) -> None:
-            if inspect.iscoroutinefunction(fn):
-                await fn(websocket)
-            else:
-                fn(websocket)
-
-        return _ws_handler
-
-    raise ValueError(f"Unsupported codec for websocket: {type(codec)}")
 
 
 def _wrap_for_stack(

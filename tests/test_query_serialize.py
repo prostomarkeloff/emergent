@@ -214,3 +214,88 @@ class TestExprRepr:
     def test_asymmetric(self):
         deep = And(And(Field("a"), Field("b")), Const(True))
         assert expr_depth(deep) == 3
+
+
+# ─── Integration: Serialize Roundtrip ───────────────────────────────────────
+
+
+class TestIntegrationSerializeRoundtrip:
+    def test_complex_nested_roundtrip(self):
+        expr = And(
+            Or(
+                Eq(Field("name"), Const("alice")),
+                And(
+                    Gt(Field("balance"), Const(100)),
+                    Not(IsNull(Field("deleted_at"))),
+                ),
+            ),
+            In(Field("role"), ("admin", "moderator")),
+        )
+        serialized = expr_to_dict(expr)
+        deserialized = expr_from_dict(serialized)
+        assert deserialized == expr
+
+    def test_expr_fields_on_complex_tree(self):
+        expr = And(
+            Or(
+                Eq(Field("name"), Const("alice")),
+                Gt(Field("balance"), Const(100)),
+            ),
+            Not(IsNull(Field("deleted_at"))),
+        )
+        fields = expr_fields(expr)
+        assert fields == {"name", "balance", "deleted_at"}
+
+    def test_expr_complexity_on_complex_tree(self):
+        # And(Or(Eq(F,C), Gt(F,C)), Not(IsNull(F)))
+        # And = 1
+        # Or = 1, Eq = 1 + F + C = 3, Gt = 1 + F + C = 3 => Or subtree = 1+3+3 = 7
+        # Not = 1, IsNull = 1 + F = 2 => Not subtree = 1+2 = 3
+        # Total = 1 + 7 + 3 = 11
+        expr = And(
+            Or(
+                Eq(Field("name"), Const("alice")),
+                Gt(Field("balance"), Const(100)),
+            ),
+            Not(IsNull(Field("deleted_at"))),
+        )
+        assert expr_complexity(expr) == 11
+
+    def test_expr_depth_on_complex_tree(self):
+        # And -> Or -> Eq -> Field (depth 4)
+        # And -> Not -> IsNull -> Field (depth 4)
+        expr = And(
+            Or(
+                Eq(Field("name"), Const("alice")),
+                Gt(Field("balance"), Const(100)),
+            ),
+            Not(IsNull(Field("deleted_at"))),
+        )
+        assert expr_depth(expr) == 4
+
+    def test_expr_repr_readable(self):
+        expr = And(
+            Or(
+                Eq(Field("name"), Const("alice")),
+                Gt(Field("balance"), Const(100)),
+            ),
+            Not(IsNull(Field("deleted_at"))),
+        )
+        result = expr_repr(expr)
+        assert "name == 'alice'" in result
+        assert "balance > 100" in result
+        assert "IS NULL" in result
+        assert "&" in result
+        assert "|" in result
+
+    def test_double_roundtrip(self):
+        expr = Or(
+            And(
+                Ge(Field("score"), Const(90)),
+                Like(Field("email"), "%@corp.com"),
+            ),
+            Between(Field("age"), Const(18), Const(65)),
+        )
+        first_pass = expr_from_dict(expr_to_dict(expr))
+        second_pass = expr_from_dict(expr_to_dict(first_pass))
+        assert second_pass == expr

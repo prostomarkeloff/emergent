@@ -25,6 +25,7 @@ from emergent.wire.axis.schema import inspect_dataclass, FieldInfo
 if TYPE_CHECKING:
     from nodnod import Scope
     from emergent.wire.compile._trace import TraceCollector
+    from emergent.wire.compile._lifetime import ScopeLayer
 from emergent.wire.axis._capability import Capability, ConstraintsContext, ConstraintsCompilable
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -73,6 +74,7 @@ class Axes:
 
     schema: Callable[[type], dict[str, FieldInfo]]
     trace: TraceCollector | None = None
+    scope_layer: ScopeLayer | None = None
 
     @classmethod
     def default(cls) -> Axes:
@@ -94,6 +96,14 @@ class Axes:
         return cls(
             schema=inspect_dataclass,
             trace=collector if collector is not None else ListCollector(),
+        )
+
+    def with_scope_layer(self, layer: ScopeLayer) -> Axes:
+        """Return new Axes with scope_layer set."""
+        return Axes(
+            schema=self.schema,
+            trace=self.trace,
+            scope_layer=layer,
         )
 
 

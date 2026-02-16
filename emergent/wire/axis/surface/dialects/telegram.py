@@ -27,10 +27,32 @@ from emergent.wire.axis._capability import (
     telegrinder_handler,
 )
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
+from emergent.wire.axis.surface.enrichers._base import ScopeEnricher, EnricherNext
 
 if TYPE_CHECKING:
+    from nodnod import Scope
     from telegrinder.bot.dispatch.context import Context
     from telegrinder.types.objects import InlineKeyboardMarkup
+
+
+@dataclass(frozen=True, slots=True)
+class HelpMeta(SurfaceCapability):
+    """Help metadata for /help generation. Capability-driven.
+
+    Attach to any exposure to make it visible in help output.
+    No HelpMeta = not visible in help.
+
+    Usage:
+        endpoint(runner).expose(
+            TelegrindTrigger(Command("register")),
+            rrc(RegisterRequest, TokenResponse),
+            telegram.HelpMeta("Register new account", order=1),
+        )
+    """
+
+    description: str
+    order: int = 100
+    hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,11 +205,64 @@ class ProtectContent(SurfaceCapability):
         return telegrinder_handler(ctx, protect_content=True)
 
 
+@dataclass(frozen=True, slots=True)
+class ReplyMessage(ScopeEnricher):
+    """Send response as a new chat message instead of callback answer.
+
+    For callback_query handlers where the response should appear as a regular
+    chat message (not a toast popup from event.answer()).
+
+    The enricher wraps the core handler, sends the response via API.send_message,
+    and returns None so telegrinder's return manager does nothing.
+
+    Usage:
+        endpoint(runner).expose(
+            TelegrindTrigger(PayloadModelRule(Model), view="callback_query"),
+            stateful_codec,
+            telegram.ReplyMessage(),
+        )
+    """
+
+    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        from kungfu import Some
+        from telegrinder.api import API as _API
+        from telegrinder.types.objects import Update as _Update
+
+        response = await call(scope)
+        if response is None:
+            return None  # type: ignore[return-value]
+
+        text = str(response)
+        if not text:
+            return None  # type: ignore[return-value]
+
+        api_wrapper = scope.get(_API)
+        update_wrapper = scope.get(_Update)
+        if api_wrapper is None or update_wrapper is None:
+            return response
+
+        api: _API = api_wrapper.value
+        update: _Update = update_wrapper.value
+
+        match update.callback_query:
+            case Some(cq):
+                match cq.message:
+                    case Some(msg):
+                        await api.send_message(chat_id=msg.v.chat.id, text=text)
+                        return None  # type: ignore[return-value]
+                    case _:
+                        return response
+            case _:
+                return response
+
+
 __all__ = (
+    "HelpMeta",
     "EditMessage",
     "AnswerCallback",
     "Silent",
     "ParseMode",
     "LinkPreview",
     "ProtectContent",
+    "ReplyMessage",
 )

@@ -372,3 +372,91 @@ class TestExplainDialect:
     def test_kv_dialect(self):
         result = KV_EXPLAIN_DIALECT.explain([KVGet("key")])
         assert result[0]["op"] == "Get"
+
+
+# ─── Integration: Explain Complex Pipeline ──────────────────────────────────
+
+
+class TestIntegrationExplainComplexPipeline:
+    def test_relational_pipeline_explain_dict(self):
+        ops = [
+            Filter(And(Eq(Field("active"), Const(True)), Gt(Field("balance"), Const(0)))),
+            OrderBy((OrderSpec("balance", ascending=False), OrderSpec("name", ascending=True))),
+            Offset(20),
+            Limit(10),
+            Select(("id", "name", "balance")),
+            Distinct(),
+        ]
+        result = explain_ops(ops, RELATIONAL_EXPLAIN)
+        assert len(result) == 6
+        assert result[0]["op"] == "Filter"
+        assert "active" in result[0]["fields"]
+        assert "balance" in result[0]["fields"]
+        assert result[1]["op"] == "OrderBy"
+        assert result[1]["specs"] == ["balance DESC", "name ASC"]
+        assert result[2] == {"op": "Offset", "count": 20}
+        assert result[3] == {"op": "Limit", "count": 10}
+        assert result[4] == {"op": "Select", "fields": ["id", "name", "balance"]}
+        assert result[5] == {"op": "Distinct"}
+
+    def test_relational_pipeline_format_text(self):
+        ops = [
+            Filter(Gt(Field("balance"), Const(100))),
+            OrderBy((OrderSpec("name", ascending=True),)),
+            Limit(50),
+            Offset(10),
+            Select(("id", "name")),
+        ]
+        text = format_ops(ops, RELATIONAL_EXPLAIN)
+        lines = text.strip().split("\n")
+        assert len(lines) == 5
+        assert "Filter" in lines[0]
+        assert "OrderBy" in lines[1]
+        assert "Limit" in lines[2]
+        assert "Offset" in lines[3]
+        assert "Select" in lines[4]
+
+    def test_api_pipeline_explain(self):
+        ops = [
+            ListOp(),
+            FilterMod(Eq(Field("active"), Const(True))),
+            FilterMod(Gt(Field("balance"), Const(100))),
+            OrderMod((OrderSpec("name", ascending=True),)),
+            PageMod(2, 25),
+            SearchMod("test"),
+            SelectMod(("id", "name")),
+            IncludeMod(("posts",)),
+        ]
+        result = explain_ops(ops, API_EXPLAIN)
+        assert len(result) == 8
+        assert result[0]["op"] == "List"
+        assert result[1]["op"] == "Filter"
+        assert result[2]["op"] == "Filter"
+        assert result[3]["op"] == "OrderBy"
+        assert result[4] == {"op": "Page", "page": 2, "per_page": 25}
+        assert result[5] == {"op": "Search", "query": "test"}
+        assert result[6] == {"op": "Select", "fields": ["id", "name"]}
+        assert result[7] == {"op": "Include", "relations": ["posts"]}
+
+    def test_api_crud_explain(self):
+        user = User(id="1", name="alice")
+        ops_create = [CreateOp(user)]
+        ops_update = [UpdateOp("1", user)]
+        ops_patch = [UpdateOp("1", user, partial=True)]
+        ops_delete = [DeleteOp("1")]
+
+        assert explain_ops(ops_create, API_EXPLAIN)[0]["op"] == "Create"
+        assert explain_ops(ops_update, API_EXPLAIN)[0]["op"] == "Update"
+        assert explain_ops(ops_patch, API_EXPLAIN)[0]["op"] == "Patch"
+        assert explain_ops(ops_delete, API_EXPLAIN)[0]["op"] == "Delete"
+
+    def test_explain_via_dialect_object(self):
+        ops = [
+            Filter(Gt(Field("balance"), Const(100))),
+            Limit(10),
+        ]
+        dict_result = RELATIONAL_EXPLAIN_DIALECT.explain(ops)
+        text_result = RELATIONAL_EXPLAIN_DIALECT.format(ops)
+        assert len(dict_result) == 2
+        assert "Filter" in text_result
+        assert "Limit" in text_result

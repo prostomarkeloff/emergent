@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, cast
-from collections.abc import Callable, Coroutine
 
-from nodnod import Scope, EventLoopAgent, Node
+from nodnod import EventLoopAgent
+from nodnod.agent.base import Agent
 
+from emergent.graph._compose import Composer
 from emergent.graph._run import TypedScope
 
 
@@ -25,7 +26,7 @@ class CompiledRun[T]:
     """Run with pre-compiled agent."""
 
     _target: type[T]
-    _agent: EventLoopAgent
+    _agent_cls: type[Agent]
     _injections: tuple[tuple[type[Any], Any], ...]
 
     def inject(self, value: object) -> CompiledRun[T]:
@@ -33,7 +34,7 @@ class CompiledRun[T]:
         value_type = cast(type[Any], type(value))
         return CompiledRun(
             _target=self._target,
-            _agent=self._agent,
+            _agent_cls=self._agent_cls,
             _injections=(*self._injections, (value_type, value)),
         )
 
@@ -42,7 +43,7 @@ class CompiledRun[T]:
         typed_tuple: tuple[type[Any], Any] = (typ, value)
         return CompiledRun(
             _target=self._target,
-            _agent=self._agent,
+            _agent_cls=self._agent_cls,
             _injections=(*self._injections, typed_tuple),
         )
 
@@ -53,7 +54,7 @@ class CompiledRun[T]:
             new_inj.append((cast(type[Any], type(v)), v))
         return CompiledRun(
             _target=self._target,
-            _agent=self._agent,
+            _agent_cls=self._agent_cls,
             _injections=(*self._injections, *new_inj),
         )
 
@@ -65,11 +66,10 @@ class CompiledRun[T]:
             for typ, value in self._injections:
                 scope.inject(typ, value)
 
-            run_method = cast(
-                Callable[[Scope, dict[type[Any], Scope]], Coroutine[Any, Any, None]],
-                getattr(self._agent, "run"),
-            )
-            await run_method(scope.inner, {})
+            composer = Composer.create(scope.inner, self._agent_cls)
+            success, result = await composer.compose(self._target)
+            if not success:
+                raise RuntimeError(f"Failed to compose {self._target.__name__}: {result}")
 
             return scope.get(self._target)
 
@@ -96,13 +96,13 @@ class Compiled[T]:
     """
 
     _target: type[T]
-    _agent: EventLoopAgent
+    _agent_cls: type[Agent]
 
     def run(self) -> CompiledRun[T]:
         """Start a fluent run."""
         return CompiledRun(
             _target=self._target,
-            _agent=self._agent,
+            _agent_cls=self._agent_cls,
             _injections=(),
         )
 
@@ -115,7 +115,7 @@ class Compiled[T]:
         return await self.run().given(*inputs)
 
 
-def graph[T](target: type[T]) -> Compiled[T]:
+def graph[T](target: type[T], agent_cls: type[Agent] | None = None) -> Compiled[T]:
     """
     Pre-compile a graph.
 
@@ -127,9 +127,7 @@ def graph[T](target: type[T]) -> Compiled[T]:
         r1 = await pipeline(order1, db)
         r2 = await pipeline(order2, db)
     """
-    all_nodes: set[type[Node[Any, Any]]] = {cast(type[Node[Any, Any]], target)}
-    agent = EventLoopAgent.build(all_nodes)
-    return Compiled(_target=target, _agent=agent)
+    return Compiled(_target=target, _agent_cls=agent_cls or EventLoopAgent)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -606,3 +606,171 @@ class TestFrozenness:
         assert dataclasses.is_dataclass(cap)
         params = type(cap).__dataclass_params__  # type: ignore[attr-defined]
         assert params.frozen is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Integration: Multi-target capability compilation pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationMultiTargetCompilation:
+    """Compile the same entity's capabilities across multiple targets
+    (OpenAPI, SQLAlchemy, Pydantic, Argparse) and verify consistency."""
+
+    def test_identity_compiles_across_targets(self):
+        """Identity → PK in SQL, nothing special in OpenAPI."""
+        cap = Identity()
+        sql_ctx = SQLAlchemyContext(field_name="id", field_type=int)
+        sql_result = cap.compile_sqlalchemy(sql_ctx)
+        assert sql_result.column_kwargs["primary_key"] is True
+
+    def test_field_capabilities_compile_to_all_targets(self):
+        """A fully-annotated field compiles correctly to all targets."""
+        from emergent.wire.compile._core import fold_field
+        from emergent.wire.axis.schema._inspect import inspect_type
+
+        @dataclass
+        class Product:
+            id: Annotated[int, Identity]
+            name: Annotated[str, MaxLen(100), MinLen(1), Doc("Product name")]
+            price: Annotated[float, Min(0), Max(10000)]
+            status: Annotated[str, OneOf("draft", "active", "archived")]
+
+        fields = inspect_type(Product)
+
+        from emergent.wire.axis._capability import OpenAPICompilable, SQLAlchemyCompilable, ArgparseContext
+
+        # OpenAPI compilation
+        name_openapi = fold_field(
+            fields["name"],
+            OpenAPIContext(field_name="name", field_type=str),
+            OpenAPICompilable,
+            "compile_openapi",
+        )
+        assert name_openapi.schema["maxLength"] == 100
+        assert name_openapi.schema["minLength"] == 1
+        assert name_openapi.schema["description"] == "Product name"
+
+        price_openapi = fold_field(
+            fields["price"],
+            OpenAPIContext(field_name="price", field_type=float),
+            OpenAPICompilable,
+            "compile_openapi",
+        )
+        assert price_openapi.schema["minimum"] == 0
+        assert price_openapi.schema["maximum"] == 10000
+
+        status_openapi = fold_field(
+            fields["status"],
+            OpenAPIContext(field_name="status", field_type=str),
+            OpenAPICompilable,
+            "compile_openapi",
+        )
+        assert status_openapi.schema["enum"] == ["draft", "active", "archived"]
+
+        # SQL compilation
+        id_sql = fold_field(
+            fields["id"],
+            SQLAlchemyContext(field_name="id", field_type=int),
+            SQLAlchemyCompilable,
+            "compile_sqlalchemy",
+        )
+        assert id_sql.column_kwargs["primary_key"] is True
+
+        # Argparse compilation
+        from emergent.wire.axis._capability import ArgparseCompilable
+        status_argparse = fold_field(
+            fields["status"],
+            ArgparseContext(field_name="status", field_type=str),
+            ArgparseCompilable,
+            "compile_argparse",
+        )
+        assert status_argparse.kwargs["choices"] == ["draft", "active", "archived"]
+
+
+class TestIntegrationSchemaMetaComposition:
+    """Schema-level capabilities compose across targets and stacking."""
+
+    def test_schema_meta_stacked_and_compiled(self):
+        """Stacked schema_meta compiles to SQL table + Pydantic model + OpenAPI schema."""
+        @schema_meta(SchemaDoc("User account entity"))
+        @schema_meta(SchemaName("user_accounts"))
+        @dataclass
+        class User:
+            id: Annotated[int, Identity]
+            email: Annotated[str, Unique, MaxLen(255)]
+
+        caps = get_schema_meta(User)
+        assert len(caps) == 2
+
+        # Get SchemaName and SchemaDoc
+        name_cap = get_schema_capability(User, SchemaName)
+        doc_cap = get_schema_capability(User, SchemaDoc)
+        assert name_cap is not None
+        assert doc_cap is not None
+
+        # SQL table context
+        sql_ctx = SQLAlchemyTableContext(class_name="User")
+        sql_result = name_cap.compile_sqlalchemy_table(sql_ctx)
+        assert sql_result.table_name == "user_accounts"
+
+        # Pydantic model context
+        pyd_ctx = PydanticModelContext(class_name="User")
+        pyd_name = name_cap.compile_pydantic_model(pyd_ctx)
+        assert pyd_name.title == "user_accounts"
+        pyd_doc = doc_cap.compile_pydantic_model(pyd_ctx)
+        assert pyd_doc.description == "User account entity"
+
+        # OpenAPI schema context
+        oa_ctx = OpenAPISchemaContext(class_name="User")
+        oa_name = name_cap.compile_openapi_schema(oa_ctx)
+        assert oa_name.schema["title"] == "user_accounts"
+        oa_doc = doc_cap.compile_openapi_schema(oa_ctx)
+        assert oa_doc.schema["description"] == "User account entity"
+
+    def test_abstract_affects_sql_and_pydantic(self):
+        """Abstract marks both SQL table and Pydantic model as abstract."""
+        cap = Abstract()
+
+        sql_result = cap.compile_sqlalchemy_table(SQLAlchemyTableContext(class_name="Base"))
+        assert sql_result.is_abstract is True
+
+        pyd_result = cap.compile_pydantic_model(PydanticModelContext(class_name="Base"))
+        assert pyd_result.is_abstract is True
+
+    def test_composite_constraints_with_schema_meta(self):
+        """CompositeUnique + CompositeIndex + SchemaName all compile together."""
+        @schema_meta(
+            SchemaName("orders"),
+            CompositeUnique("user_id", "product_id", name="uq_user_product"),
+            CompositeIndex("status", "created_at"),
+        )
+        @dataclass
+        class Order:
+            id: Annotated[int, Identity]
+            user_id: int
+            product_id: int
+            status: str
+            created_at: str
+
+        caps = get_schema_meta(Order)
+        assert len(caps) == 3
+
+        # Compile table context
+        ctx = SQLAlchemyTableContext(class_name="Order")
+
+        name = get_schema_capability(Order, SchemaName)
+        assert name is not None
+        table_result = name.compile_sqlalchemy_table(ctx)
+        assert table_result.table_name == "orders"
+
+        cu = get_schema_capability(Order, CompositeUnique)
+        assert cu is not None
+        cu_result = cu.compile_sqlalchemy_table(ctx)
+        assert len(cu_result.constraints) == 1
+        assert cu_result.constraints[0] == ("user_id", "product_id")
+
+        ci = get_schema_capability(Order, CompositeIndex)
+        assert ci is not None
+        ci_result = ci.compile_sqlalchemy_table(ctx)
+        assert len(ci_result.indexes) == 1

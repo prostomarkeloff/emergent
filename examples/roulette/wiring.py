@@ -27,6 +27,7 @@ from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability, EnricherNext
+from emergent.wire.axis.surface.dialects.telegram import HelpMeta
 from emergent.wire.compile.targets import fastapi, cli
 from emergent.wire.compile.targets.cli import cli_run
 
@@ -156,23 +157,27 @@ def _build_endpoints():
             .expose(
                 TelegrindTrigger(Command("register")),
                 rrc(RegisterRequest, TokenResponse),
+                HelpMeta("Register new account", order=1),
             ),
         endpoint(auth_runner)
             .expose(
                 TelegrindTrigger(Command("login")),
                 rrc(LoginRequest, TokenResponse),
+                HelpMeta("Login to your account", order=2),
             ),
         endpoint(game_runner)
             .expose(
                 TelegrindTrigger(Command("balance")),
                 rrc(TelegramBalanceRequest, BalanceResponse),
                 Auth(TelegramBalanceRequest),
+                HelpMeta("Check your balance", order=3),
             ),
         endpoint(game_runner)
             .expose(
                 TelegrindTrigger(Command("bet")),
                 rrc(TelegramBetRequest, BetResponse),
                 Auth(TelegramBetRequest),
+                HelpMeta("Place a bet", order=4),
             ),
     ])
 
@@ -197,18 +202,8 @@ _base_app = Application().mount(*_build_endpoints())
 
 from emergent.wire.compile.targets.telegrinder import generate_help_from_command_rules
 
-# Descriptions — callable for i18n support
-_descriptions: dict[type, str] = {
-    RegisterRequest: "Register new account",
-    LoginRequest: "Login to your account",
-    TelegramBalanceRequest: "Check your balance",
-    TelegramBetRequest: "Place a bet",
-}
-
 _help_text = generate_help_from_command_rules(
     _base_app,
-    get_description=lambda cls: _descriptions.get(cls, ""),
-    order=[RegisterRequest, LoginRequest, TelegramBalanceRequest, TelegramBetRequest],
     template="/{name} {args} — {description}",
     header="Roulette Bot\n\nCommands:",
     footer="\nGood luck!",

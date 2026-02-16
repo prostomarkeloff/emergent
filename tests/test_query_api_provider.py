@@ -442,3 +442,114 @@ async def test_create_duplicate_id(prov):
     await prov.execute(api(Item).create(Item(1, "Alpha", 10.0)))
     await prov.execute(api(Item).create(Item(1, "Alpha Copy", 20.0)))
     assert len(prov.data) == 2
+
+
+# ─── Integration: API CRUD Lifecycle ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestIntegrationAPICRUDLifecycle:
+    async def test_full_lifecycle(self):
+        prov = MemoryAPIProvider[int, Item](
+            key_fn=lambda x: x.id,
+            next_id=SequenceNextId(),
+        )
+        # Create 5 items
+        items = [
+            Item(1, "Alpha", 10.0, True),
+            Item(2, "Beta", 20.0, True),
+            Item(3, "Gamma", 30.0, False),
+            Item(4, "Delta", 5.0, True),
+            Item(5, "Epsilon", 50.0, False),
+        ]
+        for item in items:
+            await prov.execute(api(Item).create(item))
+
+        # List with filter: active only
+        active = await prov.fetch_many(
+            api(Item).list().filter(lambda x: x.active == True)
+        )
+        assert len(active) == 3
+
+        # Get by id
+        got = await prov.fetch_one(api(Item).get(2))
+        assert got is not None
+        assert got.name == "Beta"
+
+        # Update price
+        updated = Item(2, "Beta", 99.0, True)
+        result = await prov.execute(api(Item).update(2, updated))
+        assert result.price == 99.0
+
+        # Delete
+        deleted = await prov.delete(api(Item).delete(3))
+        assert deleted is True
+
+        # Verify count
+        all_items = await prov.fetch_many(api(Item).list())
+        assert len(all_items) == 4
+
+    async def test_paginate_through_all(self):
+        prov = MemoryAPIProvider[int, Item](
+            key_fn=lambda x: x.id,
+            next_id=SequenceNextId(),
+        )
+        for i in range(1, 6):
+            await prov.execute(api(Item).create(Item(i, f"Item{i}", float(i * 10))))
+
+        # Page 1
+        page1 = await prov.fetch_many(
+            api(Item).list().order_by(lambda x: x.id).page(1, per_page=2)
+        )
+        assert len(page1) == 2
+        assert page1[0].id == 1
+        assert page1[1].id == 2
+
+        # Page 2
+        page2 = await prov.fetch_many(
+            api(Item).list().order_by(lambda x: x.id).page(2, per_page=2)
+        )
+        assert len(page2) == 2
+        assert page2[0].id == 3
+        assert page2[1].id == 4
+
+        # Page 3 (partial)
+        page3 = await prov.fetch_many(
+            api(Item).list().order_by(lambda x: x.id).page(3, per_page=2)
+        )
+        assert len(page3) == 1
+        assert page3[0].id == 5
+
+    async def test_search_and_filter_combined(self):
+        prov = MemoryAPIProvider[int, Item](
+            key_fn=lambda x: x.id,
+            next_id=SequenceNextId(),
+        )
+        await prov.execute(api(Item).create(Item(1, "Alpha Plus", 10.0, True)))
+        await prov.execute(api(Item).create(Item(2, "Alpha Basic", 20.0, False)))
+        await prov.execute(api(Item).create(Item(3, "Beta Plus", 30.0, True)))
+
+        # Search "alpha" + filter active
+        result = await prov.fetch_many(
+            api(Item).list()
+            .search("alpha")
+            .filter(lambda x: x.active == True)
+        )
+        assert len(result) == 1
+        assert result[0].name == "Alpha Plus"
+
+    async def test_ordering_persists_through_operations(self):
+        prov = MemoryAPIProvider[int, Item](
+            key_fn=lambda x: x.id,
+            next_id=SequenceNextId(),
+        )
+        for i in [3, 1, 5, 2, 4]:
+            await prov.execute(api(Item).create(Item(i, f"Item{i}", float(i * 10))))
+
+        result = await prov.fetch_many(
+            api(Item).list()
+            .filter(lambda x: x.active == True)
+            .order_by(lambda x: x.price.desc())
+        )
+        prices = [r.price for r in result]
+        assert prices == sorted(prices, reverse=True)

@@ -36,6 +36,7 @@ from emergent.wire.axis.surface.codecs.stateful import (
 )
 from emergent.wire.axis.surface.transforms._trigger import URLPath, Prefix, StripPrefix
 from emergent.wire.axis.surface.transforms._response import AsDict, AsStr, Transform
+from emergent.wire.axis.surface.enrichers._base import ScopeEnricher
 from emergent.wire.axis.surface.enrichers._impl import Inject, chain_enrichers
 from emergent.wire.axis.surface.capabilities._helpers import (
     find_capability,
@@ -1139,3 +1140,700 @@ class TestExposure:
             capabilities=(cap,),
         )
         assert exp.capabilities == (cap,)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 13. Integration — Full surface pipeline with mixed triggers/codecs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationFullSurfacePipeline:
+    """Build a realistic multi-trigger, multi-codec app and verify scan, handler,
+    and capability wiring work together end-to-end."""
+
+    def _build_app(self) -> Application:
+        """Realistic app: HTTP RRC + HTTP Delegate + CLI RRC + Event RRC."""
+
+        @dataclass
+        class CreateUserReq:
+            name: str = ""
+
+        @dataclass
+        class CreateUserResp:
+            user_id: int = 0
+
+        @dataclass
+        class OrderEvent:
+            order_id: int = 0
+
+        from emergent.wire.axis.surface.triggers.event import EventTrigger
+
+        runner = _runner()
+        as_dict = AsDict()
+        inject_cap = Inject(type=str, value="injected")
+
+        # Endpoint 1: HTTP RRC + CLI RRC (multi-exposure)
+        ep1 = (
+            endpoint(runner)
+            .expose(
+                HTTPRouteTrigger("POST", "/users"),
+                rrc(CreateUserReq, CreateUserResp),
+                as_dict,
+                inject_cap,
+            )
+            .expose(
+                CLITrigger("create-user"),
+                rrc(CreateUserReq, CreateUserResp),
+            )
+        )
+
+        # Endpoint 2: HTTP Delegate
+        ep2 = endpoint(runner).expose(
+            HTTPRouteTrigger("GET", "/health"),
+            delegate(lambda: "ok"),
+        )
+
+        # Endpoint 3: Event trigger
+        ep3 = endpoint(runner).expose(
+            EventTrigger(event_type=OrderEvent),
+            rrc(OrderEvent, CreateUserResp),
+        )
+
+        return application(capabilities=(MockCap("cors"),)).mount(ep1, ep2, ep3)
+
+    def test_scan_http_returns_all_http_handlers(self):
+        app = self._build_app()
+        pairs = scan(app, HTTPRouteTrigger)
+        assert len(pairs) == 2
+        paths = {t.path for t, _ in pairs}
+        assert paths == {"/users", "/health"}
+
+    def test_scan_http_rrc_only(self):
+        app = self._build_app()
+        pairs = scan(app, HTTPRouteTrigger, RequestResponseCodec)
+        assert len(pairs) == 1
+        assert pairs[0][0].path == "/users"
+
+    def test_scan_http_delegate_only(self):
+        app = self._build_app()
+        pairs = scan(app, HTTPRouteTrigger, DelegateCodec)
+        assert len(pairs) == 1
+        assert pairs[0][0].path == "/health"
+
+    def test_scan_cli_returns_cli_only(self):
+        app = self._build_app()
+        pairs = scan(app, CLITrigger)
+        assert len(pairs) == 1
+        assert pairs[0][0].command == "create-user"
+
+    def test_scan_event_returns_event_only(self):
+        from emergent.wire.axis.surface.triggers.event import EventTrigger
+
+        app = self._build_app()
+        pairs = scan(app, EventTrigger)
+        assert len(pairs) == 1
+
+    def test_handler_carries_exposure_capabilities(self):
+        """Capabilities set on expose() flow through to Handler via scan."""
+        app = self._build_app()
+        pairs = scan(app, HTTPRouteTrigger, RequestResponseCodec)
+        _, handler = pairs[0]
+        assert has_capability(handler.capabilities, AsDict)
+        assert has_capability(handler.capabilities, Inject)
+
+    def test_handler_without_caps_has_empty_tuple(self):
+        app = self._build_app()
+        pairs = scan(app, CLITrigger)
+        _, handler = pairs[0]
+        assert handler.capabilities == ()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 14. Integration — Capability flow through AppStack hierarchy
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationCapabilityFlowThroughStack:
+    """AppStack with root + mounts, global and per-exposure capabilities."""
+
+    def test_stack_scan_preserves_capabilities(self):
+        """Capabilities on individual exposures survive scan_stack."""
+        cap = AsDict()
+        root_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/root"),
+                rrc(Req, Resp),
+                cap,
+            )
+        )
+        sub_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/sub"),
+                rrc(Req, Resp),
+            )
+        )
+        stack = app_stack().root(root_app).mount("admin", sub_app)
+        view = scan_stack(stack, HTTPRouteTrigger)
+
+        # Root handler has AsDict
+        _, root_handler = view.root[0]
+        assert has_capability(root_handler.capabilities, AsDict)
+
+        # Sub handler has no caps
+        sub_pairs = view.mounts["admin"]
+        assert isinstance(sub_pairs, list)
+        _, sub_handler = sub_pairs[0]
+        assert sub_handler.capabilities == ()
+
+    def test_nested_stack_scan_depth(self):
+        """Three-level nesting: root → mount → nested mount via AppStack."""
+        inner_app = application().mount(
+            endpoint(_runner()).expose(CLITrigger("deep"), rrc(Req, Resp))
+        )
+        inner_stack = app_stack().root(inner_app)
+        mid_app = application().mount(
+            endpoint(_runner()).expose(CLITrigger("mid"), rrc(Req, Resp))
+        )
+        mid_stack = app_stack().root(mid_app).mount("inner", inner_stack)
+        outer = app_stack().mount("mid", mid_stack)
+
+        view = scan_stack(outer, CLITrigger)
+        assert len(view.root) == 0
+        mid_view = view.mounts["mid"]
+        assert isinstance(mid_view, StackView)
+        assert len(mid_view.root) == 1
+        inner_view = mid_view.mounts["inner"]
+        assert isinstance(inner_view, StackView)
+        assert len(inner_view.root) == 1
+
+    def test_stack_codec_filter(self):
+        """scan_stack filters by codec type across hierarchy."""
+        root_app = application().mount(
+            endpoint(_runner())
+            .expose(HTTPRouteTrigger("GET", "/a"), rrc(Req, Resp))
+            .expose(HTTPRouteTrigger("GET", "/b"), delegate(lambda: None))
+        )
+        sub_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("POST", "/c"), rrc(Req, Resp),
+            )
+        )
+        stack = app_stack().root(root_app).mount("api", sub_app)
+
+        rrc_view = scan_stack(stack, HTTPRouteTrigger, RequestResponseCodec)
+        assert len(rrc_view.root) == 1
+        assert rrc_view.root[0][0].path == "/a"
+        api_pairs = rrc_view.mounts["api"]
+        assert isinstance(api_pairs, list)
+        assert len(api_pairs) == 1
+
+    def test_stack_with_global_app_capabilities(self):
+        """Global capabilities on Application are separate from Handler caps."""
+        cap = MockCap("auth")
+        root_app = application(capabilities=(cap,)).mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/x"), rrc(Req, Resp),
+            )
+        )
+        stack = app_stack().root(root_app)
+        # App-level caps
+        assert root_app.capabilities == (cap,)
+        # Handler-level caps are empty (not inherited from app)
+        view = scan_stack(stack, HTTPRouteTrigger)
+        _, handler = view.root[0]
+        assert handler.capabilities == ()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 15. Integration — Stateful codec full lifecycle
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationStatefulCodecLifecycle:
+    """Build a stateful codec, test all transition parse patterns, and verify
+    the codec carries correct structure through endpoint/scan."""
+
+    def test_stateful_multi_transition_flow(self):
+        """Flow with multiple @transition methods, verify all found."""
+
+        @dataclass
+        class WizardFlow:
+            step: int = 0
+
+            @transition
+            async def set_name(self, name: str = ""):
+                return replace(self, step=1)
+
+            @transition
+            async def set_email(self, email: str = ""):
+                return replace(self, step=2)
+
+            @transition
+            async def confirm(self):
+                return Done()
+
+            def to_domain(self):
+                return {"step": self.step}
+
+        class FakeKey:
+            pass
+
+        transitions = get_transitions(WizardFlow)
+        assert len(transitions) == 3
+        names = {t.__name__ for t in transitions}
+        assert names == {"set_name", "set_email", "confirm"}
+
+        codec = stateful(WizardFlow, Resp).key(FakeKey).build()
+        assert codec.flow is WizardFlow
+        assert codec.key_node is FakeKey
+
+    def test_parse_all_transition_result_variants(self):
+        """All four variants: state, done, (state, resp), (done, resp)."""
+
+        @dataclass
+        class S:
+            x: int = 0
+
+        # State only
+        r1 = parse_transition_result(S(x=1))
+        assert not r1.is_terminal
+        assert isinstance(r1.response, Nothing)
+
+        # Done only
+        r2 = parse_transition_result(Done())
+        assert r2.is_terminal
+        assert isinstance(r2.response, Nothing)
+
+        # State + response
+        r3 = parse_transition_result((S(x=2), "progress"))
+        assert not r3.is_terminal
+        assert isinstance(r3.response, Some)
+        assert r3.response.unwrap() == "progress"
+
+        # Done + response
+        r4 = parse_transition_result((Done(), "final"))
+        assert r4.is_terminal
+        assert isinstance(r4.response, Some)
+        assert r4.response.unwrap() == "final"
+
+    def test_cancelled_is_terminal_done(self):
+        """Cancelled extends Done — parse_transition_result marks terminal."""
+        from emergent.wire.axis.surface.codecs.stateful import Cancelled
+
+        r = parse_transition_result(Cancelled())
+        assert r.is_terminal
+        assert isinstance(r.state_or_done, Cancelled)
+
+    def test_stateful_endpoint_scanned_as_stateful_codec(self):
+        """Stateful codec on endpoint is scannable by StatefulCodec type."""
+
+        @dataclass
+        class SimpleFlow:
+            @transition
+            async def step(self):
+                return Done()
+
+            def to_domain(self):
+                return {}
+
+        class FakeKey:
+            pass
+
+        codec = stateful(SimpleFlow, Resp).key(FakeKey).build()
+        ep = endpoint(_runner()).expose(CLITrigger("wizard"), codec)
+        pairs = scan_endpoint(ep, CLITrigger, StatefulCodec)
+        assert len(pairs) == 1
+        _, handler = pairs[0]
+        assert isinstance(handler.codec, StatefulCodec)
+        assert handler.codec.flow is SimpleFlow
+
+    def test_stateful_with_dunder_transition(self):
+        """Flow using __transition__ instead of @transition decorator."""
+
+        @dataclass
+        class LegacyFlow:
+            async def __transition__(self, input: str = ""):
+                return Done()
+
+            def to_domain(self):
+                return {}
+
+        transitions = get_transitions(LegacyFlow)
+        assert len(transitions) == 1
+        assert transitions[0].__name__ == "__transition__"
+
+    def test_stateful_builder_chaining(self):
+        """Builder pattern: stateful().key().build() with store."""
+
+        @dataclass
+        class Flow:
+            @transition
+            async def step(self):
+                return Done()
+
+            def to_domain(self):
+                return {}
+
+        class MyKey:
+            pass
+
+        # Verify builder returns StatefulCodec with all fields
+        codec = stateful(Flow, Resp).key(MyKey).build()
+        assert isinstance(codec, StatefulCodec)
+        assert codec.flow is Flow
+        assert codec.response is Resp
+        assert codec.key_node is MyKey
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 16. Integration — Enricher + Transform composition
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationEnricherTransformComposition:
+    """Enrichers and response transforms on the same endpoint.
+    Verify chain_enrichers ordering and filter_by_protocol classification."""
+
+    @pytest.mark.anyio
+    async def test_chain_enrichers_ordering(self):
+        """chain_enrichers builds e1(e2(handler)) — first is outermost."""
+        from nodnod import Scope
+        from emergent.wire.axis.surface.enrichers._impl import Passthrough
+
+        call_order: list[str] = []
+
+        @dataclass(frozen=True, slots=True)
+        class TrackEnricher(ScopeEnricher):
+            label: str
+
+            async def enrich(self, call, scope):
+                call_order.append(f"{self.label}_enter")
+                result = await call(scope)
+                call_order.append(f"{self.label}_exit")
+                return result
+
+        async def handler(scope: Scope) -> str:
+            call_order.append("handler")
+            return "ok"
+
+        enrichers = (TrackEnricher(label="outer"), TrackEnricher(label="inner"))
+        chained = chain_enrichers(enrichers, handler)
+
+        scope = Scope()
+        async with scope:
+            result = await chained(scope)
+
+        assert result == "ok"
+        assert call_order == [
+            "outer_enter", "inner_enter", "handler", "inner_exit", "outer_exit"
+        ]
+
+    @pytest.mark.anyio
+    async def test_inject_enricher_provides_value_to_scope(self):
+        """Inject enricher injects value into scope before handler."""
+        from nodnod import Scope
+
+        @dataclass
+        class Config:
+            db_url: str = "postgres://localhost"
+
+        config = Config()
+        enricher = Inject(type=Config, value=config)
+
+        received: list[Config] = []
+
+        async def handler(scope: Scope) -> str:
+            retrieved = scope.retrieve(Config)
+            assert isinstance(retrieved, Some)
+            received.append(retrieved.unwrap().value)
+            return "done"
+
+        chained = chain_enrichers((enricher,), handler)
+        scope = Scope()
+        async with scope:
+            await chained(scope)
+
+        assert len(received) == 1
+        assert received[0] is config
+
+    @pytest.mark.anyio
+    async def test_inject_factory_enricher(self):
+        """Inject with factory= produces value from scope."""
+        from nodnod import Scope
+
+        enricher = Inject(type=int, factory=lambda scope: 42)
+
+        async def handler(scope: Scope) -> int:
+            opt = scope.retrieve(int)
+            assert isinstance(opt, Some)
+            return opt.unwrap().value
+
+        chained = chain_enrichers((enricher,), handler)
+        scope = Scope()
+        async with scope:
+            result = await chained(scope)
+
+        assert result == 42
+
+    def test_filter_enrichers_vs_transforms(self):
+        """filter_by_protocol correctly separates enrichers from transforms."""
+        inject = Inject(type=str, value="x")
+        as_dict = AsDict()
+        as_str = AsStr()
+        transform = Transform(fn=lambda x: x)
+        mock = MockCap("tag")
+
+        caps: tuple[SurfaceCapability, ...] = (inject, as_dict, as_str, transform, mock)
+
+        enrichers = filter_by_protocol(caps, ScopeEnricher)
+        assert len(enrichers) == 1
+        assert enrichers[0] is inject
+
+        transforms = filter_by_protocol(caps, ResponseTransform)
+        assert len(transforms) == 3
+        assert as_dict in transforms
+        assert as_str in transforms
+        assert transform in transforms
+
+    def test_endpoint_with_mixed_capabilities_scanned(self):
+        """Endpoint with enrichers + transforms — all carried through scan."""
+        inject = Inject(type=str, value="x")
+        as_dict = AsDict()
+        transform = Transform(fn=str.upper)
+
+        ep = endpoint(_runner()).expose(
+            HTTPRouteTrigger("GET", "/api"),
+            rrc(Req, Resp),
+            inject,
+            as_dict,
+            transform,
+        )
+        app = application().mount(ep)
+        pairs = scan(app, HTTPRouteTrigger)
+        _, handler = pairs[0]
+
+        assert len(handler.capabilities) == 3
+        assert has_capability(handler.capabilities, Inject)
+        assert has_capability(handler.capabilities, AsDict)
+        assert has_capability(handler.capabilities, Transform)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 17. Integration — Capability helpers full pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationCapabilityHelpersPipeline:
+    """Full pipeline: merge, override, deduplicate, filter, find, remove
+    applied to capabilities from real endpoints."""
+
+    def test_merge_override_deduplicate_pipeline(self):
+        """merge → override → deduplicate produces clean result."""
+        base = (MockCap("auth"), AnotherCap(1), AsDict())
+        extra = (MockCap("cors"), AsStr())
+
+        # merge: MockCap("auth") → MockCap("cors") (overridden by later)
+        merged = merge_capabilities(base, extra)
+        mock_caps = find_all_capabilities(merged, MockCap)
+        assert len(mock_caps) == 1
+        assert mock_caps[0].name == "cors"
+
+        # Override AsDict with AsDict(skip=True)
+        overridden = override_capability(merged, AsDict(skip=True))
+        found = find_capability(overridden, AsDict)
+        assert found is not None
+        assert found.skip is True
+
+        # Deduplicate (idempotent after merge)
+        deduped = deduplicate_capabilities(overridden)
+        assert len(deduped) == len(overridden)
+
+    def test_remove_and_verify_absence(self):
+        """remove_capability + has_capability chain."""
+        caps: tuple[SurfaceCapability, ...] = (
+            MockCap("x"), AnotherCap(1), AsDict(), Inject(type=str, value="v"),
+        )
+
+        # Remove Inject
+        result = remove_capability(caps, Inject)
+        assert not has_capability(result, Inject)
+        assert has_capability(result, MockCap)
+        assert has_capability(result, AsDict)
+        assert len(result) == 3
+
+    def test_filter_find_roundtrip(self):
+        """filter_by_protocol then find_capability within filtered set."""
+        inject = Inject(type=str, value="x")
+        as_dict = AsDict()
+        as_str = AsStr()
+        caps: tuple[SurfaceCapability, ...] = (inject, as_dict, as_str, MockCap("tag"))
+
+        transforms = filter_by_protocol(caps, ResponseTransform)
+        # find within transforms
+        found = find_capability(transforms, AsDict)
+        assert found is as_dict
+
+        # find_all within transforms
+        all_transforms = find_all_capabilities(transforms, ResponseTransform)
+        assert len(all_transforms) == 2
+
+    def test_capabilities_from_scanned_handlers(self):
+        """Extract capabilities from handlers produced by scan, then manipulate."""
+        ep1 = endpoint(_runner()).expose(
+            HTTPRouteTrigger("GET", "/a"),
+            rrc(Req, Resp),
+            AsDict(),
+            MockCap("auth"),
+        )
+        ep2 = endpoint(_runner()).expose(
+            HTTPRouteTrigger("GET", "/b"),
+            rrc(Req, Resp),
+            AsStr(),
+            MockCap("rate-limit"),
+        )
+        app = application().mount(ep1, ep2)
+        pairs = scan(app, HTTPRouteTrigger)
+
+        # Merge capabilities from both handlers
+        all_caps = merge_capabilities(
+            pairs[0][1].capabilities,
+            pairs[1][1].capabilities,
+        )
+        # MockCap from ep2 overrides MockCap from ep1 (same type)
+        mock = find_capability(all_caps, MockCap)
+        assert mock is not None
+        assert mock.name == "rate-limit"
+
+        # Both transform types present
+        assert has_capability(all_caps, AsDict)
+        assert has_capability(all_caps, AsStr)
+
+    def test_deduplicate_preserves_last_of_each_type(self):
+        """Multiple same-type caps → deduplicate keeps last."""
+        caps: tuple[SurfaceCapability, ...] = (
+            MockCap("first"),
+            AnotherCap(1),
+            MockCap("second"),
+            AnotherCap(2),
+            MockCap("third"),
+        )
+        deduped = deduplicate_capabilities(caps)
+        assert len(deduped) == 2
+        mock = find_capability(deduped, MockCap)
+        assert mock is not None
+        assert mock.name == "third"
+        another = find_capability(deduped, AnotherCap)
+        assert another is not None
+        assert another.value == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 18. Integration — Application merge complex topology
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestIntegrationApplicationMergeTopology:
+    """Multiple apps with various topologies merged via + and .merge()."""
+
+    def test_triple_merge_preserves_all_endpoints(self):
+        eps = [
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", f"/ep{i}"), rrc(Req, Resp),
+            )
+            for i in range(3)
+        ]
+        apps = [application().mount(ep) for ep in eps]
+        merged = apps[0].merge(apps[1], apps[2])
+        pairs = scan(merged, HTTPRouteTrigger)
+        assert len(pairs) == 3
+        paths = {t.path for t, _ in pairs}
+        assert paths == {"/ep0", "/ep1", "/ep2"}
+
+    def test_add_operator_associativity(self):
+        """(a + b) + c == a + (b + c) in terms of endpoint count."""
+        eps = [
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", f"/x{i}"), rrc(Req, Resp),
+            )
+            for i in range(3)
+        ]
+        a = application().mount(eps[0])
+        b = application().mount(eps[1])
+        c = application().mount(eps[2])
+
+        left = (a + b) + c
+        right = a + (b + c)
+        assert len(left.endpoints) == len(right.endpoints) == 3
+
+    def test_merge_accumulates_capabilities(self):
+        app1 = application(capabilities=(MockCap("cors"),))
+        app2 = application(capabilities=(AnotherCap(42),))
+        app3 = application(capabilities=(MockCap("auth"),))
+        merged = app1.merge(app2, app3)
+        # All capabilities accumulated
+        assert len(merged.capabilities) == 3
+        # Order: app1 caps + app2 caps + app3 caps
+        assert isinstance(merged.capabilities[0], MockCap)
+        assert isinstance(merged.capabilities[1], AnotherCap)
+        assert isinstance(merged.capabilities[2], MockCap)
+
+    def test_merge_with_mixed_codec_types(self):
+        """Merge apps with different codec types — scan by codec still works."""
+        rrc_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/rrc"), rrc(Req, Resp),
+            )
+        )
+        delegate_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/delegate"), delegate(lambda: "ok"),
+            )
+        )
+        immediate_app = application().mount(
+            endpoint(_runner()).expose(
+                HTTPRouteTrigger("GET", "/immediate"),
+                immediate_factory(lambda: "hello"),
+            )
+        )
+        merged = rrc_app + delegate_app + immediate_app
+
+        all_http = scan(merged, HTTPRouteTrigger)
+        assert len(all_http) == 3
+
+        rrc_only = scan(merged, HTTPRouteTrigger, RequestResponseCodec)
+        assert len(rrc_only) == 1
+        assert rrc_only[0][0].path == "/rrc"
+
+        delegate_only = scan(merged, HTTPRouteTrigger, DelegateCodec)
+        assert len(delegate_only) == 1
+        assert delegate_only[0][0].path == "/delegate"
+
+        immediate_only = scan(merged, HTTPRouteTrigger, ImmediateFactoryCodec)
+        assert len(immediate_only) == 1
+        assert immediate_only[0][0].path == "/immediate"
+
+    def test_empty_app_merge_is_identity(self):
+        """Merging with empty app doesn't change anything."""
+        ep = endpoint(_runner()).expose(
+            HTTPRouteTrigger("GET", "/x"), rrc(Req, Resp),
+        )
+        app = application(capabilities=(MockCap("x"),)).mount(ep)
+        merged = app + application()
+        assert len(merged.endpoints) == 1
+        assert len(merged.capabilities) == 1
+
+    def test_trigger_transform_applied_before_scan(self):
+        """Prefix transform modifies trigger paths."""
+        prefix = Prefix.of("api", "v1")
+        trigger = HTTPRouteTrigger("GET", "/users")
+        transformed = prefix.apply_trigger(trigger)
+
+        ep = endpoint(_runner()).expose(transformed, rrc(Req, Resp))
+        app = application().mount(ep)
+        pairs = scan(app, HTTPRouteTrigger)
+        assert pairs[0][0].path == "/api/v1/users"
+
+        # Chain: Prefix then StripPrefix = roundtrip
+        strip = StripPrefix.of("api/v1")
+        restored = strip.apply_trigger(transformed)
+        assert restored.path == "/users"

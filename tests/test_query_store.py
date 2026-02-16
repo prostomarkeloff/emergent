@@ -230,3 +230,112 @@ class TestKVStore:
         await store.set("b", BOB)
         keys = await store.keys("*")
         assert set(keys) == {"a", "b"}
+
+
+# ─── Integration: Store Full Lifecycle ───────────────────────────────────────
+
+
+class TestIntegrationStoreFullLifecycle:
+    @pytest.mark.asyncio
+    async def test_relational_store_lifecycle(self):
+        prov = MemoryRelationalProvider[User](key_fn=lambda u: u.id)
+        store = relational_store(User, prov)
+
+        # Insert
+        await store.insert(ALICE)
+        await store.insert(BOB)
+        await store.insert(CHARLIE)
+        all_users = await store.all().fetch_many()
+        assert len(all_users) == 3
+
+        # Filter
+        active = await store.filter(lambda u: u.active == True).fetch_many()
+        assert len(active) == 2
+
+        # Fetch one
+        alice = await store.filter(lambda u: u.name == "alice").fetch_one()
+        assert alice is not None
+        assert alice.name == "alice"
+
+        # Update
+        updated_alice = User(1, "alice_updated", 150.0)
+        result = await store.update(updated_alice)
+        assert result.name == "alice_updated"
+
+        fetched = await store.filter(lambda u: u.id == 1).fetch_one()
+        assert fetched is not None
+        assert fetched.name == "alice_updated"
+
+        # Delete
+        await store.delete(BOB)
+        remaining = await store.all().fetch_many()
+        assert len(remaining) == 2
+        names = {u.name for u in remaining}
+        assert "bob" not in names
+
+    @pytest.mark.asyncio
+    async def test_kv_store_lifecycle(self):
+        prov = MemoryKVProvider[str, User]()
+        store = kv_store(User, key=lambda u: u.id, provider=prov)
+
+        # Set
+        await store.set("alice", ALICE)
+        await store.set("bob", BOB)
+
+        # Get
+        alice = await store.get("alice")
+        assert alice is not None
+        assert alice.name == "alice"
+
+        # Put (uses key_fn)
+        await store.put(CHARLIE)
+        charlie = await store.get(CHARLIE.id)
+        assert charlie is not None
+        assert charlie.name == "charlie"
+
+        # Scan
+        await store.set("user:1", ALICE)
+        await store.set("user:2", BOB)
+        scanned = await store.scan("user:*")
+        assert len(scanned) == 2
+
+        # Delete
+        deleted = await store.delete("alice")
+        assert deleted is True
+        assert await store.get("alice") is None
+
+        # Exists
+        assert await store.exists("bob") is True
+        assert await store.exists("alice") is False
+
+    @pytest.mark.asyncio
+    async def test_relational_query_cached_in_kv(self):
+        # Setup relational store
+        rel_prov = MemoryRelationalProvider[User](
+            data=[ALICE, BOB, CHARLIE],
+            key_fn=lambda u: u.id,
+        )
+        rel_store = relational_store(User, rel_prov)
+
+        # Setup KV store
+        kv_prov = MemoryKVProvider[str, User]()
+        cache = kv_store(User, key=lambda u: u.id, provider=kv_prov)
+
+        # Query relational store for high-balance users
+        rich = await (
+            rel_store
+            .filter(lambda u: u.balance >= 100)
+            .order_by(lambda u: u.balance.desc())
+            .fetch_many()
+        )
+        assert len(rich) == 2  # CHARLIE(200) and ALICE(100)
+
+        # Cache in KV
+        for user in rich:
+            await cache.set(f"rich:{user.id}", user)
+
+        # Verify cache
+        cached = await cache.scan("rich:*")
+        assert len(cached) == 2
+        cached_names = {u.name for u in cached}
+        assert cached_names == {"alice", "charlie"}

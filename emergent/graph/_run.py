@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, cast
-from collections.abc import Callable, Coroutine
 
-from nodnod import Scope, Value, EventLoopAgent, Node
+from nodnod import Scope, Value
+
+from emergent.graph._compose import Composer
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,21 +136,14 @@ class Run[T]:
         return self._execute().__await__()
 
     async def _execute(self) -> T:
-        # nodnod auto-discovers dependencies from target
-        all_nodes: set[type[Node[Any, Any]]] = {
-            cast(type[Node[Any, Any]], self._target)
-        }
-        agent = EventLoopAgent.build(all_nodes)
-
         async with TypedScope(detail="run") as scope:
             for typ, value in self._injections:
                 scope.inject(typ, value)
 
-            run_method = cast(
-                Callable[[Scope, dict[type[Any], Scope]], Coroutine[Any, Any, None]],
-                getattr(agent, "run"),
-            )
-            await run_method(scope.inner, {})
+            composer = Composer.create(scope.inner)
+            success, result = await composer.compose(self._target)
+            if not success:
+                raise RuntimeError(f"Failed to compose {self._target.__name__}: {result}")
 
             return scope.get(self._target)
 

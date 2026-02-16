@@ -268,3 +268,83 @@ class TestWindowBuilder:
         wb = WindowBuilder(RowNumber(), None)
         with pytest.raises(TypeError, match="order_by expects OrderSpec or FieldProxy"):
             wb.over(order_by=(OrderSpec("a", ascending=True), "bad"))  # type: ignore
+
+
+# ─── Integration: SQL Complex Query ─────────────────────────────────────────
+
+
+class TestIntegrationSQLComplexQuery:
+    def test_filter_window_for_update_returning(self):
+        q = (
+            sql_relational(User)
+            .filter(lambda u: u.balance > 0)
+            .window(
+                rn=lambda u: u.row_number().over(
+                    partition_by=u.department,
+                    order_by=u.balance.desc(),
+                ),
+            )
+            .for_update(nowait=True)
+            .returning("id", "name")
+        )
+        assert len(q.ops) == 4
+        assert isinstance(q.ops[0], Filter)
+        assert isinstance(q.ops[1], Window)
+        assert isinstance(q.ops[2], ForUpdate)
+        assert isinstance(q.ops[3], Returning)
+
+        # Verify window spec
+        assert q.has_windows is True
+        specs = q.windows
+        assert len(specs) == 1
+        assert specs[0].alias == "rn"
+        assert isinstance(specs[0].func, RowNumber)
+        assert specs[0].partition_by == ("department",)
+        assert len(specs[0].order_by) == 1
+        assert specs[0].order_by[0].field == "balance"
+        assert specs[0].order_by[0].ascending is False
+
+        # Verify for_update
+        assert q.has_for_update is True
+        for_update_ops = [op for op in q.ops if isinstance(op, ForUpdate)]
+        assert for_update_ops[0].nowait is True
+
+        # Verify returning
+        assert q.has_returning is True
+        returning_ops = [op for op in q.ops if isinstance(op, Returning)]
+        assert returning_ops[0].fields == ("id", "name")
+
+    def test_to_relational_strips_sql_ops_keeps_filter(self):
+        q = (
+            sql_relational(User)
+            .filter(lambda u: u.balance > 0)
+            .window(rn=lambda u: u.row_number().over())
+            .for_update(nowait=True)
+            .returning("id", "name")
+            .order_by(lambda u: u.name)
+            .limit(50)
+        )
+        rel = q.to_relational()
+        assert not isinstance(rel, SQLRelationalQuerySet)
+        # Only universal ops: Filter, OrderBy, Limit
+        assert len(rel.ops) == 3
+        assert isinstance(rel.ops[0], Filter)
+        assert isinstance(rel.ops[1], OrderBy)
+        assert isinstance(rel.ops[2], Limit)
+        assert rel.entity is User
+
+    def test_window_partition_and_order_correctness(self):
+        q = sql_relational(User).window(
+            running_total=lambda u: u.balance.sum().over(
+                partition_by=u.department,
+                order_by=u.balance.asc(),
+            ),
+        )
+        specs = q.windows
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.alias == "running_total"
+        assert isinstance(spec.func, Sum)
+        assert spec.field == "balance"
+        assert spec.partition_by == ("department",)
+        assert spec.order_by == (OrderSpec("balance", ascending=True),)

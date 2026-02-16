@@ -12,7 +12,7 @@ ScopeEnricher capabilities run when Done, before Op execution.
 
 from __future__ import annotations
 
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable
 
 from kungfu import Ok, Some
 
@@ -25,8 +25,7 @@ from emergent.wire.axis.surface.codecs.stateful import (
 from emergent.wire.axis.surface.enrichers import chain_enrichers
 from emergent.wire.compile._capabilities import fold_handler_runtime
 
-if TYPE_CHECKING:
-    from nodnod import Scope
+from nodnod import Scope
 
 
 # ScopeSetup: (context, transitions) → dict of composed params per transition
@@ -77,7 +76,11 @@ async def execute_stateful_done(
     # Core handler: state → op → result → response
     async def core_handler(scope: Scope) -> Any:
         op = state.to_domain()
-        op_result = await handler.runner.run(op)
+        scope_extras: dict[type, object] = {}
+        for key, value in scope.items():
+            if key is not Scope:
+                scope_extras[key] = value.value
+        op_result = await handler.runner.run(op, scope_extras=scope_extras)
 
         # Format response
         response_type = codec.response

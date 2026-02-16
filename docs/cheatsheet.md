@@ -27,7 +27,7 @@ wire/
 |   +-- storage/   -- HOW to persist (KV, queue, pubsub)
 |   +-- query/     -- HOW to access (relational, KV, API)
 +-- compile/    -- Application -> Framework (OUT)
-|   +-- targets/   -- fastapi, cli, telegrinder
+|   +-- targets/   -- fastapi, cli, telegrinder, pure, testing
 +-- bridge/     -- Framework -> Application (IN)
     +-- bridgers/  -- fastapi, asgi extractors
 ```
@@ -83,8 +83,8 @@ from emergent.wire.axis.surface.codecs.immediate import immediate, immediate_fac
 # Request/Response — standard
 rrc(RegisterRequest, TokenResponse)
 
-# Stateful — multi-turn FSM
-stateful(BettingFlow, BetResponse).key(ChatIdNode).build()
+# Stateful — multi-turn FSM (state_type + agent_cls)
+StatefulCodec(state_type=BettingFlow, agent_cls=EventLoopAgent)
 
 # Delegate — preserve original handler signature
 delegate(original_handler, response=MyResponse)
@@ -174,9 +174,17 @@ data = application_dict(app)  # structured dict for tooling
 
 ```python
 from emergent.wire.axis.schema import (
-    Identity, Unique, Ref, Nested, Embedded, Doc, Deprecated, SchemaName,
+    # Identity & Constraints
+    Identity, Unique, Nullable, ReadOnly, WriteOnly, Sensitive, Immutable, Computed,
+    # Structural
+    Ref, Nested, Embedded,
+    # Validators
     Min, Max, ExclusiveMin, ExclusiveMax, MultipleOf,
-    MinLen, MaxLen, Pattern, OneOf, Either,
+    MinLen, MaxLen, Pattern, OneOf,
+    # Documentation
+    Doc, Deprecated, Alias,
+    # Schema-level
+    SchemaName, SchemaDoc, Abstract,
 )
 ```
 
@@ -206,17 +214,17 @@ cli.Help("Username"), cli.Flag("-v", "--verbose"), cli.Positional(), cli.Choices
 openapi.Description("User email"), openapi.Format("email"), openapi.Example("alice@example.com")
 
 # SQL
-sql.Index(), sql.ForeignKey(User), sql.Default("now()"), sql.CheckConstraint("balance >= 0")
+sql.Index(), sql.FullText(), sql.Type("varchar(100)"), sql.ServerDefault("now()"), sql.Check("balance >= 0")
 
 # Pydantic
-pydantic.Alias("emailAddress"), pydantic.Field(ge=0)
+pydantic.Strict(), pydantic.Coerce(), pydantic.AliasPath("data", "email"), pydantic.Exclude()
 
 # Telegram
 tg.CommandArg(), tg.Bold(), tg.Code(), tg.Line(after=True), tg.Skip()
 tg.Button(callback="action:{}"), tg.Keyboard(columns=2)
 
-# Compose (DI resolution)
-compose.Node(UserProvider), compose.OptionalNode(AdminNode)
+# Compose (nodnod node resolution)
+compose.Node(UserProvider), compose.Optional(AdminNode)
 compose.Fallback(CachedUser, DBUser), compose.Race(API1, API2)
 compose.Retrieve(AuthUser)  # direct scope retrieval
 ```
@@ -250,23 +258,36 @@ class User:
 
 ```python
 from emergent.wire.axis.schema import inspect_type, FieldInfo, first_match
+from emergent.wire.axis.schema._inspect import (
+    dataclass_inspector, pydantic_inspector, typeddict_inspector, namedtuple_inspector,
+    unwrap_optional, unwrap_annotated, inspect_field, is_structured_type, unwrap_collection,
+    get_nested_info, get_nested_type,
+)
 
 fields = inspect_type(User)  # works for dataclass, Pydantic, TypedDict, NamedTuple
 for name, info in fields.items():
-    info.base_type       # type
-    info.is_optional     # bool
-    info.has(Identity)   # bool
-    info.get(MaxLen)     # MaxLen instance or None
-    info.dialect("cli")  # list of CLI capabilities
+    info.base_type        # type
+    info.is_optional      # bool
+    info.has_default      # bool (replaces info.default)
+    info.has(Identity)    # bool
+    info.get(MaxLen)      # MaxLen instance or None
+    info.universal        # tuple of UniversalCapability
+    info.dialect(cli.CLICapability)  # tuple of CLI capabilities (takes type, not string)
 ```
 
 ### Helpers
 
+All navigation helpers take optional `axes` parameter.
+
 ```python
 from emergent.wire.axis.schema._helpers import (
     get_identity_field, get_required_fields, get_optional_fields,
-    partition_fields, fields_with_capability, get_refs,
+    partition_fields, field_by_name, field_path_type,
+    fields_with_capability, get_refs, fields_by_dialect,
     merge_capabilities, override_capability, remove_capability,
+    deduplicate_capabilities, find_capability, find_all_capabilities,
+    has_capability, filter_by_dialect, filter_universal,
+    compose_schema_meta, get_nested_schema_meta,
 )
 ```
 
@@ -289,14 +310,17 @@ from emergent.wire.axis.query import relational, relational_store
 
 q = (relational(User)
     .filter(lambda u: u.active == True)
-    .filter(lambda u: u.balance > 100)
+    .where(lambda u: u.balance > 100)       # alias for filter
     .order_by(lambda u: u.balance.desc())
     .limit(50).offset(10)
-    .select("name", "email")
+    .paginate(page=2, per_page=25)           # convenience for offset + limit
+    .select(lambda u: u.name, lambda u: u.email)  # lambdas, not strings
     .distinct()
-    .group_by("department")
+    .group_by(lambda u: u.department)        # lambdas, not strings
     .having(lambda u: u.count() > 5)
-    .aggregate(total=lambda u: u.balance.sum()))
+    .aggregate(total=lambda u: u.balance.sum())
+    .join(Order, lambda u, o: u.id == o.user_id)        # INNER JOIN
+    .left_join(Profile, lambda u, p: u.id == p.user_id)) # LEFT JOIN
 ```
 
 ### KV space (Redis-like)
@@ -399,16 +423,18 @@ print(RELATIONAL_EXPLAIN_DIALECT.format(q.ops))
 
 ```python
 from emergent.wire.axis.storage import (
-    # KV
-    Get, Set, Delete, SetWithTTL, SetNX, BatchGet,
+    # KV (Set now takes optional ttl: timedelta)
+    Get, Set, Delete, SetWithTTL, SetNX,
+    # Batch
+    BatchGet, BatchSet, BatchDelete, DeletePattern,
     # Queue
     Push, Pop, Peek, Len,
-    # PubSub
+    # PubSub (generic channel C, Subscribe is sync returning AsyncIterator)
     Publish, Subscribe,
-    # Lock
-    Acquire, Release,
-    # Counter
-    Incr, Decr,
+    # Lock (uses timedelta, Extend for TTL renewal)
+    Acquire, Release, Extend,
+    # Counter (IncrBy for increment by amount)
+    Incr, Decr, IncrBy,
 )
 ```
 
@@ -416,8 +442,10 @@ from emergent.wire.axis.storage import (
 
 ```python
 from emergent.wire.axis.storage import (
-    kv, kv_nx, queue, queue_full, pubsub, lock, counter,
-    MemoryStorage, FileStorage,
+    kv, kv_nx, queue, queue_full, pubsub,
+    lock, lock_extend,            # lock_extend adds TTL renewal via Extend
+    counter, counter_full,        # counter_full adds incr_by/decr_by
+    MemoryStorage, FileStorage,   # MemoryStorage extends BaseTTLStorage
     PickleCodec, JsonCodec, IdentityCodec,
 )
 
@@ -462,17 +490,29 @@ print(explain_storage(my_tiered))
 
 ```python
 from emergent.wire.compile.targets import fastapi, cli, telegrinder
+from emergent.wire.compile.targets import pure, testing
 
 # FastAPI
-fastapi_app = fastapi.compile(app)
-routes = fastapi.compile_endpoint(endpoint)
+fastapi_app = fastapi.compile(app, axes)
 
 # CLI
-parser = cli.compile(app, prog="my-tool")
-cli.cli_run(parser)
+parser = cli.compile(app, axes, prog="my-tool")
 
 # Telegram
-telegrinder.compile(app, bot)
+telegrinder.compile(app, axes)
+
+# Pure (framework-agnostic lifecycle/exception/websocket)
+from emergent.wire.compile.targets.pure import (
+    STARTUP_COMPILER, SHUTDOWN_COMPILER, EXCEPTION_COMPILER, WEBSOCKET_COMPILER,
+    LifecycleRoute, ExceptionRoute, WebSocketRoute, app_scope_lifespan,
+)
+
+# Testing (no framework needed)
+routes = testing.testing_compile(app, axes)
+result = await routes[0].call(fields={"name": "Alice"}, inject={AuthUser: user})
+
+async with testing.TestApp(app, axes) as test_app:
+    result = await test_app.call("POST /users", fields={...})
 ```
 
 ### Axes (explicit, no global state)
@@ -480,9 +520,32 @@ telegrinder.compile(app, bot)
 ```python
 from emergent.wire.compile import Axes
 
-axes = Axes.default()          # standard inspection
-axes = Axes.traced()           # with compilation tracing
-axes = Axes(schema=my_inspector)  # custom inspector
+axes = Axes.default()           # standard inspection
+axes = Axes.traced()            # with compilation tracing
+axes = Axes(schema=my_inspector, scope_layer=my_layer)  # custom
+```
+
+### Lifetime (scope tiers)
+
+```python
+from emergent.wire.compile._lifetime import Tier, App, Request, ScopeLayer
+from types import MappingProxyType
+
+App = Tier()                # application-scoped
+Request = Tier(parent=App)  # request-scoped
+
+# Standard 2-tier:
+layer = ScopeLayer(
+    scopes=MappingProxyType({App: app_scope}),
+    family=my_family,
+    leaf=Request,
+)
+layer.parent   # -> app_scope (walks leaf.parent chain)
+layer.compose  # -> family.types_for(Request)
+
+# Custom tiers — arbitrary depth:
+Session = Tier(parent=App)
+layer.with_scope(Session, session_scope)  # add tier at runtime
 ```
 
 ### Type generation
@@ -562,13 +625,22 @@ from emergent.wire.bridge import (
 
     # Purifiers — wrap handlers
     WrapAsync, CatchErrors,
-    IsolateGlobal, SetGlobal,
+    IsolateGlobal, IsolateGlobalAsync,  # async variant
+    SetGlobal,
     InjectKwarg, InjectKwargAsync,
-    WithContext, SetupTeardown,
+    WithContext, WithContextSync,        # sync variant
+    SetupTeardown,
     WrapAsDelegate,
 
     # Trigger injection — key to cross-compilation
     AddTrigger,
+)
+
+# Pre-built patterns
+from emergent.wire.bridge._patterns import (
+    SKIP_DEPRECATED, SKIP_PRIVATE, SKIP_INTERNAL,
+    ASYNC_ALL, DELEGATE_ALL, CLEAN,
+    fastapi_default, fastapi_with_depends,
 )
 ```
 
@@ -929,7 +1001,57 @@ data = dialect_dict(http_crud("/users", Users))
 
 ---
 
-## 8. Provider Setup (nodnod)
+## 8. Graph Module (Composer + ScopeFamily)
+
+### Composer — unified nodnod composition
+
+```python
+from emergent.graph import Composer
+
+# Create from nodnod scope
+composer = Composer.create(scope, agent_cls=EventLoopAgent)
+
+# Compose nodes
+ok, value = await composer.compose(MyNode)
+
+# Batch compose
+await composer.compose_batch({Node1, Node2, Node3})
+
+# Retrieve from scope (no composition, just lookup)
+found, value = composer.retrieve(MyType)
+
+# Resolve handler params via nodnod
+params = await composer.resolve_params(handler)
+
+# Create child scope
+child = composer.child(detail="request")
+```
+
+### ScopeFamily — type→tier mapping
+
+```python
+from emergent.graph import ScopeFamily
+from emergent.wire.compile._lifetime import App, Request
+
+family = (
+    ScopeFamily[Tier]()
+    .bind(App, DBPool, Config)
+    .bind(Request, CurrentUser, Session)
+)
+
+# Compose families
+combined = family1 | family2
+
+# Query
+family.tier_of(DBPool)              # -> App
+family.types_for(Request)           # -> frozenset({CurrentUser, Session})
+groups = family.to_groups()         # -> {App: frozenset({...}), Request: frozenset({...})}
+scoped = family.materialize(scopes) # -> {DBPool: app_scope, CurrentUser: req_scope, ...}
+```
+
+---
+
+## 9. Provider Setup (nodnod)
 
 ```python
 from nodnod import scalar_node
@@ -945,7 +1067,7 @@ class Users:
 
 ---
 
-## 9. Scope API Gotcha
+## 10. Scope API Gotcha
 
 ```python
 # scope.get(Type) returns a WRAPPER, not the value directly
@@ -956,7 +1078,7 @@ scope.get(AuthToken).value.value  # -> the token string (if AuthToken has .value
 
 ---
 
-## 10. Import Maps
+## 11. Import Maps
 
 ### wire core
 
@@ -973,7 +1095,11 @@ from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability, ScopeEnricher, EnricherNext
 
 # Schema
-from emergent.wire.axis.schema import Identity, Unique, Ref, Doc, Min, Max, MinLen, MaxLen, Pattern, OneOf
+from emergent.wire.axis.schema import (
+    Identity, Unique, Ref, Doc, Min, Max, MinLen, MaxLen, Pattern, OneOf,
+    ReadOnly, WriteOnly, Sensitive, Immutable, Nullable, Computed, Alias,
+    Nested, Embedded, Deprecated, SchemaName, SchemaDoc, Abstract,
+)
 from emergent.wire.axis.schema import Id, Email, Slug, Username, Short
 from emergent.wire.axis.schema import inspect_type, FieldInfo
 from emergent.wire.axis.schema._universal import schema_meta
@@ -985,16 +1111,22 @@ from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider, 
 from emergent.wire.axis.query._provider import SequenceNextId, UuidNextId
 
 # Storage
-from emergent.wire.axis.storage import kv as storage_kv, queue, pubsub, lock, counter
+from emergent.wire.axis.storage import kv as storage_kv, queue, pubsub, lock, lock_extend, counter, counter_full
 from emergent.wire.axis.storage import MemoryStorage, FileStorage, PickleCodec, JsonCodec
 
 # Compile
 from emergent.wire.compile import Axes
+from emergent.wire.compile._lifetime import Tier, App, Request, ScopeLayer
 from emergent.wire.compile.targets import fastapi, cli as cli_target, telegrinder
+from emergent.wire.compile.targets import pure, testing
+
+# Graph
+from emergent.graph import Composer, ScopeFamily, graph, node
 
 # Bridge
-from emergent.wire.bridge import build_application, WrapAsDelegate, IsolateGlobal, AddTrigger
+from emergent.wire.bridge import build_application, WrapAsDelegate, IsolateGlobal, IsolateGlobalAsync, AddTrigger
 from emergent.wire.bridge.bridgers import fastapi as fastapi_bridger
+from emergent.wire.bridge._patterns import SKIP_DEPRECATED, CLEAN, fastapi_default
 ```
 
 ### derivelib
@@ -1040,7 +1172,7 @@ from derivelib import explain_entity, entity_derivation_dict, dialect_dict
 
 ---
 
-## 11. Best Practices
+## 12. Best Practices
 
 ### Architecture
 
@@ -1101,7 +1233,7 @@ from derivelib import explain_entity, entity_derivation_dict, dialect_dict
 
 ---
 
-## 12. Real-World Pattern: Full Application (roulette)
+## 13. Real-World Pattern: Full Application (roulette)
 
 ```python
 # 1. Define domain ops
@@ -1145,14 +1277,15 @@ balance_ep = (
 app = Application().mount(register_ep, balance_ep, ...)
 
 # 7. Compile to ALL targets
-fastapi_app = fastapi.compile(app)
-cli_parser = cli.compile(app, prog="roulette")
-telegram_dp = telegrinder.compile(app)
+axes = Axes.default()
+fastapi_app = fastapi.compile(app, axes)
+cli_parser = cli.compile(app, axes, prog="roulette")
+telegram_dp = telegrinder.compile(app, axes)
 ```
 
 ---
 
-## 13. Real-World Pattern: derivelib CRUD + Transforms
+## 14. Real-World Pattern: derivelib CRUD + Transforms
 
 ```python
 # Full CRUD with auth, pagination, response projection, soft-delete

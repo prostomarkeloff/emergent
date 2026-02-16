@@ -168,3 +168,73 @@ class TestQueryDialect:
         ]
         result = dialect.fold(ops, {})
         assert result["filters"] == 2
+
+
+# ─── Integration: Fold Complex Pipeline ─────────────────────────────────────
+
+
+class TestIntegrationFoldComplexPipeline:
+    def test_five_op_pipeline(self):
+        data = [
+            User(1, "alice", 100.0),
+            User(2, "bob", 50.0),
+            User(3, "charlie", 200.0),
+            User(4, "dave", 150.0),
+            User(5, "eve", 75.0),
+            User(6, "frank", 300.0),
+        ]
+        ops = [
+            Filter(Gt(Field("balance"), Const(60.0))),   # removes bob (50)
+            Filter(Gt(Field("balance"), Const(80.0))),   # removes eve (75)
+            OrderBy((OrderSpec("balance", ascending=False),)),
+            Limit(3),
+            Offset(1),
+        ]
+        result = MEMORY_DIALECT.fold(ops, list(data))
+        # After filters: alice(100), charlie(200), dave(150), frank(300)
+        # After order desc: frank(300), charlie(200), dave(150), alice(100)
+        # After limit 3: frank, charlie, dave
+        # After offset 1: charlie, dave
+        assert len(result) == 2
+        assert result[0].name == "charlie"
+        assert result[1].name == "dave"
+
+    def test_custom_handler_mixed_with_standard(self):
+        @dataclass(frozen=True, slots=True)
+        class DoubleBalance:
+            pass
+
+        def handle_double(op: DoubleBalance, data: list) -> list:
+            return [User(u.id, u.name, u.balance * 2) for u in data]
+
+        dialect = MEMORY_DIALECT.with_handler(DoubleBalance, handle_double)
+        ops = [
+            Filter(Gt(Field("balance"), Const(60.0))),
+            DoubleBalance(),
+            OrderBy((OrderSpec("balance", ascending=True),)),
+        ]
+        result = dialect.fold(ops, list(DATA))
+        # After filter: charlie(200), alice(100) survive (bob 50 removed)
+        # After double: charlie(400), alice(200)
+        # After order asc: alice(200), charlie(400)
+        assert len(result) == 2
+        assert result[0].balance == 200.0
+        assert result[1].balance == 400.0
+
+    def test_fold_preserves_data_identity_no_ops(self):
+        data = list(DATA)
+        result = fold_query((), data, MEMORY_HANDLERS)
+        assert result == data
+
+    def test_select_then_verify_dict_keys(self):
+        ops = [
+            Filter(Gt(Field("balance"), Const(60.0))),
+            OrderBy((OrderSpec("name", ascending=True),)),
+            Select(("id", "name")),
+        ]
+        result = MEMORY_DIALECT.fold(ops, list(DATA))
+        assert all(isinstance(r, dict) for r in result)
+        assert all(set(r.keys()) == {"id", "name"} for r in result)
+        # Verify order: alice(100), charlie(200)
+        assert result[0]["name"] == "alice"
+        assert result[1]["name"] == "charlie"

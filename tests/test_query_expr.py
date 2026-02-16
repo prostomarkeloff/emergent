@@ -380,3 +380,66 @@ class TestLikeEdge:
         expr = ILike(Field("name"), "BO_")
         assert expr.evaluate(BOB) is True
         assert expr.evaluate(ALICE) is False
+
+
+# ─── Integration: Complex Expression Trees ──────────────────────────────────
+
+
+class TestIntegrationComplexExpressionTree:
+    def test_deeply_nested_boolean_logic(self):
+        # (balance > 25 AND name != "bob") OR (active AND balance < 35)
+        expr = Or(
+            And(Gt(Field("balance"), Const(25)), Ne(Field("name"), Const("bob"))),
+            And(Eq(Field("active"), Const(True)), Lt(Field("balance"), Const(35))),
+        )
+        # ALICE: balance=100 > 25 AND name="alice" != "bob" => True => True
+        assert expr.evaluate(ALICE) is True
+        # BOB: balance=50 > 25 AND name="bob" != "bob" => False; active=False AND ... => False
+        assert expr.evaluate(BOB) is False
+        # CHARLIE: balance=200 > 25 AND name="charlie" != "bob" => True => True
+        assert expr.evaluate(CHARLIE) is True
+
+    def test_combined_json_and_array_ops(self):
+        # metadata has key "profile" AND tags contains "vip"
+        expr = And(
+            JsonHasKey(Field("metadata"), "profile"),
+            ArrayContains(Field("tags"), "vip"),
+        )
+        assert expr.evaluate(ALICE) is True   # has profile + has vip tag
+        assert expr.evaluate(BOB) is False     # has profile but no vip tag
+        assert expr.evaluate(CHARLIE) is False  # no profile key (empty dict) + empty tags
+
+    def test_json_extract_with_comparison(self):
+        # metadata->>profile.name == "Alice" AND tags overlap ("vip", "admin")
+        expr = And(
+            Eq(JsonExtract(Field("metadata"), "profile.name"), Const("Alice")),
+            ArrayOverlap(Field("tags"), ("vip", "admin")),
+        )
+        assert expr.evaluate(ALICE) is True
+        assert expr.evaluate(BOB) is False  # profile.name is "Bob"
+
+    def test_collect_all_leaf_fields_via_children(self):
+        expr = Or(
+            And(Gt(Field("balance"), Const(25)), Ne(Field("name"), Const("bob"))),
+            And(Eq(Field("active"), Const(True)), Lt(Field("balance"), Const(35))),
+        )
+        # Collect all Field nodes via recursive children traversal
+        def collect_fields(e: Expr) -> list[str]:
+            if isinstance(e, Field):
+                return [e.name]
+            result: list[str] = []
+            for child in e.children():
+                result.extend(collect_fields(child))
+            return result
+
+        fields = collect_fields(expr)
+        assert set(fields) == {"balance", "name", "active"}
+        # balance appears twice
+        assert fields.count("balance") == 2
+
+    def test_triple_nested_not(self):
+        # NOT(NOT(NOT(active == True)))
+        expr = Not(Not(Not(Eq(Field("active"), Const(True)))))
+        # Triple negation of True => False
+        assert expr.evaluate(ALICE) is False  # active=True => True => Not => False
+        assert expr.evaluate(BOB) is True     # active=False => False => Not => True

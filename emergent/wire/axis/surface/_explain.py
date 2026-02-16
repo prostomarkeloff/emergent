@@ -27,6 +27,7 @@ from emergent.wire.axis.surface._types import Exposure
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.telegrinder import TelegrinderTrigger
+from emergent.wire.axis.surface.triggers.event import EventTrigger
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.codecs.stateful import StatefulCodec
 from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
@@ -87,6 +88,10 @@ def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> dict[str, Any]:
     return d
 
 
+def _explain_event_trigger(t: EventTrigger[object]) -> dict[str, Any]:
+    return {"type": "EventTrigger", "event_type": t.event_type.__name__}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Codec Handlers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -143,6 +148,7 @@ SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
     HTTPRouteTrigger: _explain_http_trigger,
     CLITrigger: _explain_cli_trigger,
     TelegrinderTrigger: _explain_telegrinder_trigger,
+    EventTrigger: _explain_event_trigger,
     # Codecs
     RequestResponseCodec: _explain_rrc,
     StatefulCodec: _explain_stateful,
@@ -301,6 +307,8 @@ def _format_trigger_short(d: dict[str, Any]) -> str:
         rules = d.get("rules", [])
         rules_str = ", ".join(str(r) for r in rules) if rules else ""
         return f"tg:{d.get('view', '?')}({rules_str})"
+    if t == "EventTrigger":
+        return f"Event {d.get('event_type', '?')}"
     return _format_obj_short(d)
 
 

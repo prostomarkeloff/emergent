@@ -42,24 +42,10 @@ async def compose_node_value(
 
     Returns: (success, value_or_error)
     """
-    try:
-        # Build agent for this single node
-        agent = agent_cls.build({node_type})
+    from emergent.graph._compose import Composer
 
-        # Run agent - it will compose the node and store in scope
-        await agent.run(local_scope=scope, mapped_scopes={})
-
-        # Retrieve composed value from scope
-        result = scope.retrieve(node_type)
-        match result:
-            case Some(value):
-                # value is nodnod.Value wrapper, extract actual value
-                return True, value.value
-            case Nothing():
-                return False, f"Node {node_type.__name__} not composed"
-
-    except Exception as e:
-        return False, str(e)
+    composer = Composer.create(scope, agent_cls)
+    return await composer.compose(node_type)
 
 
 async def build_field_value(

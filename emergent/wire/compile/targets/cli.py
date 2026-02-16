@@ -36,6 +36,9 @@ from emergent.wire.compile._capabilities import apply_response_capabilities
 from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
 from emergent.wire.compile._stateful import execute_stateful_turn, execute_stateful_done
 from emergent.wire.compile._generate import to_argparse_args, ArgSpec
+from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
+from emergent.wire.compile.targets.pure import app_scope_lifespan
+from emergent.graph._family import ScopeFamily
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -112,26 +115,16 @@ async def _compose_cli_param(
     agent_cls: type[Agent],
 ) -> Any:
     """Compose single CLI param with node support."""
-    from kungfu import Some, Nothing
+    from emergent.graph._compose import Composer
     from emergent.wire.axis.surface.codecs.resolve import wrap
 
     # Check if compose_type is a nodnod node
     is_node = hasattr(compose_type, "__dependencies__")
 
     if is_node:
-        # Compose via nodnod
-        try:
-            agent = agent_cls.build({compose_type})
-            await agent.run(local_scope=scope, mapped_scopes={})
-
-            result = scope.retrieve(compose_type)
-            match result:
-                case Some(value):
-                    return wrap(original_type, True, value.value)
-                case Nothing():
-                    return wrap(original_type, False, f"Node {compose_type.__name__} not composed")
-        except Exception as e:
-            return wrap(original_type, False, str(e))
+        composer = Composer.create(scope, agent_cls)
+        success, value = await composer.compose(compose_type)
+        return wrap(original_type, success, value if success else f"Node {compose_type.__name__} not composed")
 
     # From CLI args
     if name in cli_args and cli_args[name] is not None:
@@ -160,6 +153,7 @@ def wrap_stateful_cli(
     async def _handler(ns: argparse.Namespace) -> str:
         cli_args = {k: v for k, v in vars(ns).items() if not k.startswith("_")}
         state = codec.flow()
+        layer = axes.scope_layer
 
         while True:
             # Use first transition for CLI
@@ -170,7 +164,8 @@ def wrap_stateful_cli(
             params = get_method_params(method)
 
             # Create scope for node composition
-            async with Scope() as scope:
+            scope = layer.parent.create_child("cli-stateful") if layer else Scope()
+            async with scope:
                 scope.inject(argparse.Namespace, ns)
 
                 composed: dict[str, Any] = {}
@@ -192,7 +187,8 @@ def wrap_stateful_cli(
                 continue
 
             # Done — execute with enrichers
-            async with Scope() as done_scope:
+            done_scope = layer.parent.create_child("cli-stateful-done") if layer else Scope()
+            async with done_scope:
                 done_scope.inject(argparse.Namespace, ns)
                 final = await execute_stateful_done(handler, new_state, done_scope)
 
@@ -410,6 +406,7 @@ def cli_compile(
     axes: Axes | None = None,
     compiler: TargetCompiler[CLITrigger] | None = None,
     prog: str = "cli",
+    family: ScopeFamily[Tier] | None = None,
 ) -> argparse.ArgumentParser:
     """Compile wire Application to argparse parser.
 
@@ -419,17 +416,35 @@ def cli_compile(
         compiler: TargetCompiler (default: CLI_COMPILER). Pass custom
                   compiler to add/swap/remove codec adapters.
         prog: Program name for argparse
+        family: Optional ScopeFamily for tiered scope management. When provided,
+                an App scope is composed once at startup and Request scopes
+                inherit from it.
 
     Returns:
         argparse ArgumentParser
     """
-    axes = axes or Axes.default()
+    base_axes = axes or Axes.default()
     _compiler = compiler or CLI_COMPILER
+    request_axes = base_axes
+
     parser = argparse.ArgumentParser(prog=prog)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    for trigger, handler, route in _compiler.scan_and_wrap(app, axes):
-        register_handler(subparsers, trigger, handler, route, axes)
+    if family is not None:
+        from types import MappingProxyType
+
+        app_scope = Scope(detail="cli-app")
+        layer = ScopeLayer(
+            scopes=MappingProxyType({App: app_scope}),
+            family=family,
+            leaf=Request,
+        )
+        request_axes = base_axes.with_scope_layer(layer)
+        parser._scope_app = app_scope  # type: ignore[attr-defined]
+        parser._scope_app_types = family.types_for(App)  # type: ignore[attr-defined]
+
+    for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
+        register_handler(subparsers, trigger, handler, route, request_axes)
 
     return parser
 
@@ -500,8 +515,17 @@ def cli_run(parser: argparse.ArgumentParser, args: list[str] | None = None) -> i
         parser.print_help()
         return 1
 
+    app_scope: Scope | None = getattr(parser, "_scope_app", None)
+    app_types = getattr(parser, "_scope_app_types", frozenset())
+
+    async def _run() -> str:
+        if app_scope is not None:
+            async with app_scope_lifespan(app_scope, list(app_types)):
+                return await handler(parsed)
+        return await handler(parsed)
+
     try:
-        output = asyncio.run(handler(parsed))
+        output = asyncio.run(_run())
         print(output)
         return 0
     except KeyboardInterrupt:

@@ -211,3 +211,65 @@ class TestPaginationReplacement:
         assert len(q.mods) == 2
         assert isinstance(q.mods[0], FilterMod)
         assert isinstance(q.mods[1], PageMod)
+
+
+# ─── Integration: API Query Pipeline ────────────────────────────────────────
+
+
+class TestIntegrationAPIQueryPipeline:
+    def test_full_list_pipeline(self):
+        q = (
+            api(User)
+            .list()
+            .filter(lambda u: u.active == True)
+            .filter(lambda u: u.name != "admin")
+            .order_by(lambda u: u.name)
+            .page(2, per_page=25)
+            .select(lambda u: u.id, lambda u: u.name)
+        )
+        assert isinstance(q.op, ListOp)
+        assert len(q.mods) == 5
+        assert isinstance(q.mods[0], FilterMod)
+        assert isinstance(q.mods[1], FilterMod)
+        assert isinstance(q.mods[2], OrderMod)
+        assert isinstance(q.mods[3], PageMod)
+        assert isinstance(q.mods[4], SelectMod)
+        # Introspection
+        assert len(q.filters) == 2
+        assert len(q.ordering) == 1
+        assert q.ordering[0] == OrderSpec("name", ascending=True)
+        assert isinstance(q.pagination, PageMod)
+        assert q.pagination.page == 2
+        assert q.pagination.per_page == 25
+
+    def test_update_with_filter_mods(self):
+        user = User(id="1", name="alice_updated")
+        q = api(User).update("1", user)
+        assert isinstance(q.op, UpdateOp)
+        assert q.op.id == "1"
+        assert q.op.entity is user
+        assert q.op.partial is False
+        assert q.mods == ()
+
+    def test_crud_op_types(self):
+        list_q = api(User).list()
+        get_q = api(User).get("123")
+        create_q = api(User).create(User(id="1", name="alice"))
+        update_q = api(User).update("1", User(id="1", name="bob"))
+        delete_q = api(User).delete("123")
+
+        assert isinstance(list_q.op, ListOp)
+        assert isinstance(get_q.op, GetOp)
+        assert isinstance(create_q.op, CreateOp)
+        assert isinstance(update_q.op, UpdateOp)
+        assert isinstance(delete_q.op, DeleteOp)
+
+    def test_immutability_pipeline(self):
+        q0 = api(User).list()
+        q1 = q0.filter(lambda u: u.active == True)
+        q2 = q1.order_by(lambda u: u.name)
+        q3 = q2.page(1, per_page=10)
+        assert len(q0.mods) == 0
+        assert len(q1.mods) == 1
+        assert len(q2.mods) == 2
+        assert len(q3.mods) == 3

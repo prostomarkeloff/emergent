@@ -1,10 +1,11 @@
 """Framework compilation targets.
 
-    from emergent.wire.compile.targets import fastapi, cli, telegrinder
+    from emergent.wire.compile.targets import fastapi, cli, telegrinder, event
 
     app = fastapi.compile(wire_app)
     parser = cli.compile(wire_app, prog="my-tool")
     dispatch = telegrinder.compile(wire_app)
+    dispatcher = event.compile(wire_app)
 """
 
 __all__: list[str] = []
@@ -26,3 +27,7 @@ try:
     __all__.append("telegrinder")
 except ImportError:
     pass
+
+# Event (always available)
+from emergent.wire.compile.targets import event as event
+__all__.append("event")

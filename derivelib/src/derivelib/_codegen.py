@@ -16,9 +16,9 @@ from collections.abc import Mapping
 from dataclasses import make_dataclass
 from typing import TYPE_CHECKING, Callable, Protocol
 
-if TYPE_CHECKING:
-    from kungfu import Result
+from kungfu import Ok, Result
 
+if TYPE_CHECKING:
     from derivelib._ctx import OperationHandler
 
 # Annotation value: anything Python accepts in a type annotation context.
@@ -125,12 +125,22 @@ def create_response_type(
     No setattr — classmethod injected at creation time via make_dataclass namespace.
     """
     _conv = converter
+    _fields = fields
 
     @classmethod
     def from_domain(cls: type, domain_result: HasAnnotations) -> HasAnnotations:
         return _conv(cls, domain_result)
 
-    return create_dataclass(name, fields, frozen=frozen, namespace={"from_domain": from_domain})
+    def __str__(self: HasAnnotations) -> str:
+        if len(_fields) == 1:
+            field_name = _fields[0][0] if isinstance(_fields[0], tuple) else _fields[0]
+            return str(getattr(self, field_name))
+        parts = [str(getattr(self, f[0] if isinstance(f, tuple) else f))
+                 for f in _fields
+                 if getattr(self, f[0] if isinstance(f, tuple) else f) is not None]
+        return "\n".join(parts)
+
+    return create_dataclass(name, fields, frozen=frozen, namespace={"from_domain": from_domain, "__str__": __str__})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -158,6 +168,30 @@ def annotate_handler[T, E](
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 4. SENTINEL OPERATION — DelegateCodec bypass
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def create_sentinel_operation(
+    name: str,
+) -> tuple[type, Callable[..., object]]:
+    """Create a sentinel op type + noop handler for DelegateCodec exposures.
+
+    DelegateCodec bypasses the ops runner, so the handler is never called.
+    The op type is needed to satisfy the Operation tuple contract.
+
+    Returns:
+        (op_type, annotated_noop_handler)
+    """
+    op_type = create_dataclass(name, [], frozen=True)
+
+    async def _noop(**kwargs: object) -> Result[object, object]:
+        return Ok(kwargs.get("op"))
+
+    return op_type, annotate_handler(_noop, op_type)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Re-exports from split modules
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -178,6 +212,8 @@ __all__ = (
     "create_response_type",
     # Handler annotation
     "annotate_handler",
+    # Sentinel operation
+    "create_sentinel_operation",
     # Re-exports from _builders
     "ExposureBuilder",
     "exposure",

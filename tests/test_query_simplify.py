@@ -177,3 +177,66 @@ class TestSimplifyPassthrough:
         expr = And(TRUE, Eq(X, Const(1)))
         result = simplify_expr(expr)
         assert result == Eq(X, Const(1))
+
+
+# ─── Integration: Simplify Complex Trees ────────────────────────────────────
+
+
+class TestIntegrationSimplifyComplexTree:
+    def test_deeply_nested_redundant_simplifies_to_x(self):
+        # (x AND True) OR (False AND y) OR (NOT NOT x)
+        # = x OR False OR x
+        # = x OR x
+        # = x
+        inner = Or(
+            Or(
+                And(X, TRUE),
+                And(FALSE, Y),
+            ),
+            Not(Not(X)),
+        )
+        result = simplify_expr(inner)
+        assert result == X
+
+    def test_or_idempotent_and_or_idempotent(self):
+        # (x OR x) AND (y OR y) => x AND y
+        expr = And(Or(EQ_X, EQ_X), Or(EQ_Y, EQ_Y))
+        result = simplify_expr(expr)
+        assert isinstance(result, And)
+        assert result.left == EQ_X
+        assert result.right == EQ_Y
+
+    def test_simplification_preserves_evaluation(self):
+        from dataclasses import dataclass as _dc
+
+        @_dc
+        class Obj:
+            x: int
+            y: int
+
+        original = Or(
+            Or(
+                And(X, TRUE),
+                And(FALSE, Y),
+            ),
+            Not(Not(X)),
+        )
+        simplified = simplify_expr(original)
+
+        # Both should evaluate to same result against any data point
+        # Note: Field("x") evaluates to obj.x, which is an int;
+        # in boolean context, nonzero is truthy
+        obj1 = Obj(x=1, y=0)
+        obj2 = Obj(x=0, y=1)
+        obj3 = Obj(x=0, y=0)
+
+        assert bool(original.evaluate(obj1)) == bool(simplified.evaluate(obj1))
+        assert bool(original.evaluate(obj2)) == bool(simplified.evaluate(obj2))
+        assert bool(original.evaluate(obj3)) == bool(simplified.evaluate(obj3))
+
+    def test_triple_not_simplifies(self):
+        # NOT(NOT(NOT(x))) => NOT(x)
+        expr = Not(Not(Not(EQ_X)))
+        result = simplify_expr(expr)
+        assert isinstance(result, Not)
+        assert result.operand == EQ_X

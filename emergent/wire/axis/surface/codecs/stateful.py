@@ -208,6 +208,19 @@ class Done:
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class Cancelled(Done):
+    """Terminal marker — stop flow WITHOUT executing Op.
+
+    Unlike Done which triggers to_domain() → Op → runner.run(),
+    Cancelled deletes state and returns immediately.
+    The transition itself is responsible for sending any cancellation
+    message to the user before returning Cancelled().
+    """
+
+    pass
+
+
 # ─── Transition Result ───────────────────────────────────────────────────────
 
 

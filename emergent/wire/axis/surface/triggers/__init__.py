@@ -15,6 +15,9 @@ Triggers — describe how endpoints are exposed.
 
     # Exception triggers
     triggers.exception.ExceptionTrigger(...)
+
+    # Event triggers
+    triggers.event.EventTrigger(...)
 """
 
 from emergent.wire.axis.surface.triggers import (
@@ -24,6 +27,7 @@ from emergent.wire.axis.surface.triggers import (
     lifecycle,
     exception,
     websocket,
+    event,
 )
 
 # Re-export commonly used triggers at package level
@@ -33,6 +37,7 @@ from emergent.wire.axis.surface.triggers.lifecycle import (
 )
 from emergent.wire.axis.surface.triggers.exception import ExceptionTrigger
 from emergent.wire.axis.surface.triggers.websocket import WebSocketTrigger
+from emergent.wire.axis.surface.triggers.event import EventTrigger
 
 
 __all__ = (
@@ -43,9 +48,11 @@ __all__ = (
     "lifecycle",
     "exception",
     "websocket",
+    "event",
     # Direct exports
     "StartupTrigger",
     "ShutdownTrigger",
     "ExceptionTrigger",
     "WebSocketTrigger",
+    "EventTrigger",
 )

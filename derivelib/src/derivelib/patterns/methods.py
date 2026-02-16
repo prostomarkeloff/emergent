@@ -52,6 +52,7 @@ from kungfu import Result
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
+from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
 from derivelib import (
     Derivation,
@@ -78,12 +79,19 @@ class _TriggerEntry:
 
     trigger: object
     capabilities: tuple[SurfaceCapability, ...]
+    description: str | None = None
+    order: int = 100
 
 
 # --- base decorator ---
 
 
-def method(trigger: object, *capabilities: SurfaceCapability) -> Callable[[F], F]:
+def method(
+    trigger: object,
+    *capabilities: SurfaceCapability,
+    description: str | None = None,
+    order: int = 100,
+) -> Callable[[F], F]:
     """Attach a trigger and optional capabilities to a method.
 
     Works with all three Python calling conventions:
@@ -112,7 +120,7 @@ def method(trigger: object, *capabilities: SurfaceCapability) -> Callable[[F], F
     This is the base decorator. Use ``post``, ``get``, ``command``, etc.
     for convenience.
     """
-    entry = _TriggerEntry(trigger, capabilities)
+    entry = _TriggerEntry(trigger, capabilities, description=description, order=order)
 
     def decorator(fn: F) -> F:
         entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
@@ -159,6 +167,66 @@ def command(name: str, *caps: SurfaceCapability, description: str = "") -> Calla
     return method(CLITrigger(name, description), *caps)
 
 
+# --- trigger enhancement: add Arguments from tg.CommandArg annotations ---
+
+
+def _enhance_trigger_with_args(
+    trigger: object,
+    fields: dict[str, type],
+) -> object:
+    """Enhance TelegrindTrigger Command rule with Arguments from field annotations.
+
+    Inspects raw Annotated hints for tg.CommandArg() and builds Argument objects.
+    Returns the original trigger unchanged if not a TelegrindTrigger or no args found.
+    """
+    if not isinstance(trigger, TelegrindTrigger):
+        return trigger
+
+    from typing import Annotated
+    from emergent.wire.axis.schema.dialects.tg import CommandArg
+    from telegrinder.bot.rules.command import Command, Argument
+    from telegrinder.bot.rules.abc import ABCRule
+
+    args: list[Argument] = []
+    has_greedy = False
+
+    for name, hint in fields.items():
+        if get_origin(hint) is not Annotated:
+            continue
+        ann_args = get_args(hint)
+        base_type = ann_args[0]
+        for ann in ann_args[1:]:
+            if isinstance(ann, CommandArg):
+                validators: list[type] = []
+                if base_type is int:
+                    validators.append(int)
+                args.append(Argument(name=name, validators=validators, optional=ann.optional))
+                if ann.greedy:
+                    has_greedy = True
+                break
+
+    if not args:
+        return trigger
+
+    new_rules: list[ABCRule] = []
+    for rule in trigger.rules:
+        if isinstance(rule, Command) and not rule.arguments:
+            enhanced = Command(
+                rule.names,
+                *args,
+                prefixes=rule.prefixes,
+                separator=rule.separator,
+                lazy=has_greedy or rule.lazy,
+                validate_mention=rule.validate_mention,
+                ignore_case=rule.ignore_case,
+            )
+            new_rules.append(enhanced)
+        else:
+            new_rules.append(rule)
+
+    return TelegrindTrigger(*new_rules, view=trigger.view)
+
+
 # --- surface step: one method + one trigger -> one endpoint ---
 
 
@@ -176,6 +244,8 @@ class ExposeMethod:
     trigger: object
     capabilities: tuple[SurfaceCapability, ...]
     suffix: str
+    description: str | None = None
+    order: int = 100
 
     def derive_surface[EntityT](self, ctx: SurfaceCtx[EntityT]) -> SurfaceCtx[EntityT]:
         method_fn = getattr(self.service, self.method_name)
@@ -215,12 +285,19 @@ class ExposeMethod:
             )
         result_type = result_args[0]
 
+        caps: tuple[SurfaceCapability, ...] = self.capabilities
+        if self.description is not None:
+            from emergent.wire.axis.surface.dialects.telegram import HelpMeta
+            caps = (*caps, HelpMeta(description=self.description, order=self.order))
+
+        trigger = _enhance_trigger_with_args(self.trigger, fields)
+
         builder = (
             exposure(op_name, self.service)
             .request(**fields)
             .handler(handler)
-            .trigger(self.trigger)
-            .caps(*self.capabilities)
+            .trigger(trigger)
+            .caps(*caps)
             .response(result=result_type)
         )
 
@@ -254,6 +331,12 @@ class MethodsPattern:
         return ChainedPattern(self, transforms)
 
     def compile(self, entity: type) -> Derivation:
+        from derivelib.patterns.tg.methods import (
+            DELEGATE_ENTRIES_ATTR,
+            ExposeDelegateMethod,
+            _DelegateEntry,
+        )
+
         steps: list[Step] = [inspect_entity()]
         for name in dir(entity):
             if name.startswith("_"):
@@ -263,9 +346,9 @@ class MethodsPattern:
                 continue
             # Unwrap classmethod/staticmethod to find trigger entries
             fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
+
+            # Standard trigger entries → ExposeMethod (RRC codec)
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
-            if not entries:
-                continue
             for i, entry in enumerate(entries):
                 suffix = f"_{i}" if len(entries) > 1 else ""
                 steps.append(
@@ -275,6 +358,22 @@ class MethodsPattern:
                         trigger=entry.trigger,
                         capabilities=(*self.capabilities, *entry.capabilities),
                         suffix=suffix,
+                        description=entry.description,
+                        order=entry.order,
+                    )
+                )
+
+            # Delegate entries → ExposeDelegateMethod (DelegateCodec)
+            delegate_entries: list[_DelegateEntry] = getattr(fn, DELEGATE_ENTRIES_ATTR, [])
+            for entry in delegate_entries:
+                steps.append(
+                    ExposeDelegateMethod(
+                        service=entity,
+                        method_name=name,
+                        trigger=entry.trigger,
+                        capabilities=(*self.capabilities, *entry.capabilities),
+                        description=entry.description,
+                        order=entry.order,
                     )
                 )
         return tuple(steps)

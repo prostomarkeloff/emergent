@@ -194,13 +194,16 @@ async def compose_params(
         For pre-injected types (Pydantic models, etc.), retrieves from scope directly.
         For nodnod nodes, uses agent to compose.
     """
+    from emergent.graph._compose import Composer
+
+    composer = Composer.create(scope, agent_cls)
     composed: dict[str, Any] = {}
 
     for name, (original_type, compose_type) in params.items():
         # First check if already injected (e.g., Pydantic models from body)
-        pre_injected = scope.retrieve(compose_type)
-        if isinstance(pre_injected, Some):
-            composed[name] = wrap(original_type, True, pre_injected.unwrap().value)
+        found, value = composer.retrieve(compose_type)
+        if found:
+            composed[name] = wrap(original_type, True, value)
             continue
 
         # Only use nodnod agent for actual nodes
@@ -208,21 +211,11 @@ async def compose_params(
             composed[name] = wrap(original_type, False, f"not a node: {compose_type}")
             continue
 
-        # Build agent for this specific type
-        try:
-            agent = agent_cls.build({compose_type})
-            await agent.run(local_scope=scope, mapped_scopes={})
-
-            # Retrieve result
-            result = scope.retrieve(compose_type)
-            match result:
-                case Some(value):
-                    composed[name] = wrap(original_type, True, value.value)
-                case Nothing():
-                    composed[name] = wrap(original_type, False, "composition failed")
-        except Exception:
-            # Node composition failed (e.g., NodeError for missing data)
-            # For Option types, this becomes Nothing; for required, raises
+        # Compose through Composer
+        success, result = await composer.compose(compose_type)
+        if success:
+            composed[name] = wrap(original_type, True, result)
+        else:
             composed[name] = wrap(original_type, False, "node composition failed")
 
     return composed
@@ -245,6 +238,9 @@ async def try_compose_params(
         Some(composed_dict) if all required params composed successfully
         Nothing() if any required param failed
     """
+    from emergent.graph._compose import Composer
+
+    composer = Composer.create(scope, agent_cls)
     composed: dict[str, Any] = {}
 
     for name, (original_type, compose_type) in params.items():
@@ -252,9 +248,9 @@ async def try_compose_params(
         is_optional = origin is Option or origin is Result
 
         # First check if already injected
-        pre_injected = scope.retrieve(compose_type)
-        if isinstance(pre_injected, Some):
-            composed[name] = wrap(original_type, True, pre_injected.unwrap().value)
+        found, pre_value = composer.retrieve(compose_type)
+        if found:
+            composed[name] = wrap(original_type, True, pre_value)
             continue
 
         # Non-node types: fail if required
@@ -262,28 +258,16 @@ async def try_compose_params(
             if is_optional:
                 composed[name] = wrap(original_type, False, f"not a node: {compose_type}")
                 continue
-            # Required non-node not found → this transition is not resolvable
             return Nothing()
 
-        # Try to compose through nodnod
-        try:
-            agent = agent_cls.build({compose_type})
-            await agent.run(local_scope=scope, mapped_scopes={})
-
-            result = scope.retrieve(compose_type)
-            match result:
-                case Some(value):
-                    composed[name] = wrap(original_type, True, value.value)
-                case Nothing():
-                    if is_optional:
-                        composed[name] = wrap(original_type, False, "composition failed")
-                    else:
-                        return Nothing()  # Required param failed
-        except Exception:
-            if is_optional:
-                composed[name] = wrap(original_type, False, "node composition failed")
-            else:
-                return Nothing()  # Required param failed
+        # Try to compose through Composer
+        success, result = await composer.compose(compose_type)
+        if success:
+            composed[name] = wrap(original_type, True, result)
+        elif is_optional:
+            composed[name] = wrap(original_type, False, "node composition failed")
+        else:
+            return Nothing()
 
     return Some(composed)
 
