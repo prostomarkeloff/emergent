@@ -525,6 +525,10 @@ def wrap_stateful_telegrinder(
                 done_scope.inject(Context, ctx)
                 done_scope.inject(Update, ctx.update)
                 done_scope.inject(API, ctx.api)
+                # Inject incoming cute type so finish() deps (UserId, etc.) can compose
+                if update_cute is not None:
+                    incoming = update_cute.incoming_update
+                    done_scope.inject(type(incoming), incoming)
 
             async def _resolve() -> tuple[Any, dict[str, Any]] | None:
                 return await resolve_transition(
