@@ -19,15 +19,10 @@ from nodnod.utils.create_node import create_node
 from emergent.ops._graph import Op, Runner, ops
 from emergent.wire.axis.surface import endpoint, application, empty_runner
 from emergent.wire.axis.surface.codecs.rrc import (
-    RequestResponseCodec,
     rrc,
-    ToDomain,
-    FromDomain,
 )
-from emergent.wire.axis.surface.codecs.delegate import DelegateCodec, delegate
+from emergent.wire.axis.surface.codecs.delegate import delegate
 from emergent.wire.axis.surface.codecs.immediate import (
-    ImmediateCodec,
-    ImmediateFactoryCodec,
     immediate,
     immediate_factory,
 )
@@ -37,19 +32,18 @@ from emergent.wire.axis.surface.enrichers import (
     Inject,
     Validate,
     When,
-    Passthrough,
-    chain_enrichers,
 )
 from emergent.wire.axis.surface.transforms import AsDict, AsStr, Transform
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.compile._core import Axes
-from emergent.wire.compile._trace import ListCollector, ScanEvent, WrapEvent
+from emergent.wire.compile._trace import ListCollector
 from emergent.wire.compile._request import build_request
 from emergent.graph._compose import Composer
 from emergent.graph._family import ScopeFamily
-from emergent.wire.compile._lifetime import Tier, App, Request
-from emergent.wire.compile.targets.testing import testing_compile as compile_for_test
+from emergent.wire.compile._lifetime import Tier, App
+from emergent.wire.compile.targets.testing import testing_compile as compile_for_test, TestApp, TestRoute
 from emergent.wire.axis.schema.dialects.compose import Retrieve
+from emergent.wire.axis.surface._app import Application
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -81,8 +75,8 @@ class GreetResponse:
     message: str
 
     @classmethod
-    def from_domain(cls, result: Result[str, str]) -> Self:
-        match result:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(value):
                 return cls(message=value)
             case Error(err):
@@ -114,8 +108,8 @@ class OptResp:
     msg: str
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(msg=v)
             case Error(e):
@@ -146,8 +140,8 @@ class DefResp:
     msg: str
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(msg=v)
             case Error(e):
@@ -177,8 +171,8 @@ class FailResp:
     ok: bool
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(msg=v, ok=True)
             case Error(e):
@@ -209,8 +203,8 @@ class EchoResp:
     out: str
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(out=v)
             case Error(e):
@@ -244,8 +238,8 @@ class CfgResp:
     out: str
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(out=v)
             case Error(e):
@@ -322,7 +316,7 @@ def _greet_runner() -> Runner:
     return ops().on(Greet, _greet_handler).compile()
 
 
-def _greet_app():
+def _greet_app() -> tuple[Application, Runner]:
     runner = _greet_runner()
     trigger = HTTPRouteTrigger("POST", "/greet")
     app = application().mount(
@@ -440,10 +434,6 @@ async def _delegate_with_config(cfg: _DelegateConfig) -> str:
     return cfg.value
 
 
-async def _delegate_with_token(t: Annotated[_DelegateToken, "placeholder"]) -> str:
-    return t.secret
-
-
 async def _delegate_with_retrieve(t: Annotated[_DelegateToken, Retrieve(_DelegateToken)]) -> str:
     return t.secret
 
@@ -535,10 +525,13 @@ class TestImmediatePipeline:
     async def test_immediate_factory(self) -> None:
         captured = "factory_output"
 
+        def _factory() -> dict[str, str]:
+            return {"info": captured}
+
         app = application().mount(
             endpoint(empty_runner()).expose(
                 HTTPRouteTrigger("GET", "/info"),
-                immediate_factory(lambda: {"info": captured}),
+                immediate_factory(_factory),
             )
         )
         test = compile_for_test(app)
@@ -551,10 +544,14 @@ class TestImmediatePipeline:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _str_list_factory() -> list[str]:
+    return []
+
+
 @dataclass(frozen=True, slots=True)
 class _OrderedEnricher(ScopeEnricher):
     label: str
-    _order: list[str] = field(default_factory=list, compare=False, hash=False)
+    _order: list[str] = field(default_factory=_str_list_factory, compare=False, hash=False)
 
     async def enrich(self, call: EnricherNext[object], scope: Scope) -> object:
         self._order.append(f"enter:{self.label}")
@@ -566,7 +563,7 @@ class _OrderedEnricher(ScopeEnricher):
 @dataclass(frozen=True, slots=True)
 class _RecordingEnricher(ScopeEnricher):
     tag: str
-    _recorded: list[str] = field(default_factory=list, compare=False, hash=False)
+    _recorded: list[str] = field(default_factory=_str_list_factory, compare=False, hash=False)
 
     async def enrich(self, call: EnricherNext[object], scope: Scope) -> object:
         self._recorded.append(self.tag)
@@ -594,15 +591,24 @@ class TestEnricherExecution:
 
     @pytest.mark.asyncio
     async def test_validate_enricher_pass(self) -> None:
+        def _extract_true(_scope: Scope) -> bool:
+            return True
+
+        def _predicate_true(_val: bool) -> bool:
+            return True
+
+        def _on_invalid(_val: bool) -> GreetResponse:
+            return GreetResponse(message="INVALID")
+
         runner = _greet_runner()
         app = application().mount(
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
                 Validate(
-                    extract=lambda scope: True,
-                    predicate=lambda _: True,
-                    on_invalid=lambda _: GreetResponse(message="INVALID"),
+                    extract=_extract_true,
+                    predicate=_predicate_true,
+                    on_invalid=_on_invalid,
                 ),
             )
         )
@@ -613,15 +619,24 @@ class TestEnricherExecution:
 
     @pytest.mark.asyncio
     async def test_validate_enricher_short_circuit(self) -> None:
+        def _extract_false(_scope: Scope) -> bool:
+            return False
+
+        def _predicate_identity(v: bool) -> bool:
+            return v
+
+        def _on_invalid_blocked(_val: bool) -> GreetResponse:
+            return GreetResponse(message="BLOCKED")
+
         runner = _greet_runner()
         app = application().mount(
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
                 Validate(
-                    extract=lambda scope: False,
-                    predicate=lambda v: v,
-                    on_invalid=lambda _: GreetResponse(message="BLOCKED"),
+                    extract=_extract_false,
+                    predicate=_predicate_identity,
+                    on_invalid=_on_invalid_blocked,
                 ),
             )
         )
@@ -632,6 +647,9 @@ class TestEnricherExecution:
 
     @pytest.mark.asyncio
     async def test_when_enricher_condition_true(self) -> None:
+        def _always_true(_scope: Scope) -> bool:
+            return True
+
         runner = _greet_runner()
         recorded: list[str] = []
         recorder = _RecordingEnricher(tag="applied", _recorded=recorded)
@@ -640,7 +658,7 @@ class TestEnricherExecution:
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
-                When(condition=lambda _: True, then=recorder),
+                When(condition=_always_true, then=recorder),
             )
         )
         test = compile_for_test(app)
@@ -649,6 +667,9 @@ class TestEnricherExecution:
 
     @pytest.mark.asyncio
     async def test_when_enricher_condition_false(self) -> None:
+        def _always_false(_scope: Scope) -> bool:
+            return False
+
         runner = _greet_runner()
         recorded: list[str] = []
         recorder = _RecordingEnricher(tag="should_not_appear", _recorded=recorded)
@@ -657,7 +678,7 @@ class TestEnricherExecution:
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
-                When(condition=lambda _: False, then=recorder),
+                When(condition=_always_false, then=recorder),
             )
         )
         test = compile_for_test(app)
@@ -720,12 +741,15 @@ class TestResponseTransforms:
 
     @pytest.mark.asyncio
     async def test_custom_transform_fn(self) -> None:
+        def _to_data(r: GreetResponse) -> dict[str, str]:
+            return {"data": r.message}
+
         runner = _greet_runner()
         app = application().mount(
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
-                Transform(fn=lambda r: {"data": r.message}),
+                Transform(fn=_to_data),
             )
         )
         test = compile_for_test(app)
@@ -734,13 +758,16 @@ class TestResponseTransforms:
 
     @pytest.mark.asyncio
     async def test_chained_transforms(self) -> None:
+        def _add_wrapped(d: dict[str, object]) -> dict[str, object]:
+            return {**d, "wrapped": True}
+
         runner = _greet_runner()
         app = application().mount(
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(GreetRequest, GreetResponse),
                 AsDict(),
-                Transform(fn=lambda d: {**d, "wrapped": True}),
+                Transform(fn=_add_wrapped),
             )
         )
         test = compile_for_test(app)
@@ -841,8 +868,10 @@ class TestScopeFamilyLifecycle:
         )
         test = compile_for_test(app, family=family)
         async with test:
-            if test._app_scope is not None:
-                test._app_scope.inject(_SharedConfig, _SharedConfig())
+            # pyright: ignore[reportPrivateUsage] - test needs access to app scope for setup
+            app_scope = test._app_scope  # pyright: ignore[reportPrivateUsage]
+            if app_scope is not None:
+                app_scope.inject(_SharedConfig, _SharedConfig())
 
             result = await test.routes[0].call()
             assert result == "shared"
@@ -1049,6 +1078,9 @@ class TestTracing:
         assert "Inject" in event.capabilities[0]
 
     def test_multiple_endpoints_traced(self) -> None:
+        def _ok_handler() -> str:
+            return "ok"
+
         runner = _greet_runner()
         app = application().mount(
             endpoint(runner).expose(
@@ -1057,7 +1089,7 @@ class TestTracing:
             ),
             endpoint(empty_runner()).expose(
                 HTTPRouteTrigger("GET", "/b"),
-                delegate(lambda: "ok"),
+                delegate(_ok_handler),
             ),
         )
         collector = ListCollector()
@@ -1075,7 +1107,10 @@ class TestTracing:
 class TestMixedCodecsApp:
     """RRC + Delegate + Immediate in one Application."""
 
-    def _build_mixed_app(self):
+    def _build_mixed_app(self) -> Application:
+        def _delegate_ok() -> str:
+            return "delegate_ok"
+
         runner = _greet_runner()
 
         rrc_ep = endpoint(runner).expose(
@@ -1084,7 +1119,7 @@ class TestMixedCodecsApp:
         )
         delegate_ep = endpoint(empty_runner()).expose(
             HTTPRouteTrigger("GET", "/delegate"),
-            delegate(lambda: "delegate_ok"),
+            delegate(_delegate_ok),
         )
         immediate_ep = endpoint(empty_runner()).expose(
             HTTPRouteTrigger("GET", "/help"),
@@ -1094,11 +1129,11 @@ class TestMixedCodecsApp:
         app = application().mount(rrc_ep, delegate_ep, immediate_ep)
         return app
 
-    def _find_route_by_trigger_path(self, test, path: str):
+    def _find_route_by_trigger_path(self, test: TestApp, path: str) -> TestRoute:
         """Find route by matching trigger path."""
         for route in test.routes:
             trigger = route.trigger
-            if hasattr(trigger, "path") and trigger.path == path:
+            if isinstance(trigger, HTTPRouteTrigger) and trigger.path == path:
                 return route
         raise AssertionError(f"No route with path {path}")
 

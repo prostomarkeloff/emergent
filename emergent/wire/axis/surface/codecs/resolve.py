@@ -49,6 +49,8 @@ nodnod handles Option[T], Result[T, E] automatically.
 
 from __future__ import annotations
 
+import types
+from collections.abc import Mapping
 from typing import Any, Callable, get_type_hints, get_origin, get_args, TYPE_CHECKING
 
 from kungfu import Option, Some, Nothing, Result, Ok, Error
@@ -57,12 +59,19 @@ from nodnod import Scope
 if TYPE_CHECKING:
     from nodnod.agent.base import Agent
 
+# A type annotation can be a concrete `type` or a parameterized generic alias
+# (e.g. Option[int], Result[str, int]).  Python has no official TypeForm yet,
+# so we define a narrow union covering the two cases that actually appear here.
+TypeForm = type | types.GenericAlias
 
 # ─── Wrapper Handling ────────────────────────────────────────────────────────
 
 
-def unwrap(typ: type) -> tuple[type, bool]:
+def unwrap(typ: TypeForm) -> tuple[type, bool]:
     """Unwrap Option[T] or Result[T, E] → (inner_type, is_optional).
+
+    The inner type is always a concrete class (not a generic alias),
+    because Option[T] and Result[T, E] wrap concrete types.
 
     Examples:
         unwrap(Option[HttpToken]) → (HttpToken, True)
@@ -71,13 +80,17 @@ def unwrap(typ: type) -> tuple[type, bool]:
     """
     origin = get_origin(typ)
     if origin is Option:
-        return (get_args(typ)[0], True)
+        inner: type = get_args(typ)[0]
+        return (inner, True)
     if origin is Result:
-        return (get_args(typ)[0], True)
+        inner_r: type = get_args(typ)[0]
+        return (inner_r, True)
+    # Plain type — not a generic alias
+    assert isinstance(typ, type)
     return (typ, False)
 
 
-def wrap(typ: type, success: bool, value: Any) -> Any:
+def wrap(typ: TypeForm, success: bool, value: Any) -> Any:
     """Wrap composition result back into original type.
 
     Examples:
@@ -104,7 +117,7 @@ def wrap(typ: type, success: bool, value: Any) -> Any:
 # ─── Transition Params ───────────────────────────────────────────────────────
 
 
-def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[type, type]]:
+def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[TypeForm, type]]:
     """Parse method signature → {name: (original_type, compose_type)}.
 
     Example:
@@ -123,7 +136,7 @@ def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[type, type]
         # }
     """
     hints = get_type_hints(method)
-    params: dict[str, tuple[type, type]] = {}
+    params: dict[str, tuple[TypeForm, type]] = {}
 
     for name, typ in hints.items():
         if name in ("self", "return"):
@@ -134,7 +147,7 @@ def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[type, type]
     return params
 
 
-def get_transition_params(flow: type) -> dict[str, tuple[type, type]]:
+def get_transition_params(flow: type) -> dict[str, tuple[TypeForm, type]]:
     """Parse __transition__ signature → {name: (original_type, compose_type)}.
 
     Backwards-compatible wrapper around get_method_params.
@@ -164,13 +177,13 @@ def get_transition_params(flow: type) -> dict[str, tuple[type, type]]:
     return get_method_params(transition_fn)
 
 
-def _is_nodnod_node(typ: type) -> bool:
+def _is_nodnod_node(typ: TypeForm) -> bool:
     """Check if type is a nodnod node (has __dependencies__)."""
     return hasattr(typ, "__dependencies__")
 
 
 async def compose_params(
-    params: dict[str, tuple[type, type]],
+    params: Mapping[str, tuple[TypeForm, type]],
     scope: Scope,
     agent_cls: type[Agent],
 ) -> dict[str, Any]:
@@ -225,7 +238,7 @@ async def compose_params(
 
 
 async def try_compose_params(
-    params: dict[str, tuple[type, type]],
+    params: Mapping[str, tuple[TypeForm, type]],
     scope: Scope,
     agent_cls: type[Agent],
 ) -> Option[dict[str, Any]]:

@@ -8,7 +8,6 @@ import pytest
 
 from emergent.wire.axis.query._relational import (
     Aggregate,
-    AggregateSpec,
     Distinct,
     Filter,
     GroupBy,
@@ -17,12 +16,11 @@ from emergent.wire.axis.query._relational import (
     Limit,
     Offset,
     OrderBy,
-    RelationalQuerySet,
     Select,
     relational,
 )
 from emergent.wire.axis.query._proxy import OrderSpec
-from emergent.wire.axis.query._aggregate import Count, Sum
+from emergent.wire.axis.query._aggregate import Sum
 
 
 @dataclass
@@ -96,9 +94,11 @@ class TestOpBuilding:
         assert isinstance(q.ops[1], Limit)
         assert q.ops[1].count == 10
 
-    def test_paginate_page_1(self):
+    def test_paginate_page_1(self) -> None:
         q = relational(User).paginate(1, 25)
-        assert q.ops[0].count == 0  # offset
+        op = q.ops[0]
+        assert isinstance(op, Offset)
+        assert op.count == 0  # offset
 
     def test_select(self):
         q = relational(User).select(lambda u: u.id, lambda u: u.name)
@@ -122,9 +122,11 @@ class TestOpBuilding:
         assert isinstance(op, Join)
         assert op.kind == "left"
 
-    def test_join_with_tablename(self):
+    def test_join_with_tablename(self) -> None:
         q = relational(User).join(Post, on=lambda u, p: u.id == p.author_id, tablename="posts")
-        assert q.ops[0].tablename == "posts"
+        op = q.ops[0]
+        assert isinstance(op, Join)
+        assert op.tablename == "posts"
 
     def test_group_by(self):
         q = relational(User).group_by(lambda u: u.name)
@@ -167,9 +169,11 @@ class TestValidation:
         with pytest.raises(ValueError, match="non-negative"):
             relational(User).offset(-5)
 
-    def test_limit_zero_ok(self):
+    def test_limit_zero_ok(self) -> None:
         q = relational(User).limit(0)
-        assert q.ops[0].count == 0
+        op = q.ops[0]
+        assert isinstance(op, Limit)
+        assert op.count == 0
 
     def test_paginate_page_zero_raises(self):
         with pytest.raises(ValueError, match="page must be >= 1"):

@@ -150,8 +150,12 @@ class TestIntegrationPatternComposition:
         # RequiredShort → MinLen(1) + MaxLen(100)
         assert fields["name"].has(MinLen)
         assert fields["name"].has(MaxLen)
-        assert fields["name"].get(MinLen).value == 1
-        assert fields["name"].get(MaxLen).value == 100
+        name_min = fields["name"].get(MinLen)
+        assert name_min is not None
+        assert name_min.value == 1
+        name_max = fields["name"].get(MaxLen)
+        assert name_max is not None
+        assert name_max.value == 100
 
         # Slug → Unique + MaxLen(100) + Pattern
         assert fields["slug"].has(Unique)
@@ -159,15 +163,25 @@ class TestIntegrationPatternComposition:
         assert fields["slug"].has(Pattern)
 
         # NonNegative → Min(0)
-        assert fields["price"].get(Min).value == 0
+        price_min = fields["price"].get(Min)
+        assert price_min is not None
+        assert price_min.value == 0
 
         # Percentage → Min(0) + Max(100)
-        assert fields["discount"].get(Min).value == 0
-        assert fields["discount"].get(Max).value == 100
+        discount_min = fields["discount"].get(Min)
+        assert discount_min is not None
+        assert discount_min.value == 0
+        discount_max = fields["discount"].get(Max)
+        assert discount_max is not None
+        assert discount_max.value == 100
 
         # Probability → Min(0) + Max(1)
-        assert fields["chance"].get(Min).value == 0
-        assert fields["chance"].get(Max).value == 1
+        chance_min = fields["chance"].get(Min)
+        assert chance_min is not None
+        assert chance_min.value == 0
+        chance_max = fields["chance"].get(Max)
+        assert chance_max is not None
+        assert chance_max.value == 1
 
         # UniqueValue → Unique
         assert fields["sku"].has(Unique)
@@ -197,6 +211,7 @@ class TestIntegrationPatternComposition:
         assert fields["email"].has(MaxLen)
         assert fields["email"].has(Doc)
         doc = fields["email"].get(Doc)
+        assert doc is not None
         assert doc.text == "Primary email"
 
         # Slug pattern caps + Deprecated

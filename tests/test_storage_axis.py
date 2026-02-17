@@ -25,9 +25,9 @@ from typing import AsyncIterator, Never
 import pytest
 from kungfu import Ok, Error, Some, Nothing, Result, Option
 
-from emergent.wire.axis.storage._memory import MemoryStorage, BaseTTLStorage
-from emergent.wire.axis.storage._file import FileStorage
-from emergent.wire.axis.storage._codec import PickleCodec, JsonCodec, IdentityCodec
+from emergent.wire.axis.storage._memory import MemoryStorage  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._file import FileStorage  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._codec import PickleCodec, JsonCodec, IdentityCodec  # pyright: ignore[reportPrivateUsage] - testing private module
 
 
 # Module-level dataclasses for pickle compatibility
@@ -41,12 +41,12 @@ class _User:
 class _Item:
     name: str
     qty: int
-from emergent.wire.axis.storage._kv import KV, KVNX, kv, kv_nx
-from emergent.wire.axis.storage._queue import Queue, QueueFull, queue, queue_full
-from emergent.wire.axis.storage._pubsub import PubSub, pubsub
-from emergent.wire.axis.storage._lock import Lock, LockExtend, lock, lock_extend
-from emergent.wire.axis.storage._counter import Counter, CounterFull, counter, counter_full
-from emergent.wire.axis.storage._compose import (
+from emergent.wire.axis.storage._kv import KV, KVNX, kv, kv_nx  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._queue import Queue, QueueFull, queue, queue_full  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._pubsub import PubSub, pubsub  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._lock import Lock, LockExtend, lock, lock_extend  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._counter import Counter, CounterFull, counter, counter_full  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._compose import (  # pyright: ignore[reportPrivateUsage] - testing private module
     PrefixKV,
     TieredKV,
     FallbackKV,
@@ -56,7 +56,7 @@ from emergent.wire.axis.storage._compose import (
     fallback_kv,
     readonly_kv,
 )
-from emergent.wire.axis.storage._result import map_option, map_result
+from emergent.wire.axis.storage._result import map_option, map_result  # pyright: ignore[reportPrivateUsage] - testing private module
 
 
 # =============================================================================
@@ -169,20 +169,20 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_set_and_get_basic(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("k", "v")
         result = await storage.get("k")
         assert result == Ok(Some("v"))
 
     @pytest.mark.asyncio
     async def test_get_missing_key_returns_nothing(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         result = await storage.get("missing")
         assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_delete_removes_key(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("k", "v")
         await storage.delete("k")
         result = await storage.get("k")
@@ -190,13 +190,13 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_key_is_noop(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         result = await storage.delete("nonexistent")
         assert result == Ok(None)
 
     @pytest.mark.asyncio
     async def test_set_overwrites_existing(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("k", "v1")
         await storage.set("k", "v2")
         result = await storage.get("k")
@@ -204,7 +204,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_set_nx_new_key_returns_true(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         result = await storage.set_nx("k", "v")
         assert result == Ok(True)
         get_result = await storage.get("k")
@@ -212,7 +212,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_set_nx_existing_key_returns_false(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set_nx("k", "v")
         result = await storage.set_nx("k", "v2")
         assert result == Ok(False)
@@ -222,7 +222,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_ttl_entry_expires(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("k", "v", ttl=timedelta(milliseconds=10))
         # Immediately should still be present
         result_before = await storage.get("k")
@@ -234,7 +234,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_set_without_ttl_does_not_expire(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("k", "v")
         await asyncio.sleep(0.01)
         result = await storage.get("k")
@@ -242,7 +242,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_set_nx_with_expired_entry_returns_true(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set_nx("k", "old", ttl=timedelta(milliseconds=10))
         await asyncio.sleep(0.05)
         # Expired entry should allow set_nx to succeed
@@ -253,7 +253,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_delete_pattern_with_fnmatch(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("user:1", "alice")
         await storage.set("user:2", "bob")
         await storage.set("order:1", "pizza")
@@ -265,7 +265,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_delete_pattern_no_matches(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("user:1", "alice")
         result = await storage.delete_pattern("order:*")
         assert result == Ok(0)
@@ -273,7 +273,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_keys_all(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, int]()
         await storage.set("a", 1)
         await storage.set("b", 2)
         await storage.set("c", 3)
@@ -284,7 +284,7 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_keys_with_pattern(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         await storage.set("user:1", "alice")
         await storage.set("user:2", "bob")
         await storage.set("order:1", "pizza")
@@ -295,19 +295,19 @@ class TestMemoryStorage:
 
     @pytest.mark.asyncio
     async def test_keys_empty_storage(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         result = await storage.keys()
         assert result == Ok([])
 
     @pytest.mark.asyncio
     async def test_set_returns_ok_none(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, str]()
         result = await storage.set("k", "v")
         assert result == Ok(None)
 
     @pytest.mark.asyncio
     async def test_multiple_keys_independent(self) -> None:
-        storage = MemoryStorage()
+        storage = MemoryStorage[str, int]()
         await storage.set("a", 1)
         await storage.set("b", 2)
         assert await storage.get("a") == Ok(Some(1))
@@ -329,9 +329,10 @@ class TestFileStorage:
     async def test_write_and_read_back(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.pickle")
-            storage = FileStorage(path)
-            await storage.set("k", "v")
-            result = await storage.get("k")
+            # FileStorage inherits BaseTTLStorage without type params — methods are untyped
+            storage: FileStorage = FileStorage(path)
+            await storage.set("k", "v")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
+            result = await storage.get("k")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result == Ok(Some("v"))
 
     @pytest.mark.asyncio
@@ -339,11 +340,11 @@ class TestFileStorage:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.pickle")
             # Write with first instance
-            storage1 = FileStorage(path)
-            await storage1.set("k", "v")
+            storage1: FileStorage = FileStorage(path)
+            await storage1.set("k", "v")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
             # Read with a new instance (same path)
-            storage2 = FileStorage(path)
-            result = await storage2.get("k")
+            storage2: FileStorage = FileStorage(path)
+            result = await storage2.get("k")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result == Ok(Some("v"))
 
     @pytest.mark.asyncio
@@ -351,47 +352,47 @@ class TestFileStorage:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "data.pickle")
             assert not os.path.exists(path)
-            storage = FileStorage(path)
-            await storage.set("k", "v")
+            storage: FileStorage = FileStorage(path)
+            await storage.set("k", "v")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
             assert os.path.exists(path)
 
     @pytest.mark.asyncio
     async def test_creates_parent_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "sub", "dir", "data.pickle")
-            storage = FileStorage(path)
-            await storage.set("k", "v")
+            storage: FileStorage = FileStorage(path)
+            await storage.set("k", "v")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
             assert os.path.exists(path)
 
     @pytest.mark.asyncio
     async def test_delete_persists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.pickle")
-            storage1 = FileStorage(path)
-            await storage1.set("k", "v")
-            await storage1.delete("k")
-            storage2 = FileStorage(path)
-            result = await storage2.get("k")
+            storage1: FileStorage = FileStorage(path)
+            await storage1.set("k", "v")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
+            await storage1.delete("k")  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
+            storage2: FileStorage = FileStorage(path)
+            result = await storage2.get("k")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_file_storage_inherits_ttl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.pickle")
-            storage = FileStorage(path)
-            await storage.set("k", "v", ttl=timedelta(milliseconds=10))
-            result_before = await storage.get("k")
+            storage: FileStorage = FileStorage(path)
+            await storage.set("k", "v", ttl=timedelta(milliseconds=10))  # pyright: ignore[reportUnknownMemberType] - FileStorage is unparameterized
+            result_before = await storage.get("k")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result_before == Ok(Some("v"))
             await asyncio.sleep(0.05)
-            result_after = await storage.get("k")
+            result_after = await storage.get("k")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result_after == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_empty_file_storage_returns_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.pickle")
-            storage = FileStorage(path)
-            result = await storage.get("nonexistent")
+            storage: FileStorage = FileStorage(path)
+            result = await storage.get("nonexistent")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - FileStorage is unparameterized
             assert result == Ok(Nothing())
 
 
@@ -404,36 +405,36 @@ class TestPickleCodec:
     """Tests for PickleCodec: round-trip encoding/decoding."""
 
     def test_encode_decode_dict(self) -> None:
-        codec = PickleCodec()
-        data = {"key": "value", "num": 42}
+        codec = PickleCodec[dict[str, str | int]]()
+        data: dict[str, str | int] = {"key": "value", "num": 42}
         encoded = codec.encode(data)
         assert isinstance(encoded, bytes)
         decoded = codec.decode(encoded)
         assert decoded == data
 
     def test_encode_decode_list(self) -> None:
-        codec = PickleCodec()
-        data = [1, 2, 3, "hello"]
+        codec = PickleCodec[list[int | str]]()
+        data: list[int | str] = [1, 2, 3, "hello"]
         encoded = codec.encode(data)
         decoded = codec.decode(encoded)
         assert decoded == data
 
     def test_encode_decode_dataclass(self) -> None:
-        codec = PickleCodec()
+        codec = PickleCodec[_User]()
         user = _User(name="Alice", age=30)
         encoded = codec.encode(user)
         decoded = codec.decode(encoded)
         assert decoded == user
 
     def test_encode_decode_nested(self) -> None:
-        codec = PickleCodec()
-        data = {"users": [{"name": "Alice"}, {"name": "Bob"}], "count": 2}
+        codec = PickleCodec[dict[str, list[dict[str, str]] | int]]()
+        data: dict[str, list[dict[str, str]] | int] = {"users": [{"name": "Alice"}, {"name": "Bob"}], "count": 2}
         encoded = codec.encode(data)
         decoded = codec.decode(encoded)
         assert decoded == data
 
     def test_encode_decode_primitives(self) -> None:
-        codec = PickleCodec()
+        codec = PickleCodec[int | float | str | bool | None]()
         for value in [42, 3.14, "hello", True, None]:
             encoded = codec.encode(value)
             decoded = codec.decode(encoded)
@@ -444,37 +445,37 @@ class TestJsonCodec:
     """Tests for JsonCodec: round-trip encoding/decoding."""
 
     def test_encode_decode_dict(self) -> None:
-        codec = JsonCodec()
-        data = {"key": "value", "num": 42}
+        codec = JsonCodec[dict[str, str | int]]()
+        data: dict[str, str | int] = {"key": "value", "num": 42}
         encoded = codec.encode(data)
         assert isinstance(encoded, bytes)
         decoded = codec.decode(encoded)
         assert decoded == data
 
     def test_encode_decode_list(self) -> None:
-        codec = JsonCodec()
-        data = [1, 2, 3, "hello"]
+        codec = JsonCodec[list[int | str]]()
+        data: list[int | str] = [1, 2, 3, "hello"]
         encoded = codec.encode(data)
         decoded = codec.decode(encoded)
         assert decoded == data
 
     def test_encode_decode_primitives(self) -> None:
-        codec = JsonCodec()
+        codec = JsonCodec[int | float | str | bool | None]()
         for value in [42, 3.14, "hello", True, None]:
             encoded = codec.encode(value)
             decoded = codec.decode(encoded)
             assert decoded == value
 
     def test_encode_produces_utf8_bytes(self) -> None:
-        codec = JsonCodec()
+        codec = JsonCodec[dict[str, str]]()
         encoded = codec.encode({"key": "value"})
         assert isinstance(encoded, bytes)
         text = encoded.decode("utf-8")
         assert '"key"' in text
 
     def test_encode_decode_nested(self) -> None:
-        codec = JsonCodec()
-        data = {"users": [{"name": "Alice"}, {"name": "Bob"}], "count": 2}
+        codec = JsonCodec[dict[str, list[dict[str, str]] | int]]()
+        data: dict[str, list[dict[str, str]] | int] = {"users": [{"name": "Alice"}, {"name": "Bob"}], "count": 2}
         encoded = codec.encode(data)
         decoded = codec.decode(encoded)
         assert decoded == data
@@ -504,32 +505,37 @@ class TestIdentityCodec:
 # =============================================================================
 
 
+def _make_str_bytes_storage() -> MemoryStorage[str, bytes]:
+    """Create a MemoryStorage[str, bytes] for KV backends."""
+    return MemoryStorage[str, bytes]()
+
+
 class TestKVPattern:
     """Tests for KV pattern: codec integration with MemoryStorage backend."""
 
     @pytest.mark.asyncio
     async def test_set_and_get_with_pickle(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[dict[str, int]]())
         await store.set("k", {"a": 1})
         result = await store.get("k")
         assert result == Ok(Some({"a": 1}))
 
     @pytest.mark.asyncio
     async def test_set_and_get_with_json(self) -> None:
-        store = kv(MemoryStorage(), JsonCodec())
+        store = kv(_make_str_bytes_storage(), JsonCodec[list[int]]())
         await store.set("k", [1, 2, 3])
         result = await store.get("k")
         assert result == Ok(Some([1, 2, 3]))
 
     @pytest.mark.asyncio
     async def test_get_missing_returns_nothing(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[str]())
         result = await store.get("missing")
         assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_delete(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await store.set("k", "v")
         await store.delete("k")
         result = await store.get("k")
@@ -537,7 +543,7 @@ class TestKVPattern:
 
     @pytest.mark.asyncio
     async def test_set_with_ttl(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await store.set("k", "v", ttl=timedelta(milliseconds=10))
         result_before = await store.get("k")
         assert result_before == Ok(Some("v"))
@@ -547,7 +553,7 @@ class TestKVPattern:
 
     @pytest.mark.asyncio
     async def test_overwrite_value(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await store.set("k", "v1")
         await store.set("k", "v2")
         result = await store.get("k")
@@ -555,7 +561,7 @@ class TestKVPattern:
 
     @pytest.mark.asyncio
     async def test_complex_values(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[_Item]())
         item = _Item(name="Widget", qty=10)
         await store.set("item:1", item)
         result = await store.get("item:1")
@@ -563,7 +569,7 @@ class TestKVPattern:
 
     @pytest.mark.asyncio
     async def test_kv_factory_returns_kv_instance(self) -> None:
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[str]())
         assert isinstance(store, KV)
 
 
@@ -572,20 +578,20 @@ class TestKVNXPattern:
 
     @pytest.mark.asyncio
     async def test_set_nx_new_key(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[str]())
         result = await store.set_nx("k", "v")
         assert result == Ok(True)
 
     @pytest.mark.asyncio
     async def test_set_nx_existing_key(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[str]())
         await store.set_nx("k", "v")
         result = await store.set_nx("k", "v2")
         assert result == Ok(False)
 
     @pytest.mark.asyncio
     async def test_set_nx_value_preserved(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[dict[str, bool]]())
         await store.set_nx("k", {"original": True})
         await store.set_nx("k", {"overwrite": True})
         result = await store.get("k")
@@ -593,7 +599,7 @@ class TestKVNXPattern:
 
     @pytest.mark.asyncio
     async def test_set_nx_with_ttl(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[str]())
         result = await store.set_nx("k", "v", ttl=timedelta(milliseconds=10))
         assert result == Ok(True)
         await asyncio.sleep(0.05)
@@ -603,7 +609,7 @@ class TestKVNXPattern:
 
     @pytest.mark.asyncio
     async def test_kvnx_get_and_delete(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[str]())
         await store.set("k", "v")
         assert await store.get("k") == Ok(Some("v"))
         await store.delete("k")
@@ -611,7 +617,7 @@ class TestKVNXPattern:
 
     @pytest.mark.asyncio
     async def test_kv_nx_factory_returns_kvnx_instance(self) -> None:
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[str]())
         assert isinstance(store, KVNX)
 
 
@@ -625,20 +631,20 @@ class TestQueuePattern:
 
     @pytest.mark.asyncio
     async def test_push_and_pop(self) -> None:
-        q = queue(MockQueueBackend(), PickleCodec())
+        q = queue(MockQueueBackend(), PickleCodec[str]())
         await q.push("hello")
         result = await q.pop()
         assert result == Ok(Some("hello"))
 
     @pytest.mark.asyncio
     async def test_pop_empty_returns_nothing(self) -> None:
-        q = queue(MockQueueBackend(), PickleCodec())
+        q = queue(MockQueueBackend(), PickleCodec[str]())
         result = await q.pop()
         assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_fifo_order(self) -> None:
-        q = queue(MockQueueBackend(), PickleCodec())
+        q = queue(MockQueueBackend(), PickleCodec[str]())
         await q.push("first")
         await q.push("second")
         await q.push("third")
@@ -649,14 +655,14 @@ class TestQueuePattern:
 
     @pytest.mark.asyncio
     async def test_push_complex_values(self) -> None:
-        q = queue(MockQueueBackend(), PickleCodec())
+        q = queue(MockQueueBackend(), PickleCodec[dict[str, str | list[int]]]())
         await q.push({"key": "value", "list": [1, 2, 3]})
         result = await q.pop()
         assert result == Ok(Some({"key": "value", "list": [1, 2, 3]}))
 
     @pytest.mark.asyncio
     async def test_queue_factory(self) -> None:
-        q = queue(MockQueueBackend(), PickleCodec())
+        q = queue(MockQueueBackend(), PickleCodec[str]())
         assert isinstance(q, Queue)
 
 
@@ -665,7 +671,7 @@ class TestQueueFullPattern:
 
     @pytest.mark.asyncio
     async def test_peek_returns_front_without_removing(self) -> None:
-        q = queue_full(MockQueueBackend(), PickleCodec())
+        q = queue_full(MockQueueBackend(), PickleCodec[str]())
         await q.push("hello")
         peek_result = await q.peek()
         assert peek_result == Ok(Some("hello"))
@@ -675,13 +681,13 @@ class TestQueueFullPattern:
 
     @pytest.mark.asyncio
     async def test_peek_empty_returns_nothing(self) -> None:
-        q = queue_full(MockQueueBackend(), PickleCodec())
+        q = queue_full(MockQueueBackend(), PickleCodec[str]())
         result = await q.peek()
         assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_length(self) -> None:
-        q = queue_full(MockQueueBackend(), PickleCodec())
+        q = queue_full(MockQueueBackend(), PickleCodec[str]())
         assert await q.length() == Ok(0)
         await q.push("a")
         assert await q.length() == Ok(1)
@@ -692,12 +698,12 @@ class TestQueueFullPattern:
 
     @pytest.mark.asyncio
     async def test_queue_full_factory(self) -> None:
-        q = queue_full(MockQueueBackend(), PickleCodec())
+        q = queue_full(MockQueueBackend(), PickleCodec[str]())
         assert isinstance(q, QueueFull)
 
     @pytest.mark.asyncio
     async def test_push_pop_peek_integration(self) -> None:
-        q = queue_full(MockQueueBackend(), JsonCodec())
+        q = queue_full(MockQueueBackend(), JsonCodec[dict[str, int]]())
         await q.push({"id": 1})
         await q.push({"id": 2})
         assert await q.peek() == Ok(Some({"id": 1}))
@@ -718,53 +724,61 @@ class TestPubSubPattern:
     @pytest.mark.asyncio
     async def test_publish_and_subscribe(self) -> None:
         backend = MockPubSubBackend()
-        ps = pubsub(backend, PickleCodec())
+        ps = pubsub(backend, PickleCodec[dict[str, str]]())
         await ps.publish("events", {"type": "click"})
         await ps.publish("events", {"type": "scroll"})
 
-        received = []
+        received: list[dict[str, str]] = []
         async for result in ps.subscribe("events"):
             match result:
                 case Ok(msg):
                     received.append(msg)
+                case _:
+                    pass
         assert received == [{"type": "click"}, {"type": "scroll"}]
 
     @pytest.mark.asyncio
     async def test_subscribe_empty_channel(self) -> None:
         backend = MockPubSubBackend()
-        ps = pubsub(backend, PickleCodec())
-        received = []
+        ps = pubsub(backend, PickleCodec[dict[str, str]]())
+        received: list[dict[str, str]] = []
         async for result in ps.subscribe("empty"):
             match result:
                 case Ok(msg):
                     received.append(msg)
+                case _:
+                    pass
         assert received == []
 
     @pytest.mark.asyncio
     async def test_separate_channels(self) -> None:
         backend = MockPubSubBackend()
-        ps = pubsub(backend, PickleCodec())
+        ps = pubsub(backend, PickleCodec[str]())
         await ps.publish("ch1", "msg1")
         await ps.publish("ch2", "msg2")
 
-        ch1_msgs = []
+        ch1_msgs: list[str] = []
         async for result in ps.subscribe("ch1"):
             match result:
                 case Ok(msg):
                     ch1_msgs.append(msg)
+                case _:
+                    pass
 
-        ch2_msgs = []
+        ch2_msgs: list[str] = []
         async for result in ps.subscribe("ch2"):
             match result:
                 case Ok(msg):
                     ch2_msgs.append(msg)
+                case _:
+                    pass
 
         assert ch1_msgs == ["msg1"]
         assert ch2_msgs == ["msg2"]
 
     @pytest.mark.asyncio
     async def test_pubsub_factory(self) -> None:
-        ps = pubsub(MockPubSubBackend(), PickleCodec())
+        ps = pubsub(MockPubSubBackend(), PickleCodec[str]())
         assert isinstance(ps, PubSub)
 
 
@@ -980,7 +994,7 @@ class TestPrefixKV:
 
     @pytest.mark.asyncio
     async def test_set_and_get_with_prefix(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         prefixed = prefix_kv(inner, "cache:")
         await prefixed.set("k", "v")
         result = await prefixed.get("k")
@@ -988,7 +1002,7 @@ class TestPrefixKV:
 
     @pytest.mark.asyncio
     async def test_prefix_is_applied_to_inner(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         prefixed = prefix_kv(inner, "cache:")
         await prefixed.set("k", "v")
         # Direct inner access with prefixed key should work
@@ -1000,7 +1014,7 @@ class TestPrefixKV:
 
     @pytest.mark.asyncio
     async def test_delete_with_prefix(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         prefixed = prefix_kv(inner, "ns:")
         await prefixed.set("k", "v")
         await prefixed.delete("k")
@@ -1009,9 +1023,9 @@ class TestPrefixKV:
 
     @pytest.mark.asyncio
     async def test_different_prefixes_isolate(self) -> None:
-        backend = MemoryStorage()
-        store_a = prefix_kv(kv(backend, PickleCodec()), "a:")
-        store_b = prefix_kv(kv(backend, PickleCodec()), "b:")
+        backend = _make_str_bytes_storage()
+        store_a = prefix_kv(kv(backend, PickleCodec[str]()), "a:")
+        store_b = prefix_kv(kv(backend, PickleCodec[str]()), "b:")
         await store_a.set("k", "from_a")
         await store_b.set("k", "from_b")
         assert await store_a.get("k") == Ok(Some("from_a"))
@@ -1019,7 +1033,7 @@ class TestPrefixKV:
 
     @pytest.mark.asyncio
     async def test_prefix_kv_factory(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         prefixed = prefix_kv(inner, "cache:")
         assert isinstance(prefixed, PrefixKV)
 
@@ -1029,8 +1043,8 @@ class TestTieredKV:
 
     @pytest.mark.asyncio
     async def test_l2_hit_populates_l1(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         # Only in L2
         await l2.set("k", "v")
@@ -1043,8 +1057,8 @@ class TestTieredKV:
 
     @pytest.mark.asyncio
     async def test_l1_hit_does_not_check_l2(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         await l1.set("k", "l1_value")
         await l2.set("k", "l2_value")
@@ -1054,16 +1068,16 @@ class TestTieredKV:
 
     @pytest.mark.asyncio
     async def test_miss_both_returns_nothing(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         result = await tiered.get("missing")
         assert result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_set_writes_to_both_tiers(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         await tiered.set("k", "v")
         assert await l1.get("k") == Ok(Some("v"))
@@ -1071,8 +1085,8 @@ class TestTieredKV:
 
     @pytest.mark.asyncio
     async def test_delete_removes_from_both_tiers(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         await tiered.set("k", "v")
         await tiered.delete("k")
@@ -1081,15 +1095,15 @@ class TestTieredKV:
 
     @pytest.mark.asyncio
     async def test_tiered_kv_factory(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         assert isinstance(tiered, TieredKV)
 
     @pytest.mark.asyncio
     async def test_tiered_kv_with_l1_ttl(self) -> None:
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2, l1_ttl=timedelta(milliseconds=10))
         await l2.set("k", "v")
         # First get populates L1
@@ -1108,8 +1122,8 @@ class TestFallbackKV:
 
     @pytest.mark.asyncio
     async def test_primary_success_returns_primary(self) -> None:
-        primary = kv(MemoryStorage(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        primary = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        secondary = kv(_make_str_bytes_storage(), PickleCodec[str]())
         fb = fallback_kv(primary, secondary)
         await primary.set("k", "primary_value")
         await secondary.set("k", "secondary_value")
@@ -1118,8 +1132,9 @@ class TestFallbackKV:
 
     @pytest.mark.asyncio
     async def test_primary_failure_falls_back_to_secondary(self) -> None:
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        # MemoryStorage returns Result[..., Never] but KVBackend[str] expects Result[..., str] — invariance limitation
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         fb = fallback_kv(failing, secondary)
         await secondary.set("k", "backup_value")
         result = await fb.get("k")
@@ -1127,8 +1142,8 @@ class TestFallbackKV:
 
     @pytest.mark.asyncio
     async def test_fallback_set(self) -> None:
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         fb = fallback_kv(failing, secondary)
         result = await fb.set("k", "v")
         assert result == Ok(None)
@@ -1137,8 +1152,8 @@ class TestFallbackKV:
 
     @pytest.mark.asyncio
     async def test_fallback_delete(self) -> None:
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         fb = fallback_kv(failing, secondary)
         await secondary.set("k", "v")
         result = await fb.delete("k")
@@ -1147,8 +1162,8 @@ class TestFallbackKV:
 
     @pytest.mark.asyncio
     async def test_fallback_kv_factory(self) -> None:
-        primary = kv(MemoryStorage(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        primary = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        secondary = kv(_make_str_bytes_storage(), PickleCodec[str]())
         fb = fallback_kv(primary, secondary)
         assert isinstance(fb, FallbackKV)
 
@@ -1158,7 +1173,7 @@ class TestReadonlyKV:
 
     @pytest.mark.asyncio
     async def test_get_reads_through(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await inner.set("k", "v")
         ro = readonly_kv(inner)
         result = await ro.get("k")
@@ -1166,7 +1181,7 @@ class TestReadonlyKV:
 
     @pytest.mark.asyncio
     async def test_set_is_noop_returns_nothing(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         ro = readonly_kv(inner)
         result = await ro.set("k", "v")
         assert result == Ok(Nothing())
@@ -1175,7 +1190,7 @@ class TestReadonlyKV:
 
     @pytest.mark.asyncio
     async def test_delete_is_noop_returns_nothing(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await inner.set("k", "v")
         ro = readonly_kv(inner)
         result = await ro.delete("k")
@@ -1185,13 +1200,13 @@ class TestReadonlyKV:
 
     @pytest.mark.asyncio
     async def test_readonly_kv_factory(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         ro = readonly_kv(inner)
         assert isinstance(ro, ReadonlyKV)
 
     @pytest.mark.asyncio
     async def test_get_missing_returns_nothing(self) -> None:
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         ro = readonly_kv(inner)
         result = await ro.get("missing")
         assert result == Ok(Nothing())
@@ -1206,44 +1221,57 @@ class TestMapOption:
     """Tests for map_option combinator."""
 
     def test_ok_some_applies_function(self) -> None:
-        result = map_option(Ok(Some(1)), str)
-        assert result == Ok(Some("1"))
+        result: Result[Option[int], Never] = Ok(Some(1))
+        mapped: Result[Option[str], Never] = map_option(result, str)
+        assert mapped == Ok(Some("1"))
 
     def test_ok_nothing_stays_nothing(self) -> None:
-        result = map_option(Ok(Nothing()), str)
-        assert result == Ok(Nothing())
+        result: Result[Option[int], Never] = Ok(Nothing())
+        mapped: Result[Option[str], Never] = map_option(result, str)
+        assert mapped == Ok(Nothing())
 
     def test_error_passes_through(self) -> None:
-        result = map_option(Error("fail"), str)
-        assert result == Error("fail")
+        result: Result[Option[int], str] = Error("fail")
+        mapped: Result[Option[str], str] = map_option(result, str)
+        assert mapped == Error("fail")
 
     def test_ok_some_with_complex_transform(self) -> None:
-        result = map_option(Ok(Some([1, 2, 3])), len)
-        assert result == Ok(Some(3))
+        result: Result[Option[list[int]], Never] = Ok(Some([1, 2, 3]))
+        mapped: Result[Option[int], Never] = map_option(result, len)
+        assert mapped == Ok(Some(3))
 
     def test_ok_some_with_lambda(self) -> None:
-        result = map_option(Ok(Some(5)), lambda x: x * 2)
-        assert result == Ok(Some(10))
+        result: Result[Option[int], Never] = Ok(Some(5))
+        def double(x: int) -> int:
+            return x * 2
+        mapped: Result[Option[int], Never] = map_option(result, double)
+        assert mapped == Ok(Some(10))
 
 
 class TestMapResult:
     """Tests for map_result combinator."""
 
     def test_ok_applies_function(self) -> None:
-        result = map_result(Ok(1), str)
-        assert result == Ok("1")
+        result: Result[int, Never] = Ok(1)
+        mapped: Result[str, Never] = map_result(result, str)
+        assert mapped == Ok("1")
 
     def test_error_passes_through(self) -> None:
-        result = map_result(Error("fail"), str)
-        assert result == Error("fail")
+        result: Result[int, str] = Error("fail")
+        mapped: Result[str, str] = map_result(result, str)
+        assert mapped == Error("fail")
 
     def test_ok_with_complex_transform(self) -> None:
-        result = map_result(Ok([1, 2, 3]), len)
-        assert result == Ok(3)
+        result: Result[list[int], Never] = Ok([1, 2, 3])
+        mapped: Result[int, Never] = map_result(result, len)
+        assert mapped == Ok(3)
 
     def test_ok_with_lambda(self) -> None:
-        result = map_result(Ok(5), lambda x: x * 2)
-        assert result == Ok(10)
+        result: Result[int, Never] = Ok(5)
+        def double(x: int) -> int:
+            return x * 2
+        mapped: Result[int, Never] = map_result(result, double)
+        assert mapped == Ok(10)
 
 
 # =============================================================================
@@ -1262,10 +1290,11 @@ class TestCompositionPrefixTieredFallback:
         so their keyspaces do not collide.  TieredKV still populates L1 on
         L2 hits.
         """
-        shared_backend = MemoryStorage()
-        l1 = prefix_kv(kv(shared_backend, PickleCodec()), "l1:")
-        l2 = prefix_kv(kv(shared_backend, PickleCodec()), "l2:")
-        tiered = tiered_kv(l1, l2)
+        shared_backend = _make_str_bytes_storage()
+        l1 = prefix_kv(kv(shared_backend, PickleCodec[dict[str, str]]()),  "l1:")
+        l2 = prefix_kv(kv(shared_backend, PickleCodec[dict[str, str]]()), "l2:")
+        # PrefixKV quacks like KV but is a separate dataclass — library structural limitation
+        tiered = tiered_kv(l1, l2)  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - PrefixKV has same interface as KV but is not a subtype
 
         # Populate L2 only
         await l2.set("user:1", {"name": "Alice"})
@@ -1273,7 +1302,7 @@ class TestCompositionPrefixTieredFallback:
         assert await l1.get("user:1") == Ok(Nothing())
 
         # Tiered get should miss L1, hit L2, and populate L1
-        result = await tiered.get("user:1")
+        result = await tiered.get("user:1")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from PrefixKV/KV mismatch
         assert result == Ok(Some({"name": "Alice"}))
 
         # L1 should now be populated
@@ -1291,15 +1320,15 @@ class TestCompositionPrefixTieredFallback:
 
         When the primary tiered store works, fallback never triggers.
         """
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         primary = tiered_kv(l1, l2)
-        secondary = kv(MemoryStorage(), PickleCodec())
+        secondary = kv(_make_str_bytes_storage(), PickleCodec[str]())
 
         await secondary.set("key", "from-secondary")
         await l2.set("key", "from-l2")
 
-        fb = fallback_kv(primary, secondary)
+        fb = fallback_kv(primary, secondary)  # pyright: ignore[reportArgumentType] - TieredKV has same interface as KV but is not a subtype
 
         # Primary tiered works -> should get l2 value (l1 miss -> l2 hit)
         result = await fb.get("key")
@@ -1308,13 +1337,13 @@ class TestCompositionPrefixTieredFallback:
     @pytest.mark.asyncio
     async def test_fallback_to_secondary_tiered(self) -> None:
         """FallbackKV where primary always fails and secondary is a TieredKV."""
-        failing = KV(FailingKVBackend(), PickleCodec())
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        l1 = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
+        l2 = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         secondary = tiered_kv(l1, l2)
         await l2.set("key", "safe-value")
 
-        fb = fallback_kv(failing, secondary)
+        fb = fallback_kv(failing, secondary)  # pyright: ignore[reportArgumentType] - TieredKV has same interface as KV but is not a subtype
         result = await fb.get("key")
         assert result == Ok(Some("safe-value"))
         # Secondary tiered should have promoted to L1
@@ -1323,58 +1352,58 @@ class TestCompositionPrefixTieredFallback:
     @pytest.mark.asyncio
     async def test_readonly_over_tiered_blocks_writes(self) -> None:
         """ReadonlyKV wrapping TieredKV: reads pass through, writes are blocked."""
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
         await l2.set("config", "production")
 
-        ro = readonly_kv(tiered)
+        ro = readonly_kv(tiered)  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - TieredKV has same interface as KV but is not a subtype
 
         # Read works
-        result = await ro.get("config")
+        result = await ro.get("config")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from TieredKV/KV type mismatch
         assert result == Ok(Some("production"))
 
         # Write is silently blocked
-        write_result = await ro.set("config", "overwritten")
+        write_result = await ro.set("config", "overwritten")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from TieredKV/KV type mismatch
         assert write_result == Ok(Nothing())
         # Original value unchanged
         assert await l2.get("config") == Ok(Some("production"))
 
         # Delete is silently blocked
-        delete_result = await ro.delete("config")
+        delete_result = await ro.delete("config")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from TieredKV/KV type mismatch
         assert delete_result == Ok(Nothing())
         assert await l2.get("config") == Ok(Some("production"))
 
     @pytest.mark.asyncio
     async def test_prefix_over_readonly_over_kv(self) -> None:
         """PrefixKV -> ReadonlyKV -> KV: prefixed reads work, writes blocked."""
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await inner.set("ns:key", "value")
 
         ro = readonly_kv(inner)
-        prefixed = prefix_kv(ro, "ns:")
+        prefixed = prefix_kv(ro, "ns:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - ReadonlyKV has same interface as KV but is not a subtype
 
-        result = await prefixed.get("key")
+        result = await prefixed.get("key")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from ReadonlyKV/KV type mismatch
         assert result == Ok(Some("value"))
 
         # Write through prefix -> readonly is blocked
-        write_result = await prefixed.set("key", "new")
+        write_result = await prefixed.set("key", "new")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from ReadonlyKV/KV type mismatch
         assert write_result == Ok(Nothing())
 
     @pytest.mark.asyncio
     async def test_nested_prefix_chains(self) -> None:
         """Multiple levels of prefix nesting accumulate correctly."""
-        backend = MemoryStorage()
-        inner = kv(backend, PickleCodec())
+        backend = _make_str_bytes_storage()
+        inner = kv(backend, PickleCodec[int]())
         p1 = prefix_kv(inner, "app:")
-        p2 = prefix_kv(p1, "v2:")
-        p3 = prefix_kv(p2, "prod:")
+        p2 = prefix_kv(p1, "v2:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - PrefixKV has same interface as KV but is not a subtype
+        p3 = prefix_kv(p2, "prod:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - PrefixKV has same interface as KV but is not a subtype
 
-        await p3.set("setting", 42)
+        await p3.set("setting", 42)  # pyright: ignore[reportUnknownMemberType] - cascades from PrefixKV/KV type mismatch
 
         # The actual key in the backend should be the full concatenation
         raw = await backend.get("app:v2:prod:setting")
-        assert raw == Ok(Some(PickleCodec().encode(42)))
+        assert raw == Ok(Some(PickleCodec[int]().encode(42)))
 
         # Read back through the chain
         assert await p3.get("setting") == Ok(Some(42))
@@ -1390,11 +1419,11 @@ class TestCrossPatternOnSharedBackend:
     @pytest.mark.asyncio
     async def test_kv_and_queue_share_backend_without_interference(self) -> None:
         """KV and Queue can use the same backend for different data flows."""
-        kv_backend = MemoryStorage()
+        kv_backend = _make_str_bytes_storage()
         q_backend = MockQueueBackend()
 
-        kv_store = kv(kv_backend, JsonCodec())
-        q_store = queue(q_backend, JsonCodec())
+        kv_store = kv(kv_backend, JsonCodec[int]())
+        q_store = queue(q_backend, JsonCodec[dict[str, str]]())
 
         # KV stores metadata, Queue stores jobs
         await kv_store.set("job:count", 0)
@@ -1420,7 +1449,7 @@ class TestCrossPatternOnSharedBackend:
         """Realistic workflow: lock a resource, update a counter, store result in KV."""
         lk = lock(MockLockBackend())
         cnt = counter(MockCounterBackend())
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[dict[str, str | int]]())
 
         async with lk.hold("inventory:widget", timedelta(seconds=30)) as acquired:
             assert acquired is True
@@ -1440,8 +1469,8 @@ class TestCrossPatternOnSharedBackend:
     async def test_pubsub_triggers_kv_update(self) -> None:
         """PubSub messages drive KV state changes."""
         ps_backend = MockPubSubBackend()
-        ps = pubsub(ps_backend, JsonCodec())
-        store = kv(MemoryStorage(), JsonCodec())
+        ps = pubsub(ps_backend, JsonCodec[dict[str, str]]())
+        store = kv(_make_str_bytes_storage(), JsonCodec[int | list[str]]())
 
         # Simulate event publishing
         await ps.publish("events", {"action": "user_signup", "user": "alice"})
@@ -1453,6 +1482,8 @@ class TestCrossPatternOnSharedBackend:
             match result:
                 case Ok(msg):
                     signups.append(msg["user"])
+                case _:
+                    pass
 
         await store.set("total_signups", len(signups))
         await store.set("recent_users", signups)
@@ -1467,8 +1498,8 @@ class TestTieredWithTTLAndFallback:
     @pytest.mark.asyncio
     async def test_l1_ttl_expires_l2_still_serves(self) -> None:
         """L1 cache expires but L2 persists, so subsequent get re-populates L1."""
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[dict[str, int | str]]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[dict[str, int | str]]())
         tiered = tiered_kv(l1, l2, l1_ttl=timedelta(milliseconds=20))
 
         await tiered.set("session", {"user_id": 42, "role": "admin"})
@@ -1489,8 +1520,8 @@ class TestTieredWithTTLAndFallback:
     @pytest.mark.asyncio
     async def test_tiered_set_then_delete_clears_both(self) -> None:
         """Delete through tiered removes from L1 and L2."""
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[str]())
         tiered = tiered_kv(l1, l2)
 
         await tiered.set("token", "abc123")
@@ -1510,8 +1541,8 @@ class TestTieredWithTTLAndFallback:
 
         Both work independently. When primary fails, secondary (Json) serves.
         """
-        secondary = kv(MemoryStorage(), JsonCodec())
-        failing = KV(FailingKVBackend(), PickleCodec())
+        secondary = KV[list[int], str](_make_str_bytes_storage(), JsonCodec[list[int]]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
+        failing = KV[list[int], str](FailingKVBackend(), PickleCodec[list[int]]())
         fb = fallback_kv(failing, secondary)
 
         await fb.set("data", [1, 2, 3])
@@ -1525,10 +1556,10 @@ class TestMultiStepWorkflows:
     @pytest.mark.asyncio
     async def test_session_store_with_ttl_and_prefix(self) -> None:
         """Session management: prefix-isolated, TTL-limited sessions."""
-        backend = MemoryStorage()
-        sessions = prefix_kv(kv(backend, PickleCodec()), "session:")
+        backend = _make_str_bytes_storage()
+        sessions = prefix_kv(kv(backend, PickleCodec[dict[str, int | list[str]]]()),  "session:")
 
-        session_data = {"user_id": 1, "permissions": ["read", "write"]}
+        session_data: dict[str, int | list[str]] = {"user_id": 1, "permissions": ["read", "write"]}
         await sessions.set("abc123", session_data, ttl=timedelta(milliseconds=30))
 
         # Session is valid immediately
@@ -1543,7 +1574,7 @@ class TestMultiStepWorkflows:
     @pytest.mark.asyncio
     async def test_queue_drain_with_counter_tracking(self) -> None:
         """Process a work queue while tracking stats via counter."""
-        q = queue_full(MockQueueBackend(), PickleCodec())
+        q = queue_full(MockQueueBackend(), PickleCodec[_Item]())
         cnt = counter_full(MockCounterBackend())
 
         # Enqueue work items
@@ -1573,7 +1604,7 @@ class TestMultiStepWorkflows:
     async def test_lock_guard_with_kvnx_idempotent_write(self) -> None:
         """Lock a resource, then use KVNX set_nx for idempotent writes."""
         lk = lock(MockLockBackend())
-        store = kv_nx(MemoryStorage(), PickleCodec())
+        store = kv_nx(_make_str_bytes_storage(), PickleCodec[dict[str, str]]())
 
         async with lk.hold("order:process", timedelta(seconds=10)) as acquired:
             assert acquired is True
@@ -1590,10 +1621,10 @@ class TestMultiStepWorkflows:
     @pytest.mark.asyncio
     async def test_multi_namespace_isolation(self) -> None:
         """Multiple prefix-isolated namespaces on a shared backend."""
-        backend = MemoryStorage()
-        users = prefix_kv(kv(backend, JsonCodec()), "users:")
-        orders = prefix_kv(kv(backend, JsonCodec()), "orders:")
-        settings = prefix_kv(kv(backend, JsonCodec()), "settings:")
+        backend = _make_str_bytes_storage()
+        users = prefix_kv(kv(backend, JsonCodec[dict[str, str]]()),  "users:")
+        orders = prefix_kv(kv(backend, JsonCodec[dict[str, int]]()),  "orders:")
+        settings = prefix_kv(kv(backend, JsonCodec[dict[str, str]]()), "settings:")
 
         await users.set("alice", {"email": "alice@example.com"})
         await orders.set("alice", {"total": 100})
@@ -1613,8 +1644,8 @@ class TestMultiStepWorkflows:
     @pytest.mark.asyncio
     async def test_tiered_cache_invalidation_workflow(self) -> None:
         """Write-through tiered cache with manual invalidation cycle."""
-        l1 = kv(MemoryStorage(), PickleCodec())
-        l2 = kv(MemoryStorage(), PickleCodec())
+        l1 = kv(_make_str_bytes_storage(), PickleCodec[dict[str, float | int]]())
+        l2 = kv(_make_str_bytes_storage(), PickleCodec[dict[str, float | int]]())
         tiered = tiered_kv(l1, l2)
 
         # Initial write populates both tiers
@@ -1636,14 +1667,14 @@ class TestMultiStepWorkflows:
         """FileStorage as the persistent L2 tier in a TieredKV setup."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "l2_data.pickle")
-            l1 = kv(MemoryStorage(), PickleCodec())
-            l2 = kv(FileStorage(path), PickleCodec())
+            l1 = kv(_make_str_bytes_storage(), PickleCodec[str]())
+            l2 = kv(FileStorage(path), PickleCodec[str]())
             tiered = tiered_kv(l1, l2)
 
             await tiered.set("persistent_key", "important_data")
 
             # L2 data survives re-instantiation of FileStorage
-            l2_new = kv(FileStorage(path), PickleCodec())
+            l2_new = kv(FileStorage(path), PickleCodec[str]())
             result = await l2_new.get("persistent_key")
             assert result == Ok(Some("important_data"))
 
@@ -1654,15 +1685,15 @@ class TestErrorPropagationThroughLayers:
     @pytest.mark.asyncio
     async def test_failing_primary_in_double_fallback(self) -> None:
         """Two levels of fallback: primary fails -> first fallback fails -> second works."""
-        failing1 = KV(FailingKVBackend(), PickleCodec())
-        failing2 = KV(FailingKVBackend(), PickleCodec())
-        working = kv(MemoryStorage(), PickleCodec())
+        failing1 = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        failing2 = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        working = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         await working.set("key", "finally")
 
         # First fallback layer: failing1 -> failing2
         fb1 = fallback_kv(failing1, failing2)
         # Second fallback layer: fb1 -> working
-        fb2 = fallback_kv(fb1, working)
+        fb2 = fallback_kv(fb1, working)  # pyright: ignore[reportArgumentType] - FallbackKV has same interface as KV but is not a subtype
 
         # fb1.get fails (both failing), fb2 falls back to working
         result = await fb2.get("key")
@@ -1674,8 +1705,8 @@ class TestErrorPropagationThroughLayers:
 
         Subsequent get through fallback reads from secondary.
         """
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         fb = fallback_kv(failing, secondary)
 
         await fb.set("x", "value")
@@ -1690,19 +1721,19 @@ class TestErrorPropagationThroughLayers:
     @pytest.mark.asyncio
     async def test_readonly_with_fallback_inner(self) -> None:
         """ReadonlyKV wrapping FallbackKV: reads fall through, writes blocked."""
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         await secondary.set("immutable", "data")
 
         fb = fallback_kv(failing, secondary)
-        ro = readonly_kv(fb)
+        ro = readonly_kv(fb)  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - FallbackKV has same interface as KV but is not a subtype
 
         # Read falls through: failing -> secondary -> "data"
-        result = await ro.get("immutable")
+        result = await ro.get("immutable")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from FallbackKV/KV type mismatch
         assert result == Ok(Some("data"))
 
         # Write is blocked by readonly
-        write_result = await ro.set("immutable", "changed")
+        write_result = await ro.set("immutable", "changed")  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType] - cascades from FallbackKV/KV type mismatch
         assert write_result == Ok(Nothing())
 
         # Data unchanged
@@ -1711,21 +1742,21 @@ class TestErrorPropagationThroughLayers:
     @pytest.mark.asyncio
     async def test_prefix_over_fallback_with_failing_primary(self) -> None:
         """PrefixKV -> FallbackKV: prefix is applied before fallback logic."""
-        failing = KV(FailingKVBackend(), PickleCodec())
-        secondary = kv(MemoryStorage(), PickleCodec())
+        failing = KV[str, str](FailingKVBackend(), PickleCodec[str]())
+        secondary = KV[str, str](_make_str_bytes_storage(), PickleCodec[str]())  # pyright: ignore[reportArgumentType] - Never is subtype of str at runtime, but Result is invariant in E
         fb = fallback_kv(failing, secondary)
-        prefixed = prefix_kv(fb, "ns:")
+        prefixed = prefix_kv(fb, "ns:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - FallbackKV has same interface as KV but is not a subtype
 
-        await prefixed.set("key", "val")
+        await prefixed.set("key", "val")  # pyright: ignore[reportUnknownMemberType] - cascades from FallbackKV/KV type mismatch
         # The secondary should have the prefixed key
         assert await secondary.get("ns:key") == Ok(Some("val"))
         # And prefixed get works
         assert await prefixed.get("key") == Ok(Some("val"))
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 # Integration: Full storage lifecycle with all patterns
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 
 class TestIntegrationStorageFullLifecycle:
@@ -1734,38 +1765,41 @@ class TestIntegrationStorageFullLifecycle:
     @pytest.mark.asyncio
     async def test_kv_codec_roundtrip_all_codecs(self) -> None:
         """Verify KV set/get roundtrip with Pickle, JSON, and Identity codecs."""
-        codecs = [PickleCodec(), JsonCodec(), IdentityCodec()]
-        for codec in codecs:
-            if isinstance(codec, IdentityCodec):
-                # IdentityCodec only works with bytes
-                store = kv(MemoryStorage(), codec)
-                await store.set("key", b"hello")
-                result = await store.get("key")
-                assert result == Ok(Some(b"hello"))
-            else:
-                store = kv(MemoryStorage(), codec)
-                data = {"name": "test", "value": 42}
-                await store.set("key", data)
-                result = await store.get("key")
-                assert result == Ok(Some(data))
+        # IdentityCodec only works with bytes
+        identity_store = kv(_make_str_bytes_storage(), IdentityCodec())
+        await identity_store.set("key", b"hello")
+        identity_result = await identity_store.get("key")
+        assert identity_result == Ok(Some(b"hello"))
+
+        # Pickle and Json codecs work with dicts
+        pickle_store = kv(_make_str_bytes_storage(), PickleCodec[dict[str, str | int]]())
+        data: dict[str, str | int] = {"name": "test", "value": 42}
+        await pickle_store.set("key", data)
+        pickle_result = await pickle_store.get("key")
+        assert pickle_result == Ok(Some(data))
+
+        json_store = kv(_make_str_bytes_storage(), JsonCodec[dict[str, str | int]]())
+        await json_store.set("key", data)
+        json_result = await json_store.get("key")
+        assert json_result == Ok(Some(data))
 
     @pytest.mark.asyncio
     async def test_prefix_tiered_kv_isolation(self) -> None:
         """PrefixKV + TieredKV: namespaced multi-tier storage."""
-        mem1 = MemoryStorage()
-        mem2 = MemoryStorage()
-        l1 = kv(mem1, PickleCodec())
-        l2 = kv(mem2, PickleCodec())
+        mem1 = _make_str_bytes_storage()
+        mem2 = _make_str_bytes_storage()
+        l1 = kv(mem1, PickleCodec[str]())
+        l2 = kv(mem2, PickleCodec[str]())
 
         tiered = tiered_kv(l1, l2, l1_ttl=timedelta(seconds=60))
 
         # Namespace A
-        ns_a = prefix_kv(tiered, "a:")
+        ns_a = prefix_kv(tiered, "a:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - TieredKV has same interface as KV but is not a subtype
         # Namespace B
-        ns_b = prefix_kv(tiered, "b:")
+        ns_b = prefix_kv(tiered, "b:")  # pyright: ignore[reportArgumentType,reportUnknownVariableType] - TieredKV has same interface as KV but is not a subtype
 
-        await ns_a.set("key", "value_a")
-        await ns_b.set("key", "value_b")
+        await ns_a.set("key", "value_a")  # pyright: ignore[reportUnknownMemberType] - cascades from TieredKV/KV type mismatch
+        await ns_b.set("key", "value_b")  # pyright: ignore[reportUnknownMemberType] - cascades from TieredKV/KV type mismatch
 
         # Isolated reads
         assert await ns_a.get("key") == Ok(Some("value_a"))
@@ -1779,7 +1813,7 @@ class TestIntegrationStorageFullLifecycle:
     async def test_queue_fifo_with_all_operations(self) -> None:
         """Queue full lifecycle: push, peek, pop, length."""
         backend = MockQueueBackend()
-        codec = PickleCodec()
+        codec = PickleCodec[str]()
         q = queue_full(backend, codec)
 
         # Push 3 items
@@ -1830,7 +1864,7 @@ class TestIntegrationStorageFullLifecycle:
     @pytest.mark.asyncio
     async def test_readonly_kv_blocks_writes(self) -> None:
         """ReadonlyKV blocks set/delete but allows get."""
-        inner = kv(MemoryStorage(), PickleCodec())
+        inner = kv(_make_str_bytes_storage(), PickleCodec[str]())
         await inner.set("existing", "data")
 
         ro = readonly_kv(inner)
@@ -1848,15 +1882,17 @@ class TestIntegrationStorageFullLifecycle:
     @pytest.mark.asyncio
     async def test_map_result_and_map_option(self) -> None:
         """Result combinators: map_option transforms inner value."""
-        store = kv(MemoryStorage(), PickleCodec())
+        store = kv(_make_str_bytes_storage(), PickleCodec[int]())
         await store.set("num", 42)
 
         result = await store.get("num")
         # map_option transforms the value inside Ok(Some(...))
-        mapped = map_option(result, lambda x: x * 2)
+        def double_int(x: int) -> int:
+            return x * 2
+        mapped = map_option(result, double_int)
         assert mapped == Ok(Some(84))
 
-        # Missing key → Ok(Nothing) → map_option is no-op
+        # Missing key -> Ok(Nothing) -> map_option is no-op
         missing = await store.get("missing")
-        mapped_missing = map_option(missing, lambda x: x * 2)
+        mapped_missing = map_option(missing, double_int)
         assert mapped_missing == Ok(Nothing())

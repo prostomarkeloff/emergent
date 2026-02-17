@@ -27,7 +27,7 @@ from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.codecs.stateful import StatefulCodec, get_transitions
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
 from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
-from emergent.wire.axis.surface.codecs.resolve import get_method_params
+from emergent.wire.axis.surface.codecs.resolve import get_method_params, TypeForm
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
 from emergent.wire.compile._core import Axes
@@ -108,7 +108,7 @@ def _prompt_value(name: str, type_hint: type) -> Any:
 
 async def _compose_cli_param(
     name: str,
-    original_type: type,
+    original_type: TypeForm,
     compose_type: type,
     cli_args: dict[str, Any],
     scope: Scope,

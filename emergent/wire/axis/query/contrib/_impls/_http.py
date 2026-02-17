@@ -53,6 +53,7 @@ from emergent.wire.axis.query._expr import (
 
 
 T = TypeVar("T")
+K = TypeVar("K")  # Key type for APIQuerySet methods
 P = TypeVar("P")  # Profile
 
 
@@ -338,7 +339,7 @@ class HTTPAPIProvider(Generic[T]):
     total_path: str | None = "total"  # path to total count
     id_field: str = "id"  # field used in URLs
 
-    async def fetch_one(self, query: APIQuerySet[T]) -> T | None:
+    async def fetch_one(self, query: APIQuerySet[K, T]) -> T | None:
         """Execute get query, return single result."""
         if isinstance(query.op, GetOp):
             url = f"{self.base_url}/{query.op.id}"
@@ -352,7 +353,7 @@ class HTTPAPIProvider(Generic[T]):
             return results[0] if results else None
         raise ValueError(f"fetch_one requires Get or List op, got {type(query.op)}")
 
-    async def fetch_many(self, query: APIQuerySet[T]) -> list[T]:
+    async def fetch_many(self, query: APIQuerySet[K, T]) -> list[T]:
         """Execute list query, return all results."""
         if not isinstance(query.op, ListOp):
             raise ValueError(f"fetch_many requires List op, got {type(query.op)}")
@@ -403,7 +404,7 @@ class HTTPAPIProvider(Generic[T]):
 
         return [self._parse_entity(item) for item in items]
 
-    async def execute(self, query: APIQuerySet[T]) -> T:
+    async def execute(self, query: APIQuerySet[K, T]) -> T:
         """Execute create/update, return result."""
         if isinstance(query.op, CreateOp):
             response = await self._request(
@@ -425,7 +426,7 @@ class HTTPAPIProvider(Generic[T]):
 
         raise ValueError(f"execute requires Create or Update op, got {type(query.op)}")
 
-    async def delete(self, query: APIQuerySet[T]) -> bool:
+    async def delete(self, query: APIQuerySet[K, T]) -> bool:
         """Execute delete, return success."""
         if not isinstance(query.op, DeleteOp):
             raise ValueError(f"delete requires Delete op, got {type(query.op)}")

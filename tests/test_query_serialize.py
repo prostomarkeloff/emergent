@@ -1,4 +1,8 @@
-"""Tests for expression serialization — roundtrip + analysis."""
+"""Tests for expression serialization — roundtrip + analysis + repr.
+
+Covers uncovered lines: expr_repr for collection/null/pattern/array/json cases,
+plus expr_from_dict edge cases for collection/array/json/pattern ops.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +48,9 @@ from emergent.wire.axis.query._serialize import (
 )
 
 
-# ─── Roundtrip Tests ─────────────────────────────────────────────────────────
+# ===============================================================================
+# Roundtrip Tests
+# ===============================================================================
 
 
 ALL_EXPR_CASES = [
@@ -83,13 +89,13 @@ ALL_EXPR_CASES = [
 
 
 @pytest.mark.parametrize("name,expr", ALL_EXPR_CASES, ids=[c[0] for c in ALL_EXPR_CASES])
-def test_roundtrip(name: str, expr):
+def test_roundtrip(name: str, expr: Field | Const[int]) -> None:
     serialized = expr_to_dict(expr)
     deserialized = expr_from_dict(serialized)
     assert deserialized == expr
 
 
-def test_nested_roundtrip():
+def test_nested_roundtrip() -> None:
     expr = And(
         Or(Eq(Field("a"), Const(1)), Gt(Field("b"), Const(2))),
         Not(IsNull(Field("c"))),
@@ -97,130 +103,231 @@ def test_nested_roundtrip():
     assert expr_from_dict(expr_to_dict(expr)) == expr
 
 
-def test_unknown_op_serialize_raises():
+def test_unknown_op_serialize_raises() -> None:
     class FakeExpr:
         pass
 
     with pytest.raises((ValueError, AttributeError)):
-        expr_to_dict(FakeExpr())  # type: ignore
+        expr_to_dict(FakeExpr())  # type: ignore[arg-type]
 
 
-def test_unknown_op_deserialize_raises():
+def test_unknown_op_deserialize_raises() -> None:
     with pytest.raises(ValueError, match="Unknown"):
         expr_from_dict({"op": "totally_fake"})
 
 
-# ─── Analysis ────────────────────────────────────────────────────────────────
+def test_missing_op_key_deserialize_raises() -> None:
+    with pytest.raises(ValueError, match="Unknown"):
+        expr_from_dict({"no_op_key": True})
+
+
+# ===============================================================================
+# Analysis
+# ===============================================================================
 
 
 class TestExprFields:
-    def test_single(self):
+    def test_single(self) -> None:
         assert expr_fields(Field("name")) == {"name"}
 
-    def test_const_empty(self):
+    def test_const_empty(self) -> None:
         assert expr_fields(Const(42)) == set()
 
-    def test_comparison(self):
+    def test_comparison(self) -> None:
         expr = Eq(Field("name"), Const("alice"))
         assert expr_fields(expr) == {"name"}
 
-    def test_multiple(self):
+    def test_multiple(self) -> None:
         expr = And(
             Eq(Field("name"), Const("alice")),
             Gt(Field("balance"), Const(100)),
         )
         assert expr_fields(expr) == {"name", "balance"}
 
+    def test_in_expr(self) -> None:
+        expr = In(Field("status"), ("a", "b"))
+        assert expr_fields(expr) == {"status"}
+
+    def test_between_expr(self) -> None:
+        expr = Between(Field("x"), Const(1), Const(10))
+        assert expr_fields(expr) == {"x"}
+
+    def test_json_extract_fields(self) -> None:
+        expr = JsonExtract(Field("meta"), "name")
+        assert expr_fields(expr) == {"meta"}
+
+    def test_array_contains_fields(self) -> None:
+        expr = ArrayContains(Field("tags"), "vip")
+        assert expr_fields(expr) == {"tags"}
+
 
 class TestExprComplexity:
-    def test_leaf(self):
+    def test_leaf(self) -> None:
         assert expr_complexity(Field("x")) == 1
         assert expr_complexity(Const(42)) == 1
 
-    def test_binary(self):
-        # Eq(Field, Const) = 3 nodes
+    def test_binary(self) -> None:
         assert expr_complexity(Eq(Field("x"), Const(1))) == 3
 
-    def test_nested(self):
-        # And(Eq(F,C), Eq(F,C)) = 1 + 3 + 3 = 7
+    def test_nested(self) -> None:
         expr = And(Eq(Field("a"), Const(1)), Eq(Field("b"), Const(2)))
         assert expr_complexity(expr) == 7
 
+    def test_unary(self) -> None:
+        expr = Not(Eq(Field("a"), Const(1)))
+        assert expr_complexity(expr) == 4
+
+    def test_is_null(self) -> None:
+        expr = IsNull(Field("x"))
+        assert expr_complexity(expr) == 2
+
 
 class TestExprDepth:
-    def test_leaf(self):
+    def test_leaf(self) -> None:
         assert expr_depth(Field("x")) == 1
 
-    def test_binary(self):
+    def test_binary(self) -> None:
         assert expr_depth(Eq(Field("x"), Const(1))) == 2
 
-    def test_nested(self):
+    def test_nested(self) -> None:
         expr = And(Eq(Field("a"), Const(1)), Eq(Field("b"), Const(2)))
         assert expr_depth(expr) == 3
 
+    def test_deeply_nested(self) -> None:
+        expr = And(
+            Or(Eq(Field("a"), Const(1)), Gt(Field("b"), Const(2))),
+            Not(IsNull(Field("c"))),
+        )
+        assert expr_depth(expr) == 4
 
-# ─── Human-readable repr ────────────────────────────────────────────────────
+
+# ===============================================================================
+# Human-readable repr
+# ===============================================================================
 
 
 class TestExprRepr:
-    def test_comparison(self):
+    def test_comparison(self) -> None:
         assert expr_repr(Eq(Field("x"), Const(1))) == "x == 1"
 
-    def test_ne(self):
+    def test_ne(self) -> None:
         assert expr_repr(Ne(Field("x"), Const(1))) == "x != 1"
 
-    def test_lt_gt_le_ge(self):
+    def test_lt_gt_le_ge(self) -> None:
         assert expr_repr(Lt(Field("x"), Const(10))) == "x < 10"
         assert expr_repr(Le(Field("x"), Const(10))) == "x <= 10"
         assert expr_repr(Gt(Field("x"), Const(10))) == "x > 10"
         assert expr_repr(Ge(Field("x"), Const(10))) == "x >= 10"
 
-    def test_logical_and(self):
+    def test_logical_and(self) -> None:
         expr = And(Eq(Field("a"), Const(1)), Gt(Field("b"), Const(2)))
         assert expr_repr(expr) == "(a == 1) & (b > 2)"
 
-    def test_logical_or(self):
+    def test_logical_or(self) -> None:
         expr = Or(Eq(Field("a"), Const(1)), Eq(Field("b"), Const(2)))
         assert expr_repr(expr) == "(a == 1) | (b == 2)"
 
-    def test_not(self):
+    def test_not(self) -> None:
         assert expr_repr(Not(Eq(Field("x"), Const(1)))) == "~(x == 1)"
 
-    def test_in(self):
+    def test_in(self) -> None:
         assert expr_repr(In(Field("status"), ("a", "b"))) == "status IN ('a', 'b')"
 
-    def test_is_null(self):
+    def test_contains(self) -> None:
+        assert expr_repr(Contains(Field("name"), "ali")) == "name.contains('ali')"
+
+    def test_startswith(self) -> None:
+        assert expr_repr(StartsWith(Field("name"), "al")) == "name.startswith('al')"
+
+    def test_endswith(self) -> None:
+        assert expr_repr(EndsWith(Field("name"), "ce")) == "name.endswith('ce')"
+
+    def test_is_null(self) -> None:
         assert expr_repr(IsNull(Field("x"))) == "x IS NULL"
         assert expr_repr(IsNotNull(Field("x"))) == "x IS NOT NULL"
 
-    def test_between(self):
+    def test_between(self) -> None:
         expr = Between(Field("x"), Const(10), Const(20))
         assert expr_repr(expr) == "x BETWEEN 10 AND 20"
 
-    def test_like(self):
+    def test_like(self) -> None:
         assert expr_repr(Like(Field("email"), "%@gmail.com")) == "email LIKE '%@gmail.com'"
 
-    def test_str_calls_expr_repr(self):
+    def test_ilike(self) -> None:
+        assert expr_repr(ILike(Field("email"), "%@GMAIL.COM")) == "email ILIKE '%@GMAIL.COM'"
+
+    def test_regex(self) -> None:
+        result = expr_repr(Regex(Field("email"), r"^\w+$"))
+        assert "email" in result
+        assert "~" in result
+
+    def test_array_contains(self) -> None:
+        result = expr_repr(ArrayContains(Field("tags"), "vip"))
+        assert "tags" in result
+        assert "@>" in result
+
+    def test_array_any(self) -> None:
+        result = expr_repr(ArrayAny(Field("tags"), ("vip", "admin")))
+        assert "tags" in result
+        assert "ANY" in result
+
+    def test_array_all(self) -> None:
+        result = expr_repr(ArrayAll(Field("tags"), ("vip", "verified")))
+        assert "tags" in result
+        assert "ALL" in result
+
+    def test_array_overlap(self) -> None:
+        result = expr_repr(ArrayOverlap(Field("tags"), ("a", "b")))
+        assert "tags" in result
+        assert "&&" in result
+
+    def test_json_extract(self) -> None:
+        result = expr_repr(JsonExtract(Field("meta"), "profile.name"))
+        assert "meta" in result
+        assert "profile.name" in result
+
+    def test_json_contains(self) -> None:
+        result = expr_repr(JsonContains(Field("meta"), {"role": "admin"}))
+        assert "meta" in result
+        assert "@>" in result
+
+    def test_json_has_key(self) -> None:
+        result = expr_repr(JsonHasKey(Field("meta"), "profile"))
+        assert "meta" in result
+        assert "?" in result
+
+    def test_const(self) -> None:
+        assert expr_repr(Const(42)) == "42"
+        assert expr_repr(Const("hello")) == "'hello'"
+        assert expr_repr(Const(None)) == "None"
+        assert expr_repr(Const(True)) == "True"
+
+    def test_field(self) -> None:
+        assert expr_repr(Field("balance")) == "balance"
+
+    def test_str_calls_expr_repr(self) -> None:
         expr = Gt(Field("balance"), Const(100))
         assert str(expr) == "balance > 100"
 
-    def test_complex_nested(self):
+    def test_complex_nested(self) -> None:
         expr = And(
             Or(Eq(Field("a"), Const(1)), Gt(Field("b"), Const(2))),
             Not(IsNull(Field("c"))),
         )
         assert expr_repr(expr) == "((a == 1) | (b > 2)) & (~(c IS NULL))"
 
-    def test_asymmetric(self):
+    def test_asymmetric(self) -> None:
         deep = And(And(Field("a"), Field("b")), Const(True))
         assert expr_depth(deep) == 3
 
 
-# ─── Integration: Serialize Roundtrip ───────────────────────────────────────
+# ===============================================================================
+# Integration: Serialize Roundtrip
+# ===============================================================================
 
 
 class TestIntegrationSerializeRoundtrip:
-    def test_complex_nested_roundtrip(self):
+    def test_complex_nested_roundtrip(self) -> None:
         expr = And(
             Or(
                 Eq(Field("name"), Const("alice")),
@@ -235,7 +342,7 @@ class TestIntegrationSerializeRoundtrip:
         deserialized = expr_from_dict(serialized)
         assert deserialized == expr
 
-    def test_expr_fields_on_complex_tree(self):
+    def test_expr_fields_on_complex_tree(self) -> None:
         expr = And(
             Or(
                 Eq(Field("name"), Const("alice")),
@@ -246,12 +353,7 @@ class TestIntegrationSerializeRoundtrip:
         fields = expr_fields(expr)
         assert fields == {"name", "balance", "deleted_at"}
 
-    def test_expr_complexity_on_complex_tree(self):
-        # And(Or(Eq(F,C), Gt(F,C)), Not(IsNull(F)))
-        # And = 1
-        # Or = 1, Eq = 1 + F + C = 3, Gt = 1 + F + C = 3 => Or subtree = 1+3+3 = 7
-        # Not = 1, IsNull = 1 + F = 2 => Not subtree = 1+2 = 3
-        # Total = 1 + 7 + 3 = 11
+    def test_expr_complexity_on_complex_tree(self) -> None:
         expr = And(
             Or(
                 Eq(Field("name"), Const("alice")),
@@ -261,9 +363,7 @@ class TestIntegrationSerializeRoundtrip:
         )
         assert expr_complexity(expr) == 11
 
-    def test_expr_depth_on_complex_tree(self):
-        # And -> Or -> Eq -> Field (depth 4)
-        # And -> Not -> IsNull -> Field (depth 4)
+    def test_expr_depth_on_complex_tree(self) -> None:
         expr = And(
             Or(
                 Eq(Field("name"), Const("alice")),
@@ -273,7 +373,7 @@ class TestIntegrationSerializeRoundtrip:
         )
         assert expr_depth(expr) == 4
 
-    def test_expr_repr_readable(self):
+    def test_expr_repr_readable(self) -> None:
         expr = And(
             Or(
                 Eq(Field("name"), Const("alice")),
@@ -288,7 +388,7 @@ class TestIntegrationSerializeRoundtrip:
         assert "&" in result
         assert "|" in result
 
-    def test_double_roundtrip(self):
+    def test_double_roundtrip(self) -> None:
         expr = Or(
             And(
                 Ge(Field("score"), Const(90)),
@@ -299,3 +399,40 @@ class TestIntegrationSerializeRoundtrip:
         first_pass = expr_from_dict(expr_to_dict(expr))
         second_pass = expr_from_dict(expr_to_dict(first_pass))
         assert second_pass == expr
+
+    def test_array_roundtrip(self) -> None:
+        """Verify all array ops survive roundtrip."""
+        for expr in [
+            ArrayContains(Field("tags"), "vip"),
+            ArrayAny(Field("tags"), ("a", "b")),
+            ArrayAll(Field("tags"), ("x", "y")),
+            ArrayOverlap(Field("tags"), ("m", "n")),
+        ]:
+            assert expr_from_dict(expr_to_dict(expr)) == expr
+
+    def test_json_roundtrip(self) -> None:
+        """Verify all JSON ops survive roundtrip."""
+        for expr in [
+            JsonExtract(Field("meta"), "path.key"),
+            JsonContains(Field("meta"), {"k": "v"}),
+            JsonHasKey(Field("meta"), "key"),
+        ]:
+            assert expr_from_dict(expr_to_dict(expr)) == expr
+
+    def test_pattern_roundtrip(self) -> None:
+        """Verify all pattern ops survive roundtrip."""
+        for expr in [
+            Like(Field("name"), "%test%"),
+            ILike(Field("name"), "%TEST%"),
+            Regex(Field("name"), r"^\w+$"),
+        ]:
+            assert expr_from_dict(expr_to_dict(expr)) == expr
+
+    def test_collection_roundtrip(self) -> None:
+        """Verify all collection ops survive roundtrip."""
+        for expr in [
+            Contains(Field("name"), "test"),
+            StartsWith(Field("name"), "pre"),
+            EndsWith(Field("name"), "suf"),
+        ]:
+            assert expr_from_dict(expr_to_dict(expr)) == expr

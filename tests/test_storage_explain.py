@@ -1,124 +1,227 @@
-"""Tests for storage explain — dict layer, format layer, recursive composition."""
+"""Tests for storage explain -- dict layer, format layer, recursive composition."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Never, AsyncIterator
 
-import pytest
+from kungfu import Result, Ok, Option, Some, Nothing
 
-from emergent.wire.axis.storage._kv import KV, KVNX
-from emergent.wire.axis.storage._queue import Queue, QueueFull
-from emergent.wire.axis.storage._pubsub import PubSub
-from emergent.wire.axis.storage._lock import Lock, LockExtend
-from emergent.wire.axis.storage._counter import Counter, CounterFull
-from emergent.wire.axis.storage._compose import PrefixKV, TieredKV, FallbackKV, ReadonlyKV
-from emergent.wire.axis.storage._codec import PickleCodec, JsonCodec, IdentityCodec
-from emergent.wire.axis.storage._memory import MemoryStorage
-from emergent.wire.axis.storage._explain import (
+from emergent.wire.axis.storage._kv import KV, KVNX  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._queue import Queue, QueueFull  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._pubsub import PubSub  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._lock import Lock, LockExtend  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._counter import Counter, CounterFull  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._compose import PrefixKV, TieredKV, FallbackKV, ReadonlyKV  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._codec import PickleCodec, JsonCodec, IdentityCodec  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._memory import MemoryStorage  # pyright: ignore[reportPrivateUsage] - testing private module
+from emergent.wire.axis.storage._explain import (  # pyright: ignore[reportPrivateUsage] - testing private module
     storage_dict,
     explain_storage,
     STORAGE_EXPLAIN,
     StorageExplainHandler,
+    _ExplainCtx,  # pyright: ignore[reportPrivateUsage] - needed for custom handler type signatures in tests
 )
 
 
-# ─── Helpers ────────────────────────────────────────────────────────────────
+# --- Mock backends for Queue, PubSub, Lock, Counter ---
+# MemoryStorage only implements KV capabilities (Get/Set/Delete/SetNX).
+# These mock backends satisfy the protocols required by other patterns.
 
 
-def _mem():
-    return MemoryStorage()
+class _MockQueueBackend:
+    """In-memory queue backend implementing Push + Pop + Peek + Len."""
+
+    def __init__(self) -> None:
+        self._items: list[bytes] = []
+
+    async def push(self, value: bytes) -> Result[None, Never]:
+        self._items.append(value)
+        return Ok(None)
+
+    async def pop(self) -> Result[Option[bytes], Never]:
+        if not self._items:
+            return Ok(Nothing())
+        return Ok(Some(self._items.pop(0)))
+
+    async def peek(self) -> Result[Option[bytes], Never]:
+        if not self._items:
+            return Ok(Nothing())
+        return Ok(Some(self._items[0]))
+
+    async def length(self) -> Result[int, Never]:
+        return Ok(len(self._items))
 
 
-def _kv():
-    return KV(backend=_mem(), codec=PickleCodec())
+class _MockPubSubBackend:
+    """In-memory pub/sub backend implementing Publish + Subscribe."""
+
+    def __init__(self) -> None:
+        self._channels: dict[str, list[bytes]] = {}
+
+    async def publish(self, channel: str, value: bytes) -> Result[None, Never]:
+        self._channels.setdefault(channel, []).append(value)
+        return Ok(None)
+
+    async def subscribe(self, channel: str) -> AsyncIterator[Result[bytes, Never]]:
+        for msg in self._channels.get(channel, []):
+            yield Ok(msg)
 
 
-def _kv_json():
-    return KV(backend=_mem(), codec=JsonCodec())
+class _MockLockBackend:
+    """In-memory lock backend implementing Acquire + Release + Extend."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, bool] = {}
+
+    async def acquire(self, key: str, ttl: timedelta) -> Result[bool, Never]:
+        if self._locks.get(key, False):
+            return Ok(False)
+        self._locks[key] = True
+        return Ok(True)
+
+    async def release(self, key: str) -> Result[None, Never]:
+        self._locks.pop(key, None)
+        return Ok(None)
+
+    async def extend(self, key: str, ttl: timedelta) -> Result[bool, Never]:
+        if key in self._locks and self._locks[key]:
+            return Ok(True)
+        return Ok(False)
 
 
-# ─── Basic Patterns ─────────────────────────────────────────────────────────
+class _MockCounterBackend:
+    """In-memory counter backend implementing Incr + Decr + IncrBy."""
+
+    def __init__(self) -> None:
+        self._counters: dict[str, int] = {}
+
+    async def incr(self, key: str) -> Result[int, Never]:
+        self._counters[key] = self._counters.get(key, 0) + 1
+        return Ok(self._counters[key])
+
+    async def decr(self, key: str) -> Result[int, Never]:
+        self._counters[key] = self._counters.get(key, 0) - 1
+        return Ok(self._counters[key])
+
+    async def incr_by(self, key: str, amount: int) -> Result[int, Never]:
+        self._counters[key] = self._counters.get(key, 0) + amount
+        return Ok(self._counters[key])
+
+
+# --- Helpers ---
+
+
+def _mem() -> MemoryStorage[str, bytes]:
+    return MemoryStorage[str, bytes]()
+
+
+def _kv() -> KV[str, Never]:
+    return KV[str, Never](backend=_mem(), codec=PickleCodec[str]())
+
+
+def _kv_json() -> KV[str, Never]:
+    return KV[str, Never](backend=_mem(), codec=JsonCodec[str]())
+
+
+def _queue_backend() -> _MockQueueBackend:
+    return _MockQueueBackend()
+
+
+def _lock_backend() -> _MockLockBackend:
+    return _MockLockBackend()
+
+
+def _counter_backend() -> _MockCounterBackend:
+    return _MockCounterBackend()
+
+
+def _pubsub_backend() -> _MockPubSubBackend:
+    return _MockPubSubBackend()
+
+
+# --- Basic Patterns ---
 
 
 class TestKVDict:
-    def test_basic_kv(self):
+    def test_basic_kv(self) -> None:
         store = _kv()
         d = storage_dict(store)
         assert d["type"] == "KV"
         assert d["codec"] == "PickleCodec"
         assert d["backend"] == "MemoryStorage"
 
-    def test_kv_json(self):
+    def test_kv_json(self) -> None:
         store = _kv_json()
         d = storage_dict(store)
         assert d["codec"] == "JsonCodec"
 
-    def test_kvnx(self):
-        store = KVNX(backend=_mem(), codec=PickleCodec())
+    def test_kvnx(self) -> None:
+        store = KVNX[str, Never](backend=_mem(), codec=PickleCodec[str]())
         d = storage_dict(store)
         assert d["type"] == "KVNX"
 
 
 class TestQueueDict:
-    def test_queue(self):
-        store = Queue(backend=_mem(), codec=JsonCodec())
+    def test_queue(self) -> None:
+        store = Queue[str, Never](backend=_queue_backend(), codec=JsonCodec[str]())
         d = storage_dict(store)
         assert d["type"] == "Queue"
         assert d["codec"] == "JsonCodec"
 
-    def test_queue_full(self):
-        store = QueueFull(backend=_mem(), codec=PickleCodec())
+    def test_queue_full(self) -> None:
+        store = QueueFull[str, Never](backend=_queue_backend(), codec=PickleCodec[str]())
         d = storage_dict(store)
         assert d["type"] == "QueueFull"
 
 
 class TestPubSubDict:
-    def test_pubsub(self):
-        store = PubSub(backend=_mem(), codec=JsonCodec())
+    def test_pubsub(self) -> None:
+        store = PubSub[str, Never](backend=_pubsub_backend(), codec=JsonCodec[str]())
         d = storage_dict(store)
         assert d["type"] == "PubSub"
 
 
 class TestLockDict:
-    def test_lock(self):
-        store = Lock(backend=_mem())
+    def test_lock(self) -> None:
+        store = Lock[Never](backend=_lock_backend())
         d = storage_dict(store)
         assert d["type"] == "Lock"
-        assert d["backend"] == "MemoryStorage"
+        assert d["backend"] == "_MockLockBackend"
 
-    def test_lock_extend(self):
-        store = LockExtend(backend=_mem())
+    def test_lock_extend(self) -> None:
+        store = LockExtend[Never](backend=_lock_backend())
         d = storage_dict(store)
         assert d["type"] == "LockExtend"
 
 
 class TestCounterDict:
-    def test_counter(self):
-        store = Counter(backend=_mem())
+    def test_counter(self) -> None:
+        store = Counter[Never](backend=_counter_backend())
         d = storage_dict(store)
         assert d["type"] == "Counter"
 
-    def test_counter_full(self):
-        store = CounterFull(backend=_mem())
+    def test_counter_full(self) -> None:
+        store = CounterFull[Never](backend=_counter_backend())
         d = storage_dict(store)
         assert d["type"] == "CounterFull"
 
 
-# ─── Composition Wrappers ───────────────────────────────────────────────────
+# --- Composition Wrappers ---
 
 
 class TestPrefixKV:
-    def test_prefix_dict(self):
-        store = PrefixKV(inner=_kv(), prefix="cache:")
+    def test_prefix_dict(self) -> None:
+        store = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
         d = storage_dict(store)
         assert d["type"] == "PrefixKV"
         assert d["prefix"] == "cache:"
         assert d["inner"]["type"] == "KV"
 
-    def test_nested_prefix(self):
-        inner = PrefixKV(inner=_kv(), prefix="v1:")
-        outer = PrefixKV(inner=inner, prefix="ns:")
+    def test_nested_prefix(self) -> None:
+        inner = PrefixKV[str, Never](inner=_kv(), prefix="v1:")
+        outer = PrefixKV[str, Never](inner=inner, prefix="ns:")  # pyright: ignore[reportArgumentType] - testing explain with nested wrappers; PrefixKV is not KV but explain handles it
         d = storage_dict(outer)
         assert d["type"] == "PrefixKV"
         assert d["inner"]["type"] == "PrefixKV"
@@ -126,8 +229,8 @@ class TestPrefixKV:
 
 
 class TestTieredKV:
-    def test_tiered_dict(self):
-        store = TieredKV(l1=_kv(), l2=_kv_json())
+    def test_tiered_dict(self) -> None:
+        store = TieredKV[str, Never](l1=_kv(), l2=_kv_json())
         d = storage_dict(store)
         assert d["type"] == "TieredKV"
         assert d["l1"]["type"] == "KV"
@@ -135,20 +238,20 @@ class TestTieredKV:
         assert d["l2"]["type"] == "KV"
         assert d["l2"]["codec"] == "JsonCodec"
 
-    def test_tiered_with_ttl(self):
-        store = TieredKV(l1=_kv(), l2=_kv_json(), l1_ttl=timedelta(seconds=300))
+    def test_tiered_with_ttl(self) -> None:
+        store = TieredKV[str, Never](l1=_kv(), l2=_kv_json(), l1_ttl=timedelta(seconds=300))
         d = storage_dict(store)
         assert d["l1_ttl"] == 300.0
 
-    def test_tiered_no_ttl_key(self):
-        store = TieredKV(l1=_kv(), l2=_kv())
+    def test_tiered_no_ttl_key(self) -> None:
+        store = TieredKV[str, Never](l1=_kv(), l2=_kv())
         d = storage_dict(store)
         assert "l1_ttl" not in d
 
 
 class TestFallbackKV:
-    def test_fallback_dict(self):
-        store = FallbackKV(primary=_kv(), secondary=_kv_json())
+    def test_fallback_dict(self) -> None:
+        store = FallbackKV[str, Never](primary=_kv(), secondary=_kv_json())
         d = storage_dict(store)
         assert d["type"] == "FallbackKV"
         assert d["primary"]["type"] == "KV"
@@ -156,18 +259,18 @@ class TestFallbackKV:
 
 
 class TestReadonlyKV:
-    def test_readonly_dict(self):
-        store = ReadonlyKV(inner=_kv())
+    def test_readonly_dict(self) -> None:
+        store = ReadonlyKV[str, Never](inner=_kv())
         d = storage_dict(store)
         assert d["type"] == "ReadonlyKV"
         assert d["inner"]["type"] == "KV"
 
 
 class TestDeepComposition:
-    def test_tiered_with_prefix(self):
-        l1 = PrefixKV(inner=_kv(), prefix="cache:")
+    def test_tiered_with_prefix(self) -> None:
+        l1 = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
         l2 = _kv_json()
-        store = TieredKV(l1=l1, l2=l2, l1_ttl=timedelta(seconds=300))
+        store = TieredKV[str, Never](l1=l1, l2=l2, l1_ttl=timedelta(seconds=300))  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1; wrappers are not KV but explain handles composition
         d = storage_dict(store)
         assert d["type"] == "TieredKV"
         assert d["l1"]["type"] == "PrefixKV"
@@ -176,52 +279,52 @@ class TestDeepComposition:
         assert d["l2"]["type"] == "KV"
         assert d["l1_ttl"] == 300.0
 
-    def test_readonly_fallback(self):
-        store = ReadonlyKV(inner=FallbackKV(primary=_kv(), secondary=_kv_json()))
+    def test_readonly_fallback(self) -> None:
+        store = ReadonlyKV[str, Never](inner=FallbackKV[str, Never](primary=_kv(), secondary=_kv_json()))  # pyright: ignore[reportArgumentType] - testing explain with FallbackKV as inner; wrappers are not KV but explain handles composition
         d = storage_dict(store)
         assert d["type"] == "ReadonlyKV"
         assert d["inner"]["type"] == "FallbackKV"
         assert d["inner"]["primary"]["type"] == "KV"
 
 
-# ─── Human-Readable Layer ───────────────────────────────────────────────────
+# --- Human-Readable Layer ---
 
 
 class TestExplainStorage:
-    def test_simple_kv(self):
+    def test_simple_kv(self) -> None:
         text = explain_storage(_kv())
         assert "KV" in text
         assert "PickleCodec" in text
         assert "MemoryStorage" in text
 
-    def test_prefix(self):
-        store = PrefixKV(inner=_kv(), prefix="cache:")
+    def test_prefix(self) -> None:
+        store = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
         text = explain_storage(store)
         assert "PrefixKV" in text
         assert "'cache:'" in text
         assert "inner:" in text
 
-    def test_tiered(self):
-        store = TieredKV(l1=_kv(), l2=_kv_json(), l1_ttl=timedelta(seconds=300))
+    def test_tiered(self) -> None:
+        store = TieredKV[str, Never](l1=_kv(), l2=_kv_json(), l1_ttl=timedelta(seconds=300))
         text = explain_storage(store)
         assert "TieredKV" in text
         assert "l1:" in text
         assert "l2:" in text
         assert "300.0s" in text
 
-    def test_deep_composition(self):
-        l1 = PrefixKV(inner=_kv(), prefix="cache:")
-        store = TieredKV(l1=l1, l2=_kv_json())
+    def test_deep_composition(self) -> None:
+        l1 = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
+        store = TieredKV[str, Never](l1=l1, l2=_kv_json())  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1
         text = explain_storage(store)
         assert "TieredKV" in text
         assert "PrefixKV" in text
 
 
-# ─── Open World ─────────────────────────────────────────────────────────────
+# --- Open World ---
 
 
 class TestOpenWorld:
-    def test_unknown_type(self):
+    def test_unknown_type(self) -> None:
         @dataclass(frozen=True)
         class CustomStore:
             name: str
@@ -230,20 +333,20 @@ class TestOpenWorld:
         assert d["type"] == "CustomStore"
         assert d["name"] == "redis"
 
-    def test_custom_handler(self):
+    def test_custom_handler(self) -> None:
         @dataclass(frozen=True)
         class CustomStore:
             url: str
 
-        def custom_handler(store, ctx):
+        def custom_handler(store: CustomStore, ctx: _ExplainCtx) -> dict[str, str]:
             return {"type": "Custom", "url": store.url}
 
-        handlers = {**STORAGE_EXPLAIN, CustomStore: custom_handler}
+        handlers: dict[type, StorageExplainHandler] = {**STORAGE_EXPLAIN, CustomStore: custom_handler}
         d = storage_dict(CustomStore("redis://localhost"), handlers=handlers)
         assert d["type"] == "Custom"
         assert d["url"] == "redis://localhost"
 
-    def test_unknown_in_format(self):
+    def test_unknown_in_format(self) -> None:
         @dataclass(frozen=True)
         class CustomStore:
             name: str
@@ -254,7 +357,7 @@ class TestOpenWorld:
 
 
 # =============================================================================
-# INTEGRATION TESTS — deep composition, cross-pattern, custom handlers
+# INTEGRATION TESTS -- deep composition, cross-pattern, custom handlers
 # =============================================================================
 
 
@@ -266,11 +369,11 @@ class TestDeepCompositionIntegration:
 
         Verifies the full recursive dict tree is correct.
         """
-        l1 = PrefixKV(inner=_kv(), prefix="cache:")
+        l1 = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
         primary_l2 = _kv_json()
         secondary_l2 = _kv()
-        l2 = FallbackKV(primary=primary_l2, secondary=secondary_l2)
-        store = TieredKV(l1=l1, l2=l2, l1_ttl=timedelta(seconds=60))
+        l2 = FallbackKV[str, Never](primary=primary_l2, secondary=secondary_l2)
+        store = TieredKV[str, Never](l1=l1, l2=l2, l1_ttl=timedelta(seconds=60))  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV/FallbackKV as tiers
 
         d = storage_dict(store)
         assert d["type"] == "TieredKV"
@@ -294,10 +397,10 @@ class TestDeepCompositionIntegration:
 
         Three layers of composition produce a four-level dict tree.
         """
-        l1 = PrefixKV(inner=_kv(), prefix="fast:")
+        l1 = PrefixKV[str, Never](inner=_kv(), prefix="fast:")
         l2 = _kv_json()
-        tiered = TieredKV(l1=l1, l2=l2)
-        store = ReadonlyKV(inner=tiered)
+        tiered = TieredKV[str, Never](l1=l1, l2=l2)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1
+        store = ReadonlyKV[str, Never](inner=tiered)  # pyright: ignore[reportArgumentType] - testing explain with TieredKV as inner
 
         d = storage_dict(store)
         assert d["type"] == "ReadonlyKV"
@@ -311,9 +414,9 @@ class TestDeepCompositionIntegration:
     def test_triple_nested_prefix(self) -> None:
         """Three layers of PrefixKV nesting."""
         inner = _kv()
-        p1 = PrefixKV(inner=inner, prefix="app:")
-        p2 = PrefixKV(inner=p1, prefix="v2:")
-        p3 = PrefixKV(inner=p2, prefix="prod:")
+        p1 = PrefixKV[str, Never](inner=inner, prefix="app:")
+        p2 = PrefixKV[str, Never](inner=p1, prefix="v2:")  # pyright: ignore[reportArgumentType] - testing explain with nested PrefixKV
+        p3 = PrefixKV[str, Never](inner=p2, prefix="prod:")  # pyright: ignore[reportArgumentType] - testing explain with nested PrefixKV
 
         d = storage_dict(p3)
         assert d["type"] == "PrefixKV"
@@ -329,8 +432,8 @@ class TestDeepCompositionIntegration:
         primary = _kv()
         mid_primary = _kv_json()
         mid_secondary = _kv()
-        secondary = FallbackKV(primary=mid_primary, secondary=mid_secondary)
-        store = FallbackKV(primary=primary, secondary=secondary)
+        secondary = FallbackKV[str, Never](primary=mid_primary, secondary=mid_secondary)
+        store = FallbackKV[str, Never](primary=primary, secondary=secondary)  # pyright: ignore[reportArgumentType] - testing explain with FallbackKV as secondary
 
         d = storage_dict(store)
         assert d["type"] == "FallbackKV"
@@ -346,10 +449,10 @@ class TestDeepCompositionIntegration:
         """
         l1_tier = _kv()
         l2_tier = _kv_json()
-        tiered = TieredKV(l1=l1_tier, l2=l2_tier, l1_ttl=timedelta(seconds=120))
-        prefixed = PrefixKV(inner=_kv(), prefix="primary:")
-        fb = FallbackKV(primary=prefixed, secondary=tiered)
-        store = ReadonlyKV(inner=fb)
+        tiered = TieredKV[str, Never](l1=l1_tier, l2=l2_tier, l1_ttl=timedelta(seconds=120))
+        prefixed = PrefixKV[str, Never](inner=_kv(), prefix="primary:")
+        fb = FallbackKV[str, Never](primary=prefixed, secondary=tiered)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV/TieredKV as branches
+        store = ReadonlyKV[str, Never](inner=fb)  # pyright: ignore[reportArgumentType] - testing explain with FallbackKV as inner
 
         d = storage_dict(store)
         assert d["type"] == "ReadonlyKV"
@@ -374,9 +477,9 @@ class TestExplainFormatIntegration:
 
     def test_tiered_fallback_format_contains_all_layers(self) -> None:
         """explain_storage for TieredKV(PrefixKV, FallbackKV) has every element."""
-        l1 = PrefixKV(inner=_kv(), prefix="cache:")
-        l2 = FallbackKV(primary=_kv_json(), secondary=_kv())
-        store = TieredKV(l1=l1, l2=l2, l1_ttl=timedelta(seconds=300))
+        l1 = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
+        l2 = FallbackKV[str, Never](primary=_kv_json(), secondary=_kv())
+        store = TieredKV[str, Never](l1=l1, l2=l2, l1_ttl=timedelta(seconds=300))  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV/FallbackKV as tiers
 
         text = explain_storage(store)
         assert "TieredKV" in text
@@ -389,8 +492,8 @@ class TestExplainFormatIntegration:
 
     def test_readonly_fallback_format(self) -> None:
         """explain_storage for ReadonlyKV(FallbackKV(KV, KV))."""
-        store = ReadonlyKV(
-            inner=FallbackKV(primary=_kv(), secondary=_kv_json())
+        store = ReadonlyKV[str, Never](
+            inner=FallbackKV[str, Never](primary=_kv(), secondary=_kv_json())  # pyright: ignore[reportArgumentType] - testing explain with FallbackKV as inner
         )
         text = explain_storage(store)
         assert "ReadonlyKV" in text
@@ -401,9 +504,9 @@ class TestExplainFormatIntegration:
     def test_deep_nesting_format_has_indentation(self) -> None:
         """Deeply nested stores produce indented, multi-line output."""
         inner = _kv()
-        p1 = PrefixKV(inner=inner, prefix="a:")
-        p2 = PrefixKV(inner=p1, prefix="b:")
-        store = ReadonlyKV(inner=p2)
+        p1 = PrefixKV[str, Never](inner=inner, prefix="a:")
+        p2 = PrefixKV[str, Never](inner=p1, prefix="b:")  # pyright: ignore[reportArgumentType] - testing explain with nested PrefixKV
+        store = ReadonlyKV[str, Never](inner=p2)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as inner
 
         text = explain_storage(store)
         lines = text.strip().split("\n")
@@ -419,10 +522,10 @@ class TestExplainFormatIntegration:
         """Format the tree: ReadonlyKV -> FallbackKV -> (PrefixKV, TieredKV)."""
         l1_tier = _kv()
         l2_tier = _kv_json()
-        tiered = TieredKV(l1=l1_tier, l2=l2_tier, l1_ttl=timedelta(seconds=60))
-        prefixed = PrefixKV(inner=_kv(), prefix="ns:")
-        fb = FallbackKV(primary=prefixed, secondary=tiered)
-        store = ReadonlyKV(inner=fb)
+        tiered = TieredKV[str, Never](l1=l1_tier, l2=l2_tier, l1_ttl=timedelta(seconds=60))
+        prefixed = PrefixKV[str, Never](inner=_kv(), prefix="ns:")
+        fb = FallbackKV[str, Never](primary=prefixed, secondary=tiered)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV/TieredKV as branches
+        store = ReadonlyKV[str, Never](inner=fb)  # pyright: ignore[reportArgumentType] - testing explain with FallbackKV as inner
 
         text = explain_storage(store)
         # All type names should appear
@@ -438,16 +541,16 @@ class TestCrossPatternExplain:
 
     def test_all_base_patterns_have_distinct_type(self) -> None:
         """Each storage pattern produces a unique 'type' field in storage_dict."""
-        stores = [
+        stores: list[object] = [
             _kv(),
-            KVNX(backend=_mem(), codec=PickleCodec()),
-            Queue(backend=_mem(), codec=JsonCodec()),
-            QueueFull(backend=_mem(), codec=PickleCodec()),
-            PubSub(backend=_mem(), codec=JsonCodec()),
-            Lock(backend=_mem()),
-            LockExtend(backend=_mem()),
-            Counter(backend=_mem()),
-            CounterFull(backend=_mem()),
+            KVNX[str, Never](backend=_mem(), codec=PickleCodec[str]()),
+            Queue[str, Never](backend=_queue_backend(), codec=JsonCodec[str]()),
+            QueueFull[str, Never](backend=_queue_backend(), codec=PickleCodec[str]()),
+            PubSub[str, Never](backend=_pubsub_backend(), codec=JsonCodec[str]()),
+            Lock[Never](backend=_lock_backend()),
+            LockExtend[Never](backend=_lock_backend()),
+            Counter[Never](backend=_counter_backend()),
+            CounterFull[Never](backend=_counter_backend()),
         ]
 
         types = [storage_dict(s)["type"] for s in stores]
@@ -458,14 +561,14 @@ class TestCrossPatternExplain:
         """explain_storage returns non-empty, type-containing text for every pattern."""
         patterns: list[tuple[str, object]] = [
             ("KV", _kv()),
-            ("KVNX", KVNX(backend=_mem(), codec=PickleCodec())),
-            ("Queue", Queue(backend=_mem(), codec=JsonCodec())),
-            ("QueueFull", QueueFull(backend=_mem(), codec=PickleCodec())),
-            ("PubSub", PubSub(backend=_mem(), codec=JsonCodec())),
-            ("Lock", Lock(backend=_mem())),
-            ("LockExtend", LockExtend(backend=_mem())),
-            ("Counter", Counter(backend=_mem())),
-            ("CounterFull", CounterFull(backend=_mem())),
+            ("KVNX", KVNX[str, Never](backend=_mem(), codec=PickleCodec[str]())),
+            ("Queue", Queue[str, Never](backend=_queue_backend(), codec=JsonCodec[str]())),
+            ("QueueFull", QueueFull[str, Never](backend=_queue_backend(), codec=PickleCodec[str]())),
+            ("PubSub", PubSub[str, Never](backend=_pubsub_backend(), codec=JsonCodec[str]())),
+            ("Lock", Lock[Never](backend=_lock_backend())),
+            ("LockExtend", LockExtend[Never](backend=_lock_backend())),
+            ("Counter", Counter[Never](backend=_counter_backend())),
+            ("CounterFull", CounterFull[Never](backend=_counter_backend())),
         ]
 
         for expected_type, store in patterns:
@@ -475,7 +578,7 @@ class TestCrossPatternExplain:
 
     def test_identity_codec_in_explain(self) -> None:
         """KV with IdentityCodec shows 'IdentityCodec' in explain."""
-        store = KV(backend=_mem(), codec=IdentityCodec())
+        store = KV[bytes, Never](backend=_mem(), codec=IdentityCodec())
         d = storage_dict(store)
         assert d["codec"] == "IdentityCodec"
 
@@ -497,14 +600,13 @@ class TestCustomHandlerIntegration:
         def redis_handler(store: RedisKV, ctx: _ExplainCtx) -> dict[str, str | int]:
             return {"type": "RedisKV", "url": store.url, "db": store.db}
 
-        # We need the _ExplainCtx import for the handler signature
         handlers: dict[type, StorageExplainHandler] = {
             **STORAGE_EXPLAIN,
             RedisKV: redis_handler,
         }
 
         # PrefixKV wrapping a custom RedisKV
-        store = PrefixKV(inner=RedisKV(url="redis://localhost", db=0), prefix="cache:")
+        store = PrefixKV[str, Never](inner=RedisKV(url="redis://localhost", db=0), prefix="cache:")  # pyright: ignore[reportArgumentType] - testing explain with custom RedisKV as inner
         d = storage_dict(store, handlers=handlers)
 
         assert d["type"] == "PrefixKV"
@@ -528,7 +630,7 @@ class TestCustomHandlerIntegration:
             S3Backend: s3_handler,
         }
 
-        store = TieredKV(l1=_kv(), l2=S3Backend(bucket="my-data"))
+        store = TieredKV[str, Never](l1=_kv(), l2=S3Backend(bucket="my-data"))  # pyright: ignore[reportArgumentType] - testing explain with custom S3Backend as l2
         d = storage_dict(store, handlers=handlers)
 
         assert d["type"] == "TieredKV"
@@ -539,7 +641,7 @@ class TestCustomHandlerIntegration:
     def test_custom_handler_overrides_built_in(self) -> None:
         """A custom handler can override the built-in KV handler."""
 
-        def verbose_kv_handler(store: KV, ctx: _ExplainCtx) -> dict[str, str]:
+        def verbose_kv_handler(store: KV[str, Never], ctx: _ExplainCtx) -> dict[str, str]:
             return {
                 "type": "KV_VERBOSE",
                 "codec": type(store.codec).__name__,
@@ -558,7 +660,7 @@ class TestCustomHandlerIntegration:
         assert d["note"] == "custom handler active"
 
         # The override propagates into nested compositions too
-        prefixed = PrefixKV(inner=store, prefix="ns:")
+        prefixed = PrefixKV[str, Never](inner=store, prefix="ns:")
         d2 = storage_dict(prefixed, handlers=handlers)
         assert d2["inner"]["type"] == "KV_VERBOSE"
 
@@ -568,13 +670,13 @@ class TestDictFormatRoundTrip:
 
     def test_dict_keys_present_in_format(self) -> None:
         """All scalar keys from storage_dict appear in explain_storage output."""
-        store = TieredKV(
-            l1=PrefixKV(inner=_kv(), prefix="fast:"),
+        store = TieredKV[str, Never](
+            l1=PrefixKV[str, Never](inner=_kv(), prefix="fast:"),  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1
             l2=_kv_json(),
             l1_ttl=timedelta(seconds=999),
         )
 
-        d = storage_dict(store)
+        _d = storage_dict(store)
         text = explain_storage(store)
 
         # Every scalar value from the dict should appear in the formatted text
@@ -590,42 +692,42 @@ class TestDictFormatRoundTrip:
         # Simple single level
         simple = _kv()
         simple_text = explain_storage(simple)
-        simple_lines = [l for l in simple_text.strip().split("\n") if l.strip()]
+        simple_lines = [line for line in simple_text.strip().split("\n") if line.strip()]
 
         # Two levels
-        prefixed = PrefixKV(inner=_kv(), prefix="ns:")
+        prefixed = PrefixKV[str, Never](inner=_kv(), prefix="ns:")
         prefixed_text = explain_storage(prefixed)
-        prefixed_lines = [l for l in prefixed_text.strip().split("\n") if l.strip()]
+        prefixed_lines = [line for line in prefixed_text.strip().split("\n") if line.strip()]
 
         # Three levels
-        tiered = TieredKV(
-            l1=PrefixKV(inner=_kv(), prefix="c:"),
+        tiered = TieredKV[str, Never](
+            l1=PrefixKV[str, Never](inner=_kv(), prefix="c:"),  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1
             l2=_kv_json(),
         )
         tiered_text = explain_storage(tiered)
-        tiered_lines = [l for l in tiered_text.strip().split("\n") if l.strip()]
+        tiered_lines = [line for line in tiered_text.strip().split("\n") if line.strip()]
 
         # More composition = more lines
         assert len(simple_lines) <= len(prefixed_lines)
         assert len(prefixed_lines) <= len(tiered_lines)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 # Integration: Explain full composition topology
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 
 
 class TestIntegrationExplainCompositionTopology:
-    """Explain complex composition topologies — verify dict and text output
+    """Explain complex composition topologies -- verify dict and text output
     for deeply nested storage configurations."""
 
     def test_four_level_nesting(self) -> None:
-        """Readonly → Prefix → Tiered → (Prefix → KV, KV) — all layers visible."""
-        inner_l1 = PrefixKV(inner=_kv(), prefix="cache:")
+        """Readonly -> Prefix -> Tiered -> (Prefix -> KV, KV) -- all layers visible."""
+        inner_l1 = PrefixKV[str, Never](inner=_kv(), prefix="cache:")
         inner_l2 = _kv_json()
-        tiered = TieredKV(l1=inner_l1, l2=inner_l2, l1_ttl=timedelta(seconds=300))
-        prefixed = PrefixKV(inner=tiered, prefix="app:")
-        ro = ReadonlyKV(inner=prefixed)
+        tiered = TieredKV[str, Never](l1=inner_l1, l2=inner_l2, l1_ttl=timedelta(seconds=300))  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as l1
+        prefixed = PrefixKV[str, Never](inner=tiered, prefix="app:")  # pyright: ignore[reportArgumentType] - testing explain with TieredKV as inner
+        ro = ReadonlyKV[str, Never](inner=prefixed)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as inner
 
         d = storage_dict(ro)
         assert d["type"] == "ReadonlyKV"
@@ -644,10 +746,10 @@ class TestIntegrationExplainCompositionTopology:
         assert "PickleCodec" in text
 
     def test_fallback_explain_shows_both_branches(self) -> None:
-        """FallbackKV with primary + secondary — both visible in explain."""
-        primary = PrefixKV(inner=_kv(), prefix="primary:")
+        """FallbackKV with primary + secondary -- both visible in explain."""
+        primary = PrefixKV[str, Never](inner=_kv(), prefix="primary:")
         secondary = _kv_json()
-        fb = FallbackKV(primary=primary, secondary=secondary)
+        fb = FallbackKV[str, Never](primary=primary, secondary=secondary)  # pyright: ignore[reportArgumentType] - testing explain with PrefixKV as primary
 
         d = storage_dict(fb)
         assert d["type"] == "FallbackKV"
@@ -662,9 +764,9 @@ class TestIntegrationExplainCompositionTopology:
 
     def test_all_patterns_explain(self) -> None:
         """All pattern types (KV, KVNX, Queue, PubSub, Lock, Counter) produce valid explain."""
-        patterns = [
+        patterns: list[object] = [
             _kv(),
-            KVNX(backend=_mem(), codec=PickleCodec()),
+            KVNX[str, Never](backend=_mem(), codec=PickleCodec[str]()),
         ]
         for p in patterns:
             d = storage_dict(p)
@@ -680,8 +782,8 @@ class TestIntegrationExplainCompositionTopology:
         d_default = storage_dict(store)
         assert d_default["type"] == "KV"
 
-        # Custom handler — a plain callable matching StorageExplainHandler signature
-        def custom_handler(s: object, ctx: object) -> dict[str, object]:
+        # Custom handler -- a plain callable matching StorageExplainHandler signature
+        def custom_handler(s: KV[str, Never], ctx: _ExplainCtx) -> dict[str, str | bool]:
             return {"type": "CustomKV", "custom": True}
 
         d_custom = storage_dict(store, handlers={type(store): custom_handler})

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 
@@ -22,7 +21,6 @@ from emergent.wire.axis.query._relational import (
     Offset,
     OrderBy,
     Select,
-    relational,
 )
 from emergent.wire.axis.query._expr import Eq, Field, Const, Gt
 from emergent.wire.axis.query._proxy import OrderSpec
@@ -95,12 +93,15 @@ class TestFoldQuery:
         result = fold_query(ops, duped, MEMORY_HANDLERS)
         assert len(result) == 3  # duplicate removed
 
-    def test_select(self):
+    def test_select(self) -> None:
         """Select projects entities to dicts."""
         ops = [Select(("name", "balance"))]
         result = fold_query(ops, list(DATA), MEMORY_HANDLERS)
-        assert isinstance(result[0], dict)
-        assert set(result[0].keys()) == {"name", "balance"}
+        first = result[0]
+        assert isinstance(first, dict)
+        assert len(first) == 2
+        assert "name" in first
+        assert "balance" in first
 
     def test_join_raises(self):
         ops = [Join(User, Eq(Field("id"), Field("id")), "inner", None)]
@@ -127,7 +128,7 @@ class TestQueryDialect:
         class CustomOp:
             suffix: str
 
-        def handle_custom(op: CustomOp, data: list[Any]) -> list[Any]:
+        def handle_custom(op: CustomOp, data: list[User]) -> list[User]:
             return [User(u.id, u.name + op.suffix, u.balance) for u in data]
 
         dialect = MEMORY_DIALECT.with_handler(CustomOp, handle_custom)
@@ -153,12 +154,12 @@ class TestQueryDialect:
         result = fold_query(ops, data, MEMORY_HANDLERS)
         assert result == ["a", "b", "c"]
 
-    def test_custom_context_type(self):
-        def handle_filter(op: Filter, ctx: dict) -> dict:
+    def test_custom_context_type(self) -> None:
+        def handle_filter(op: Filter, ctx: dict[str, int]) -> dict[str, int]:
             ctx["filters"] = ctx.get("filters", 0) + 1
             return ctx
 
-        dialect: QueryDialect[dict] = QueryDialect(
+        dialect: QueryDialect[dict[str, int]] = QueryDialect(
             context_type=dict,
             handlers={Filter: handle_filter},
         )
@@ -204,7 +205,7 @@ class TestIntegrationFoldComplexPipeline:
         class DoubleBalance:
             pass
 
-        def handle_double(op: DoubleBalance, data: list) -> list:
+        def handle_double(op: DoubleBalance, data: list[User]) -> list[User]:
             return [User(u.id, u.name, u.balance * 2) for u in data]
 
         dialect = MEMORY_DIALECT.with_handler(DoubleBalance, handle_double)

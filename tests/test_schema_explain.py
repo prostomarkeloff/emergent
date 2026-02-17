@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-import pytest
-
 from emergent.wire.axis.schema import (
     Identity,
     Unique,
@@ -14,12 +12,10 @@ from emergent.wire.axis.schema import (
     MinLen,
     Doc,
     SchemaName,
-    Deprecated,
-    Nullable,
+    SchemaDoc,
     Ref,
     inspect_type,
     schema_meta,
-    get_schema_meta,
 )
 from emergent.wire.axis.schema._explain import (
     schema_dict,
@@ -27,10 +23,9 @@ from emergent.wire.axis.schema._explain import (
     explain_schema,
     explain_field,
 )
-from emergent.wire.axis.schema._inspect import FieldInfo
 from emergent.wire.axis.schema.dialects.cli import CLICapability, Help
-from emergent.wire.axis.schema.dialects.openapi import OpenAPICapability, Description, Format
-from emergent.wire.axis.schema.dialects.sql import SQLCapability, Index
+from emergent.wire.axis.schema.dialects.openapi import Description, Format
+from emergent.wire.axis.schema.dialects.sql import Index
 
 
 # ─── Test Fixtures ──────────────────────────────────────────────────────────
@@ -234,7 +229,7 @@ class TestIntegrationExplainComplexSchema:
     def test_dict_and_text_consistency(self):
         """schema_dict and explain_schema agree on structure."""
 
-        @schema_meta(SchemaName("orders"), Deprecated(reason="Use v2"))
+        @schema_meta(SchemaName("orders"), SchemaDoc("Deprecated: Use v2"))
         @dataclass
         class Order:
             id: Annotated[int, Identity]
@@ -246,10 +241,10 @@ class TestIntegrationExplainComplexSchema:
         assert d["name"] == "Order"
         assert len(d["fields"]) == 4
         assert "meta" in d
-        # Meta has SchemaName and Deprecated
+        # Meta has SchemaName and SchemaDoc
         meta_types = {m["type"] for m in d["meta"]}
         assert "SchemaName" in meta_types
-        assert "Deprecated" in meta_types
+        assert "SchemaDoc" in meta_types
 
         text = explain_schema(Order)
         assert "=== Order ===" in text

@@ -7,12 +7,13 @@ app capabilities, stateful lifecycle, graph fluent, fold edge cases.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Annotated, Self
 
 import pytest
 
-from kungfu import Result, Ok, Error, Option, Some, Nothing
+from kungfu import Result, Ok, Error
 
 from nodnod import Scope, Node
 from nodnod.utils.create_node import create_node
@@ -22,42 +23,39 @@ from pydantic.fields import FieldInfo as PydanticFieldInfo
 from emergent.ops._graph import Op, Runner, ops
 from emergent.wire.axis.schema import inspect_dataclass, FieldInfo
 from emergent.wire.axis.schema._universal import (
-    Min, Max, MinLen, MaxLen, Pattern, Doc, OneOf, Alias,
+    Min, Max, MaxLen, Pattern, Doc, OneOf, Alias,
 )
 from emergent.wire.axis._capability import (
     PydanticCompilable, PydanticContext,
     OpenAPICompilable, OpenAPIContext,
     ArgparseCompilable, ArgparseContext,
-    ConstraintsCompilable, ConstraintsContext,
-    HandlerRuntimeContext, HandlerRuntimeCompilable,
-    Capability,
 )
 from emergent.wire.compile._core import (
-    Axes, fold, fold_field, extract_constraints, extract_all_constraints, FieldConstraints,
+    Axes, fold, fold_field, extract_constraints, extract_all_constraints,
 )
-from emergent.wire.compile._trace import ListCollector, FoldStep, FoldTrace
+from emergent.wire.compile._trace import ListCollector, FoldTrace
 from emergent.wire.compile._target import TargetCompiler, CodecAdapter
 
 from emergent.wire.axis.surface import endpoint, application, empty_runner
+from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec, rrc
-from emergent.wire.axis.surface.codecs.delegate import DelegateCodec, delegate
-from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, immediate
+from emergent.wire.axis.surface.codecs.delegate import delegate
 from emergent.wire.axis.surface.enrichers import Inject
 from emergent.wire.axis.surface.transforms import AsDict, Transform
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
-from emergent.wire.compile.targets.testing import testing_compile as compile_for_test
+from emergent.wire.compile._execute import ScopeInjector
+from emergent.wire.compile.targets.testing import TestRoute, testing_compile as compile_for_test
 
 from emergent.wire.axis.surface.codecs.stateful import (
-    stateful, StatefulCodec, Done, Cancelled,
+    stateful, StatefulCodec, Done,
 )
 from emergent.wire.compile._stateful import (
     load_state, save_state, delete_state, execute_stateful_turn,
 )
 from emergent.wire.axis.storage import MemoryStorage
 
-from emergent.graph._run import TypedScope, Run, run, compose
-from emergent.graph._compiled import Compiled, CompiledRun, graph
-from emergent.graph._compose import Composer
+from emergent.graph._run import TypedScope, run, compose
+from emergent.graph._compiled import graph
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -123,8 +121,8 @@ class _SeamResp:
     message: str
 
     @classmethod
-    def from_domain(cls, result: Result[str, str]) -> Self:
-        match result:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(value):
                 return cls(message=value)
             case Error(err):
@@ -163,8 +161,8 @@ class _TestFlowResp:
     msg: str
 
     @classmethod
-    def from_domain(cls, result: Result[str, str]) -> Self:
-        match result:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(msg=v)
             case Error(e):
@@ -202,8 +200,8 @@ class _CfgResp:
     out: str
 
     @classmethod
-    def from_domain(cls, r: Result[str, str]) -> Self:
-        match r:
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        match dom:
             case Ok(v):
                 return cls(out=v)
             case Error(e):
@@ -237,13 +235,8 @@ def _seam_runner() -> Runner:
     return ops().on(_SeamOp, _seam_handler).compile()
 
 
-def _seam_app() -> application:
-    runner = _seam_runner()
-    trigger = HTTPRouteTrigger("POST", "/seam")
-    app = application().mount(
-        endpoint(runner).expose(trigger, rrc(_SeamReq, _SeamResp))
-    )
-    return app
+def _wrap_seam_resp(r: _SeamResp) -> _SeamResp:
+    return _SeamResp(message=f"wrapped:{r.message}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -410,11 +403,9 @@ class TestTargetCompilerExtensibilityThroughExecution:
         class _CustomCodec:
             value: str
 
-        def wrap_custom(handler: object, trigger: object, axes: Axes) -> object:
-            from emergent.wire.compile.targets.testing import TestRoute
-
-            async def invoke(fields: object, inject: object) -> str:
-                return handler.codec.value  # type: ignore[union-attr]
+        def wrap_custom(handler: Handler[_CustomCodec], trigger: object, axes: Axes) -> TestRoute:
+            async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> str:
+                return handler.codec.value
 
             return TestRoute(trigger=trigger, _invoke=invoke)
 
@@ -429,7 +420,7 @@ class TestTargetCompilerExtensibilityThroughExecution:
         custom_compiler = TESTING_COMPILER.with_codec(_CustomCodec, wrap_custom)
         test = compile_for_test(app, compiler=custom_compiler)
         # Find the custom route
-        custom_routes = [r for r in test.routes if hasattr(r.trigger, "path") and r.trigger.path == "/custom"]
+        custom_routes = [r for r in test.routes if isinstance(r.trigger, HTTPRouteTrigger) and r.trigger.path == "/custom"]
         assert len(custom_routes) == 1
         result = await custom_routes[0].call()
         assert result == "custom_result"
@@ -437,18 +428,18 @@ class TestTargetCompilerExtensibilityThroughExecution:
     @pytest.mark.asyncio
     async def test_replace_codec_swaps_behavior(self) -> None:
         """Replace RRC adapter with one that wraps response."""
-        from emergent.wire.axis.surface._handler import Handler
-        from emergent.wire.compile.targets.testing import TestRoute
+        from emergent.wire.compile._execute import execute_rrc_unified
+
+        def _noop_inject(scope: Scope) -> None:
+            pass
 
         def wrap_rrc_wrapper(handler: Handler[RequestResponseCodec], trigger: object, axes: Axes) -> TestRoute:
-            from emergent.wire.compile._execute import execute_rrc_unified
-
-            async def invoke(fields: dict[str, object], inject: object) -> object:
+            async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
                 result = await execute_rrc_unified(
                     handler=handler,
                     axes=axes,
                     get_value=fields.get,
-                    inject_scope=lambda _: None,
+                    inject_scope=_noop_inject,
                 )
                 return {"wrapped": True, "data": result}
 
@@ -481,7 +472,7 @@ class TestTargetCompilerExtensibilityThroughExecution:
         stripped = TESTING_COMPILER.without_codec(RequestResponseCodec)
         test = compile_for_test(app, compiler=stripped)
         # No RRC routes
-        rrc_routes = [r for r in test.routes if hasattr(r.trigger, "path") and r.trigger.path == "/greet"]
+        rrc_routes = [r for r in test.routes if isinstance(r.trigger, HTTPRouteTrigger) and r.trigger.path == "/greet"]
         assert len(rrc_routes) == 0
 
     def test_without_codec_other_codecs_unaffected(self) -> None:
@@ -500,7 +491,7 @@ class TestTargetCompilerExtensibilityThroughExecution:
         from emergent.wire.compile.targets.testing import TESTING_COMPILER
         stripped = TESTING_COMPILER.without_codec(RequestResponseCodec)
         test = compile_for_test(app, compiler=stripped)
-        delegate_routes = [r for r in test.routes if hasattr(r.trigger, "path") and r.trigger.path == "/d"]
+        delegate_routes = [r for r in test.routes if isinstance(r.trigger, HTTPRouteTrigger) and r.trigger.path == "/d"]
         assert len(delegate_routes) == 1
 
     def test_custom_compiler_passed_to_testing_compile(self) -> None:
@@ -512,12 +503,10 @@ class TestTargetCompilerExtensibilityThroughExecution:
 
         call_count = [0]
 
-        def wrap_marker(handler: object, trigger: object, axes: Axes) -> object:
-            from emergent.wire.compile.targets.testing import TestRoute
-
+        def wrap_marker(handler: Handler[_MarkerCodec], trigger: object, axes: Axes) -> TestRoute:
             call_count[0] += 1
 
-            async def invoke(fields: object, inject: object) -> str:
+            async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> str:
                 return "marker"
 
             return TestRoute(trigger=trigger, _invoke=invoke)
@@ -547,15 +536,13 @@ class TestTargetCompilerExtensibilityThroughExecution:
         class _CodecB:
             pass
 
-        from emergent.wire.compile.targets.testing import TestRoute
-
-        def wrap_a(handler: object, trigger: object, axes: Axes) -> TestRoute:
-            async def invoke(fields: object, inject: object) -> str:
+        def wrap_a(handler: Handler[_CodecA], trigger: object, axes: Axes) -> TestRoute:
+            async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> str:
                 return "a"
             return TestRoute(trigger=trigger, _invoke=invoke)
 
-        def wrap_b(handler: object, trigger: object, axes: Axes) -> TestRoute:
-            async def invoke(fields: object, inject: object) -> str:
+        def wrap_b(handler: Handler[_CodecB], trigger: object, axes: Axes) -> TestRoute:
+            async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> str:
                 return "b"
             return TestRoute(trigger=trigger, _invoke=invoke)
 
@@ -631,7 +618,7 @@ class TestAppCapabilitiesThroughCompile:
             endpoint(runner).expose(
                 HTTPRouteTrigger("POST", "/greet"),
                 rrc(_SeamReq, _SeamResp),
-                Transform(fn=lambda r: _SeamResp(message=f"wrapped:{r.message}")),
+                Transform[_SeamResp, _SeamResp](fn=_wrap_seam_resp),
                 AsDict(),
             )
         )
@@ -775,16 +762,15 @@ class TestStatefulCodecLifecycle:
 
         method = _TestFlow.__transition__
 
-        new_state, response, is_terminal = await execute_stateful_turn(
+        new_state, _response, is_terminal = await execute_stateful_turn(
             handler_obj, state, method, {}
         )
         assert isinstance(new_state, Done)
         assert is_terminal is True
 
 
-def _make_stateful_handler(codec: StatefulCodec) -> object:
+def _make_stateful_handler(codec: StatefulCodec) -> Handler[StatefulCodec]:
     """Create a minimal Handler[StatefulCodec] for testing."""
-    from emergent.wire.axis.surface._handler import Handler
     return Handler(codec=codec, runner=empty_runner())
 
 
@@ -970,7 +956,7 @@ class TestFoldEdgeCases:
         from emergent.wire.compile._core import traced_fold
 
         collector = ListCollector()
-        ctx, trace = traced_fold(
+        _ctx, trace = traced_fold(
             [Min(5), Max(100)],
             OpenAPIContext(field_name="x", field_type=int),
             OpenAPICompilable,

@@ -3,8 +3,10 @@
 Transport-specific capabilities for Telegram bot interactions.
 Only the telegrinder adapter reads these; other adapters ignore them.
 
-These capabilities use the compile_telegrinder() pattern for consistency
-with the schema axis capabilities. Runtime behavior uses deliver() method.
+EditMessage and AnswerCallback are ScopeEnrichers — they post-process the
+handler response using the standard enricher chain (same mechanism as
+ResponseTransform in FastAPI). No custom wrapping in wrap functions or
+register_handler needed.
 
 Usage:
     from emergent.wire.axis.surface.dialects import telegram
@@ -31,8 +33,40 @@ from emergent.wire.axis.surface.enrichers._base import ScopeEnricher, EnricherNe
 
 if TYPE_CHECKING:
     from nodnod import Scope
-    from telegrinder.bot.dispatch.context import Context
-    from telegrinder.types.objects import InlineKeyboardMarkup
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Callback Query Extraction
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _get_callback_query_from_scope(scope: "Scope") -> Any | None:
+    """Extract CallbackQueryCute from scope via telegrinder Context.
+
+    Returns None if no callback query is available (e.g. message handler).
+    """
+    from telegrinder.bot.dispatch.context import Context as _Context
+    from telegrinder.bot.cute_types.callback_query import CallbackQueryCute as _CQCute
+
+    ctx_wrapper = scope.get(_Context)
+    if ctx_wrapper is None:
+        return None
+
+    ctx: _Context = ctx_wrapper.value
+
+    cq = ctx.get("callback_query")
+    if cq is not None:
+        return cq
+
+    update_cute = ctx.get("update_cute")
+    if update_cute is None:
+        return None
+
+    incoming = update_cute.incoming_update
+    if isinstance(incoming, _CQCute):
+        return incoming
+
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,11 +90,12 @@ class HelpMeta(SurfaceCapability):
 
 
 @dataclass(frozen=True, slots=True)
-class EditMessage(SurfaceCapability):
+class EditMessage(ScopeEnricher):
     """Edit the original message instead of sending a new one.
 
     For callback queries: edit_text() instead of sending new message.
-    Telegrinder adapter calls `deliver()` when this capability is present.
+    Implemented as ScopeEnricher — post-processes response via the standard
+    enricher chain (same mechanism as ResponseTransform in FastAPI).
 
     Usage:
         endpoint(runner).expose(
@@ -71,55 +106,36 @@ class EditMessage(SurfaceCapability):
     """
 
     def compile_telegrinder(self, ctx: TelegrinderHandlerContext) -> TelegrinderHandlerContext:
-        """Mark handler for message editing."""
-        return telegrinder_handler(ctx, edit_message=True, edit_message_cap=self)
+        """Mark handler for message editing (metadata)."""
+        return telegrinder_handler(ctx, edit_message=True)
 
-    async def deliver(
-        self,
-        ctx: "Context",
-        text: str,
-        *,
-        reply_markup: "InlineKeyboardMarkup | None" = None,
-        parse_mode: str | None = None,
-        **extra: Any,
-    ) -> bool:
-        """Edit message instead of sending new one.
+    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        response = await call(scope)
 
-        Args:
-            ctx: Telegrinder Context
-            text: Message text
-            reply_markup: Optional inline keyboard
-            parse_mode: Optional parse mode (HTML, Markdown, etc.)
-            **extra: Additional params for edit_text
-
-        Returns:
-            True if delivered (edited), False if not applicable.
-        """
-        # Try different possible keys for callback query
-        cq = ctx.get("callback_query") or ctx.get("update_cute")
+        cq = _get_callback_query_from_scope(scope)
         if cq is None:
-            return False
+            return response
 
-        # If we got update_cute, extract callback_query from it
-        if hasattr(cq, "callback_query"):
-            maybe_cq = cq.callback_query
-            if maybe_cq is not None:
-                cq = maybe_cq.unwrap() if hasattr(maybe_cq, "unwrap") else maybe_cq
+        await cq.answer()
 
-        callback_query: Any = cq  # CallbackQueryCute at runtime
-        await callback_query.answer()
-        await callback_query.edit_text(
-            text=text,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode,
-            **extra,
-        )
-        return True
+        if isinstance(response, str):
+            await cq.edit_text(text=response)
+            return None  # type: ignore[return-value]
+
+        if isinstance(response, dict) and "text" in response:
+            text = str(response.pop("text"))
+            await cq.edit_text(text=text, **response)
+            return None  # type: ignore[return-value]
+
+        return response
 
 
 @dataclass(frozen=True, slots=True)
-class AnswerCallback(SurfaceCapability):
+class AnswerCallback(ScopeEnricher):
     """Control callback query answer behavior.
+
+    Implemented as ScopeEnricher — answers the callback query after handler
+    execution via the standard enricher chain.
 
     Usage:
         telegram.AnswerCallback()                    # just answer()
@@ -132,14 +148,25 @@ class AnswerCallback(SurfaceCapability):
     cache_time: int | None = None
 
     def compile_telegrinder(self, ctx: TelegrinderHandlerContext) -> TelegrinderHandlerContext:
-        """Mark handler for callback answering."""
+        """Mark handler for callback answering (metadata)."""
         return telegrinder_handler(
             ctx,
             answer_callback=True,
-            answer_callback_cap=self,
             answer_callback_text=self.text,
             answer_callback_show_alert=self.show_alert,
         )
+
+    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        response = await call(scope)
+
+        cq = _get_callback_query_from_scope(scope)
+        if cq is not None:
+            await cq.answer(
+                text=self.text,
+                show_alert=self.show_alert,
+            )
+
+        return response
 
 
 @dataclass(frozen=True, slots=True)

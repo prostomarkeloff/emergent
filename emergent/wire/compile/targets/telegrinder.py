@@ -26,7 +26,7 @@ Command rules with generated Arguments.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, cast
+from typing import Any, Callable
 
 from kungfu import Ok, Some, Nothing
 from telegrinder.bot.cute_types.base import BaseCute
@@ -54,7 +54,7 @@ from emergent.wire.axis.surface.codecs.stateful import (
 )
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
 from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
-from emergent.wire.axis.surface.codecs.resolve import get_method_params, wrap
+from emergent.wire.axis.surface.codecs.resolve import get_method_params, wrap, TypeForm
 from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
 from emergent.wire.compile._core import Axes, fold_field, fold
@@ -296,7 +296,7 @@ async def _compose_node(
 
 async def compose_param(
     name: str,
-    original_type: type,
+    original_type: TypeForm,
     compose_type: type,
     agent_cls: type[Agent],
     ctx: Context,
@@ -430,30 +430,19 @@ def wrap_rrc_telegrinder(
     trigger: TelegrindTrigger,
     axes: Axes,
 ) -> TelegrindRoute:
-    """Wrap RRC handler for telegrinder. Returns handler + enhanced rules."""
-    tg_ctx = fold_tg_handler_ctx(handler.capabilities)
-    edit_message_cap = tg_ctx.edit_message_cap
+    """Wrap RRC handler for telegrinder. Pure codec adapter."""
 
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
             _inject_tg_context(scope, ctx)
 
-        response = await execute_rrc_unified(
+        return await execute_rrc_unified(
             handler=handler,
             axes=axes,
             get_value=lambda name: ctx.get(name),
             inject_scope=inject_scope,
             format_response=_format_tg_response,
         )
-
-        # EditMessage capability — edit instead of sending new message
-        if edit_message_cap is not None and isinstance(response, dict) and "text" in response:
-            response_dict = cast(dict[str, Any], response)
-            text = str(response_dict.pop("text"))
-            if await edit_message_cap.deliver(ctx, text, **response_dict):
-                return None
-
-        return response
 
     # Rule preparation: enhance Command rules with generated Arguments
     enhanced = enhance_command_with_args(trigger, handler.codec.request)
@@ -591,28 +580,18 @@ def wrap_delegate_telegrinder(
     trigger: TelegrindTrigger,
     axes: Axes,
 ) -> TelegrindRoute:
-    """Wrap DelegateCodec handler for telegrinder."""
+    """Wrap DelegateCodec handler for telegrinder. Pure codec adapter."""
     from emergent.wire.compile._execute import execute_delegate_unified
-
-    tg_ctx = fold_tg_handler_ctx(handler.capabilities)
 
     async def _handler(ctx: Context) -> object:
         def inject_scope(scope: Scope) -> None:
             _inject_tg_context(scope, ctx)
 
-        result = await execute_delegate_unified(
+        return await execute_delegate_unified(
             handler=handler,
             inject_scope=inject_scope,
             axes=axes,
         )
-
-        if tg_ctx.answer_callback and trigger.view == "callback_query":
-            await ctx.update_cute.incoming_update.answer(
-                text=tg_ctx.answer_callback_text,
-                show_alert=tg_ctx.answer_callback_show_alert,
-            )
-
-        return result
 
     return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
 

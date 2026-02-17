@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
 from dataclasses import dataclass
-
-import pytest
 
 from emergent.wire.axis.query._explain import (
     API_EXPLAIN,
@@ -13,7 +12,6 @@ from emergent.wire.axis.query._explain import (
     KV_EXPLAIN_DIALECT,
     RELATIONAL_EXPLAIN,
     RELATIONAL_EXPLAIN_DIALECT,
-    ExplainDialect,
     explain_ops,
     format_ops,
 )
@@ -23,8 +21,6 @@ from emergent.wire.axis.query._expr import (
     Eq,
     Field,
     Gt,
-    In,
-    IsNull,
 )
 from emergent.wire.axis.query._relational import (
     Aggregate,
@@ -341,7 +337,8 @@ class TestExplainDialect:
         class CustomOp:
             n: int
 
-        def handle_custom(op: CustomOp) -> dict:
+        # ExplainHandler = Callable[[Any], dict[str, Any]], so handler must return dict[str, Any]
+        def handle_custom(op: CustomOp) -> dict[str, Any]:
             return {"op": "Custom", "n": op.n}
 
         extended = RELATIONAL_EXPLAIN_DIALECT.with_handler(CustomOp, handle_custom)

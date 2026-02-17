@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from emergent.wire.axis.query._relational import Filter, Limit, OrderBy, relational
+from emergent.wire.axis.query._relational import Filter, Limit, OrderBy
 from emergent.wire.axis.query._sql import (
     ForUpdate,
     Returning,
@@ -17,11 +17,6 @@ from emergent.wire.axis.query._sql import (
 )
 from emergent.wire.axis.query._proxy import FieldProxy, OrderSpec
 from emergent.wire.axis.query._window import (
-    DenseRank,
-    Lag,
-    Lead,
-    Ntile,
-    Rank,
     RowNumber,
     WindowSpec,
 )
@@ -254,7 +249,7 @@ class TestWindowBuilder:
         wb = WindowBuilder(RowNumber(), None)
         spec = wb.over(order_by=(
             OrderSpec("a", ascending=True),
-            FieldProxy("b"),
+            OrderSpec("b", ascending=True),
         ))
         assert len(spec.order_by) == 2
         assert spec.order_by[1] == OrderSpec("b", ascending=True)

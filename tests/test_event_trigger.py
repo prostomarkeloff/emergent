@@ -13,36 +13,33 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 from kungfu import Ok, Result
 
 from nodnod import Scope
 
-from emergent.ops import ops as _ops, Op, Returning
-from emergent.wire.axis.surface._app import Application, application
-from emergent.wire.axis.surface._endpoint import Endpoint, endpoint
+from emergent.ops import ops as _ops, Op, Runner
+from emergent.wire.axis.surface._app import application
+from emergent.wire.axis.surface._endpoint import endpoint
 from emergent.wire.axis.surface._types import Exposure
 from emergent.wire.axis.surface.triggers.event import EventTrigger
-from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec, rrc
-from emergent.wire.axis.surface.codecs.delegate import DelegateCodec, delegate
+from emergent.wire.axis.surface.codecs.rrc import rrc
+from emergent.wire.axis.surface.codecs.delegate import delegate
 from emergent.wire.axis.surface._explain import (
     explain_application,
     exposure_dict,
     SURFACE_EXPLAIN,
 )
 from emergent.wire.compile._core import Axes
-from emergent.wire.compile._target import TargetCompiler, CodecAdapter
+from emergent.wire.axis.surface._handler import Handler
+from emergent.wire.compile._execute import ScopeInjector
 from emergent.wire.compile.targets.event import (
     EventRoute,
-    EventDispatcher,
     EVENT_COMPILER,
     event_compile,
-    wrap_rrc_event,
-    wrap_delegate_event,
 )
-from emergent.wire.compile._lifetime import Tier, App, Request, ScopeLayer
+from emergent.wire.compile._lifetime import Tier, App
 from emergent.graph._family import ScopeFamily
 from emergent.wire.axis.surface.enrichers import ScopeEnricher, EnricherNext, Passthrough
 
@@ -85,8 +82,8 @@ class ProcessOrderResponse:
     message: str
 
     @classmethod
-    def from_domain(cls, result: Result[str, str]) -> ProcessOrderResponse:
-        match result:
+    def from_domain(cls, dom: Result[str, str]) -> ProcessOrderResponse:
+        match dom:
             case Ok(value):
                 return cls(message=value)
             case _:
@@ -100,7 +97,7 @@ async def _handle_process_order(req: ProcessOrderOp) -> Result[str, str]:
 # ─── Helpers ───────────────────────────────────────────────────────────────
 
 
-def _runner() -> Any:
+def _runner() -> Runner:
     return _ops().on(ProcessOrderOp, _handle_process_order).compile()
 
 
@@ -129,15 +126,17 @@ class TestEventTriggerBasic:
         t2 = EventTrigger(UserSignedUp)
         assert t1 != t2
 
-    def test_expose_on_endpoint(self):
+    def test_expose_on_endpoint(self) -> None:
         runner = _runner()
         ep = endpoint(runner).expose(
             EventTrigger(OrderCreated),
             rrc(ProcessOrderRequest, ProcessOrderResponse),
         )
         assert len(ep.exposures) == 1
-        assert isinstance(ep.exposures[0].trigger, EventTrigger)
-        assert ep.exposures[0].trigger.event_type is OrderCreated
+        trigger = ep.exposures[0].trigger
+        assert isinstance(trigger, EventTrigger)
+        # isinstance narrows to EventTrigger[Unknown] since Trigger is erased at runtime
+        assert trigger.event_type is OrderCreated  # pyright: ignore[reportUnknownMemberType] - EventTrigger generic param Unknown after isinstance
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -334,22 +333,34 @@ class TestEventDispatcherLifecycle:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _noop_handler() -> None:
+    return None
+
+
+def _noop_event_handler(_ev: OrderCreated) -> None:
+    return None
+
+
+def _user_id_handler(ev: UserSignedUp) -> str:
+    return f"user:{ev.user_id}"
+
+
 class TestEventExplain:
-    def test_exposure_dict(self):
+    def test_exposure_dict(self) -> None:
         exp = Exposure(
             trigger=EventTrigger(OrderCreated),
-            codec=delegate(lambda: None),
+            codec=delegate(_noop_handler),
         )
         d = exposure_dict(exp)
         assert d["trigger"]["type"] == "EventTrigger"
         assert d["trigger"]["event_type"] == "OrderCreated"
 
-    def test_explain_application_format(self):
+    def test_explain_application_format(self) -> None:
         runner = _runner()
         app = application().mount(
             endpoint(runner).expose(
                 EventTrigger(OrderCreated),
-                delegate(lambda ev: None),
+                delegate(_noop_event_handler),
             )
         )
         text = explain_application(app)
@@ -376,17 +387,17 @@ class TestEventCompiler:
         )
         results = list(EVENT_COMPILER.scan_and_wrap(app, Axes.default()))
         assert len(results) == 1
-        trigger, handler, route = results[0]
+        trigger, _handler, route = results[0]
         assert isinstance(trigger, EventTrigger)
         assert trigger.event_type is OrderCreated
         assert isinstance(route, EventRoute)
 
-    def test_scan_delegate(self):
+    def test_scan_delegate(self) -> None:
         runner = _runner()
         app = application().mount(
             endpoint(runner).expose(
                 EventTrigger(OrderCreated),
-                delegate(lambda ev: None),
+                delegate(_noop_event_handler),
             )
         )
         results = list(EVENT_COMPILER.scan_and_wrap(app, Axes.default()))
@@ -416,8 +427,12 @@ class TestEventCompiler:
         class CustomEventCodec:
             version: int = 1
 
-        def wrap_custom(handler: Any, trigger: Any, axes: Any) -> EventRoute:
-            async def invoke(event: object, inject: Any) -> object:
+        def wrap_custom(
+            handler: Handler[CustomEventCodec],
+            trigger: EventTrigger[object],
+            axes: Axes,
+        ) -> EventRoute:
+            async def invoke(event: object, inject: ScopeInjector | None) -> object:
                 return "custom"
 
             return EventRoute(
@@ -476,7 +491,7 @@ async def _handle_validate_order(req: ValidateOrderOp) -> Result[str, str]:
     return Ok(f"validated:{req.order_id}:${req.total}")
 
 
-def _validate_runner() -> Any:
+def _validate_runner() -> Runner:
     return _ops().on(ValidateOrderOp, _handle_validate_order).compile()
 
 
@@ -516,11 +531,21 @@ class TestEnricherChain:
         assert "25.0" in resp.message
 
     @pytest.mark.asyncio
-    async def test_invalid_event_short_circuits(self):
+    async def test_invalid_event_short_circuits(self) -> None:
         from emergent.wire.axis.surface.enrichers import Inject, Validate
 
         config = Config(env="test", max_retries=3)
         runner = _validate_runner()
+
+        def extract_order(scope: Scope) -> OrderCreated:
+            result: OrderCreated = scope.retrieve(OrderCreated).unwrap().value  # pyright: ignore[reportUnknownMemberType] - nodnod Value wrapper
+            return result
+
+        def check_total(ev: OrderCreated) -> bool:
+            return ev.total > 0
+
+        def invalid_response(ev: OrderCreated) -> ValidateOrderResponse:
+            return ValidateOrderResponse(message=f"invalid:total={ev.total}")
 
         # Validate extracts the event from scope and checks total > 0
         app = application().mount(
@@ -529,11 +554,9 @@ class TestEnricherChain:
                 rrc(ValidateOrderRequest, ValidateOrderResponse),
                 Inject(type=Config, value=config),
                 Validate(
-                    extract=lambda scope: scope.retrieve(OrderCreated).value.value,
-                    predicate=lambda ev: ev.total > 0,
-                    on_invalid=lambda ev: ValidateOrderResponse(
-                        message=f"invalid:total={ev.total}"
-                    ),
+                    extract=extract_order,
+                    predicate=check_total,
+                    on_invalid=invalid_response,
                 ),
             )
         )
@@ -542,12 +565,16 @@ class TestEnricherChain:
         # Valid event
         results = await dispatcher.dispatch(OrderCreated(order_id=1, total=50.0))
         assert len(results) == 1
-        assert "validated:1" in results[0].message
+        valid_resp = results[0]
+        assert isinstance(valid_resp, ValidateOrderResponse)
+        assert "validated:1" in valid_resp.message
 
         # Invalid event (total <= 0)
         results = await dispatcher.dispatch(OrderCreated(order_id=2, total=-5.0))
         assert len(results) == 1
-        assert "invalid:total=-5.0" in results[0].message
+        invalid_resp = results[0]
+        assert isinstance(invalid_resp, ValidateOrderResponse)
+        assert "invalid:total=-5.0" in invalid_resp.message
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -572,7 +599,7 @@ class EventAuth(ScopeEnricher):
 
     valid_tokens: dict[str, AuthUser]
 
-    async def enrich(self, call: Any, scope: Any) -> Any:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | dict[str, str]:
         from kungfu import Some
         token_result = scope.retrieve(AuthToken)
         match token_result:
@@ -710,7 +737,9 @@ class TestResponseTransforms:
             endpoint(runner).expose(
                 EventTrigger(OrderCreated),
                 rrc(ValidateOrderRequest, ValidateOrderResponse),
-                Transform(fn=lambda r: {"data": r, "ok": True}),
+                Transform[ValidateOrderResponse, dict[str, ValidateOrderResponse | bool]](
+                    fn=lambda r: {"data": r, "ok": True},
+                ),
             )
         )
         dispatcher = event_compile(app)
@@ -731,16 +760,22 @@ class TestResponseTransforms:
                 EventTrigger(OrderCreated),
                 rrc(ValidateOrderRequest, ValidateOrderResponse),
                 AsDict(),
-                Transform(fn=lambda d: {"envelope": d, "version": 2}),
+                Transform[dict[str, object], dict[str, dict[str, object] | int]](
+                    fn=lambda d: {"envelope": d, "version": 2},
+                ),
             )
         )
         dispatcher = event_compile(app)
         results = await dispatcher.dispatch(OrderCreated(order_id=3, total=75.0))
         assert len(results) == 1
         envelope = results[0]
+        assert isinstance(envelope, dict)
         assert envelope["version"] == 2
-        assert isinstance(envelope["envelope"], dict)
-        assert "validated:3" in envelope["envelope"]["message"]
+        inner = envelope["envelope"]  # pyright: ignore[reportUnknownVariableType] - dict narrowed from object loses generic params
+        assert isinstance(inner, dict)
+        msg = inner["message"]  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType] - dict from object narrowing
+        assert isinstance(msg, str)
+        assert "validated:3" in msg
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -755,7 +790,7 @@ class TrackEnricher(ScopeEnricher):
     name: str
     log: list[str]
 
-    async def enrich(self, call: Any, scope: Any) -> Any:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
         self.log.append(f"{self.name}_enter")
         result = await call(scope)
         self.log.append(f"{self.name}_exit")
@@ -852,7 +887,7 @@ class TestMixedTriggers:
             # Another event trigger
             endpoint(runner).expose(
                 EventTrigger(UserSignedUp),
-                delegate(lambda ev: f"user:{ev.user_id}"),
+                delegate(_user_id_handler),
             ),
         )
         dispatcher = event_compile(app)
@@ -879,8 +914,9 @@ class TestMixedTriggers:
         dispatcher = event_compile(app)
         results = await dispatcher.dispatch(OrderCreated(order_id=99, total=10.0))
         assert len(results) == 1
-        assert isinstance(results[0], ProcessOrderResponse)
-        assert "99" in results[0].message
+        resp = results[0]
+        assert isinstance(resp, ProcessOrderResponse)
+        assert "99" in resp.message
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1123,8 +1159,10 @@ class TestUserInject:
             inject=lambda scope: scope.inject(DBConn, mock_db),
         )
         assert len(results) == 1
-        assert "order:10" in results[0]
-        assert "sqlite://test.db" in results[0]
+        result_str = results[0]
+        assert isinstance(result_str, str)
+        assert "order:10" in result_str
+        assert "sqlite://test.db" in result_str
         assert len(received_db) == 1
         assert received_db[0] is mock_db
 
@@ -1140,7 +1178,7 @@ class TestUserInject:
                 rrc(ValidateOrderRequest, ValidateOrderResponse),
                 Validate(
                     extract=lambda scope: scope.retrieve(DBConn),
-                    predicate=lambda result: result is not None,
+                    predicate=lambda result: bool(result),
                     on_invalid=lambda _: ValidateOrderResponse(message="no_db"),
                 ),
             )
@@ -1153,7 +1191,9 @@ class TestUserInject:
             inject=lambda scope: scope.inject(DBConn, DBConn(url="pg://prod")),
         )
         assert len(results) == 1
-        assert "validated:1" in results[0].message
+        resp = results[0]
+        assert isinstance(resp, ValidateOrderResponse)
+        assert "validated:1" in resp.message
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1165,7 +1205,7 @@ class TestTracing:
     """Axes.traced() captures ScanEvent and WrapEvent during compilation."""
 
     def test_traced_captures_scan_and_wrap_events(self):
-        from emergent.wire.compile._trace import ListCollector, ScanEvent, WrapEvent
+        from emergent.wire.compile._trace import ListCollector
 
         collector = ListCollector()
         runner = _runner()
@@ -1176,11 +1216,11 @@ class TestTracing:
             ),
             endpoint(runner).expose(
                 EventTrigger(UserSignedUp),
-                delegate(lambda ev: f"user:{ev.user_id}"),
+                delegate(_user_id_handler),
             ),
         )
         axes = Axes.traced(collector)
-        dispatcher = event_compile(app, axes=axes)
+        _dispatcher = event_compile(app, axes=axes)
 
         # Should have 2 scan events (one per matched exposure)
         assert len(collector.scan_events) == 2
@@ -1327,14 +1367,16 @@ class TestE2EPipeline:
         assert len(results) == 2
 
         # RRC result is a dict (due to AsDict transform)
-        dict_results = [r for r in results if isinstance(r, dict)]
+        dict_results: list[dict[str, str]] = [
+            r for r in results if isinstance(r, dict)  # pyright: ignore[reportUnknownVariableType] - dict[Unknown, Unknown] from isinstance narrowing on object
+        ]
         str_results = [r for r in results if isinstance(r, str)]
 
         assert len(dict_results) == 1
         assert len(str_results) == 1
 
         # Verify RRC pipeline
-        order_dict = dict_results[0]
+        order_dict: dict[str, str] = dict_results[0]
         assert "message" in order_dict
         assert "order#42" in order_dict["message"]
         assert "199.99" in order_dict["message"]
@@ -1358,7 +1400,9 @@ class TestE2EPipeline:
                 EventTrigger(OrderPlaced),
                 rrc(CreateOrderRequest, CreateOrderResponse),
                 Inject(type=Config, value=Config(env="prod", max_retries=5)),
-                Transform(fn=lambda r: {"response": r, "env": "prod"}),
+                Transform[CreateOrderResponse, dict[str, CreateOrderResponse | str]](
+                    fn=lambda r: {"response": r, "env": "prod"},
+                ),
             ),
         )
 

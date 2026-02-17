@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Self
 
-import pytest
+from kungfu import Result
 
-from emergent.wire.axis.surface._app import Application, application
-from emergent.wire.axis.surface._endpoint import Endpoint, endpoint
+from emergent.ops._graph import Op
+from emergent.wire.axis.surface._app import application
+from emergent.wire.axis.surface._endpoint import endpoint
 from emergent.wire.axis.surface._types import Exposure
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec
-from emergent.wire.axis.surface.codecs.delegate import DelegateCodec, delegate
+from emergent.wire.axis.surface.codecs.delegate import delegate
 from emergent.wire.axis.surface._explain import (
     application_dict,
     endpoint_dict,
@@ -21,7 +23,6 @@ from emergent.wire.axis.surface._explain import (
     explain_application,
     explain_endpoint,
     SURFACE_EXPLAIN,
-    SurfaceExplainHandler,
 )
 from emergent.ops import ops as _ops
 
@@ -35,12 +36,15 @@ def _runner():
 
 @dataclass
 class Req:
-    pass
+    def to_domain(self) -> Op[str, str]:
+        raise NotImplementedError
 
 
 @dataclass
 class Resp:
-    pass
+    @classmethod
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -258,7 +262,7 @@ class TestOpenWorld:
         class CustomTrigger:
             name: str
 
-        def custom_handler(t: CustomTrigger) -> dict:
+        def custom_handler(t: CustomTrigger) -> dict[str, str]:
             return {"type": "Custom", "name": t.name, "extra": "info"}
 
         custom_handlers = {**SURFACE_EXPLAIN, CustomTrigger: custom_handler}

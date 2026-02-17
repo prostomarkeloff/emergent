@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Self
 
 import pytest
 
+from kungfu import Result
+
 from emergent.ops import ops as _ops
+from emergent.ops._graph import Op
 from emergent.wire.axis.surface._endpoint import Endpoint, endpoint
 from emergent.wire.axis.surface._app import Application, application
 from emergent.wire.axis.surface._stack import AppStack, app_stack
@@ -64,13 +67,21 @@ def _runner():
 
 
 @dataclass
+class _NoOp(Op[str, str]):
+    """Trivial op for tests."""
+
+
+@dataclass
 class Req:
-    pass
+    def to_domain(self) -> _NoOp:
+        return _NoOp()
 
 
 @dataclass
 class Resp:
-    pass
+    @classmethod
+    def from_domain(cls, dom: Result[str, str]) -> Self:
+        return cls()
 
 
 @dataclass(frozen=True)
@@ -650,26 +661,26 @@ class TestDone:
 
 
 class TestParseTransitionResult:
-    def test_state_only(self):
+    def test_state_only(self) -> None:
         @dataclass
         class S:
             x: int = 1
 
         state = S()
-        result = parse_transition_result(state)
+        result: TransitionResult[S, object] = parse_transition_result(state)
         assert isinstance(result, TransitionResult)
         assert result.state_or_done is state
         assert isinstance(result.response, Nothing)
         assert result.is_terminal is False
 
-    def test_done_terminal(self):
+    def test_done_terminal(self) -> None:
         done = Done()
-        result = parse_transition_result(done)
+        result: TransitionResult[Done, object] = parse_transition_result(done)
         assert result.state_or_done is done
         assert isinstance(result.response, Nothing)
         assert result.is_terminal is True
 
-    def test_state_with_response(self):
+    def test_state_with_response(self) -> None:
         @dataclass
         class S:
             x: int = 1
@@ -681,7 +692,7 @@ class TestParseTransitionResult:
         assert result.response.unwrap() == "intermediate"
         assert result.is_terminal is False
 
-    def test_done_with_response(self):
+    def test_done_with_response(self) -> None:
         done = Done()
         result = parse_transition_result((done, "final"))
         assert isinstance(result.state_or_done, Done)
@@ -691,23 +702,23 @@ class TestParseTransitionResult:
 
 
 class TestStatefulBuilder:
-    def test_build_requires_key(self):
+    def test_build_requires_key(self) -> None:
         @dataclass
         class Flow:
-            async def __transition__(self):
+            async def __transition__(self) -> None:
                 pass
 
-            def to_domain(self):
-                pass
+            def to_domain(self) -> dict[str, str]:
+                return {}
 
         with pytest.raises(ValueError, match="key_node is required"):
             stateful(Flow, Resp).build()
 
-    def test_build_requires_transitions(self):
+    def test_build_requires_transitions(self) -> None:
         @dataclass
         class Flow:
-            def to_domain(self):
-                pass
+            def to_domain(self) -> dict[str, str]:
+                return {}
 
         class FakeKey:
             pass
@@ -728,15 +739,15 @@ class TestStatefulBuilder:
         with pytest.raises(ValueError, match="must define to_domain"):
             stateful(Flow, Resp).key(FakeKey).build()
 
-    def test_build_success(self):
+    def test_build_success(self) -> None:
         @dataclass
         class Flow:
             @transition
-            async def step(self):
+            async def step(self) -> None:
                 pass
 
-            def to_domain(self):
-                pass
+            def to_domain(self) -> dict[str, str]:
+                return {}
 
         class FakeKey:
             pass
@@ -891,12 +902,12 @@ class TestTransform:
         t = Transform(fn=str.upper)
         assert t.apply_response("hello") == "HELLO"
 
-    def test_lambda_transform(self):
-        t = Transform(fn=lambda x: x * 2)
+    def test_lambda_transform(self) -> None:
+        t: Transform[int, int] = Transform(fn=lambda x: x * 2)
         assert t.apply_response(5) == 10
 
-    def test_dict_wrapping(self):
-        t = Transform(fn=lambda r: {"data": r, "status": "ok"})
+    def test_dict_wrapping(self) -> None:
+        t: Transform[str, dict[str, str]] = Transform(fn=lambda r: {"data": r, "status": "ok"})
         assert t.apply_response("payload") == {"data": "payload", "status": "ok"}
 
 
@@ -912,23 +923,32 @@ class TestInjectEnricher:
         assert inject.value == "hello"
         assert inject.factory is None
 
-    def test_inject_creation_with_factory(self):
-        inject = Inject(type=int, factory=lambda s: 42)
+    def test_inject_creation_with_factory(self) -> None:
+        from nodnod import Scope
+
+        def _make_int(_s: Scope) -> int:
+            return 42
+
+        inject = Inject(type=int, factory=_make_int)
         assert inject.type is int
         assert inject.factory is not None
 
 
 class TestChainEnrichers:
-    def test_chain_empty_returns_handler(self):
-        async def handler(scope):
+    def test_chain_empty_returns_handler(self) -> None:
+        from nodnod import Scope
+
+        async def handler(_scope: Scope) -> str:
             return "result"
 
         chained = chain_enrichers((), handler)
         # chained should be the same handler when no enrichers
         assert chained is handler
 
-    def test_chain_wraps_single_enricher(self):
-        async def handler(scope):
+    def test_chain_wraps_single_enricher(self) -> None:
+        from nodnod import Scope
+
+        async def handler(_scope: Scope) -> str:
             return "result"
 
         enricher = Inject(type=str, value="test")
@@ -954,9 +974,10 @@ class TestCapabilityHelpers:
         result = find_capability(caps, MockCap)
         assert result is None
 
-    def test_find_capability_returns_first(self):
+    def test_find_capability_returns_first(self) -> None:
         caps = (MockCap("first"), MockCap("second"))
         result = find_capability(caps, MockCap)
+        assert result is not None
         assert result.name == "first"
 
     def test_find_all_capabilities(self):
@@ -1158,13 +1179,23 @@ class TestIntegrationFullSurfacePipeline:
         class CreateUserReq:
             name: str = ""
 
+            def to_domain(self) -> _NoOp:
+                return _NoOp()
+
         @dataclass
         class CreateUserResp:
             user_id: int = 0
 
+            @classmethod
+            def from_domain(cls, dom: Result[str, str]) -> Self:
+                return cls()
+
         @dataclass
         class OrderEvent:
             order_id: int = 0
+
+            def to_domain(self) -> _NoOp:
+                return _NoOp()
 
         from emergent.wire.axis.surface.triggers.event import EventTrigger
 
@@ -1226,11 +1257,11 @@ class TestIntegrationFullSurfacePipeline:
         assert len(pairs) == 1
         assert pairs[0][0].command == "create-user"
 
-    def test_scan_event_returns_event_only(self):
+    def test_scan_event_returns_event_only(self) -> None:
         from emergent.wire.axis.surface.triggers.event import EventTrigger
 
         app = self._build_app()
-        pairs = scan(app, EventTrigger)
+        pairs: list[tuple[EventTrigger[object], Handler[object]]] = scan(app, EventTrigger)
         assert len(pairs) == 1
 
     def test_handler_carries_exposure_capabilities(self):
@@ -1372,7 +1403,7 @@ class TestIntegrationStatefulCodecLifecycle:
             async def confirm(self):
                 return Done()
 
-            def to_domain(self):
+            def to_domain(self) -> dict[str, int]:
                 return {"step": self.step}
 
         class FakeKey:
@@ -1387,7 +1418,7 @@ class TestIntegrationStatefulCodecLifecycle:
         assert codec.flow is WizardFlow
         assert codec.key_node is FakeKey
 
-    def test_parse_all_transition_result_variants(self):
+    def test_parse_all_transition_result_variants(self) -> None:
         """All four variants: state, done, (state, resp), (done, resp)."""
 
         @dataclass
@@ -1395,12 +1426,12 @@ class TestIntegrationStatefulCodecLifecycle:
             x: int = 0
 
         # State only
-        r1 = parse_transition_result(S(x=1))
+        r1: TransitionResult[S, object] = parse_transition_result(S(x=1))
         assert not r1.is_terminal
         assert isinstance(r1.response, Nothing)
 
         # Done only
-        r2 = parse_transition_result(Done())
+        r2: TransitionResult[Done, object] = parse_transition_result(Done())
         assert r2.is_terminal
         assert isinstance(r2.response, Nothing)
 
@@ -1416,24 +1447,24 @@ class TestIntegrationStatefulCodecLifecycle:
         assert isinstance(r4.response, Some)
         assert r4.response.unwrap() == "final"
 
-    def test_cancelled_is_terminal_done(self):
-        """Cancelled extends Done — parse_transition_result marks terminal."""
+    def test_cancelled_is_terminal_done(self) -> None:
+        """Cancelled extends Done -- parse_transition_result marks terminal."""
         from emergent.wire.axis.surface.codecs.stateful import Cancelled
 
-        r = parse_transition_result(Cancelled())
+        r: TransitionResult[Cancelled, object] = parse_transition_result(Cancelled())
         assert r.is_terminal
         assert isinstance(r.state_or_done, Cancelled)
 
-    def test_stateful_endpoint_scanned_as_stateful_codec(self):
+    def test_stateful_endpoint_scanned_as_stateful_codec(self) -> None:
         """Stateful codec on endpoint is scannable by StatefulCodec type."""
 
         @dataclass
         class SimpleFlow:
             @transition
-            async def step(self):
+            async def step(self) -> Done:
                 return Done()
 
-            def to_domain(self):
+            def to_domain(self) -> dict[str, str]:
                 return {}
 
         class FakeKey:
@@ -1447,31 +1478,31 @@ class TestIntegrationStatefulCodecLifecycle:
         assert isinstance(handler.codec, StatefulCodec)
         assert handler.codec.flow is SimpleFlow
 
-    def test_stateful_with_dunder_transition(self):
+    def test_stateful_with_dunder_transition(self) -> None:
         """Flow using __transition__ instead of @transition decorator."""
 
         @dataclass
         class LegacyFlow:
-            async def __transition__(self, input: str = ""):
+            async def __transition__(self, input: str = "") -> Done:
                 return Done()
 
-            def to_domain(self):
+            def to_domain(self) -> dict[str, str]:
                 return {}
 
         transitions = get_transitions(LegacyFlow)
         assert len(transitions) == 1
         assert transitions[0].__name__ == "__transition__"
 
-    def test_stateful_builder_chaining(self):
+    def test_stateful_builder_chaining(self) -> None:
         """Builder pattern: stateful().key().build() with store."""
 
         @dataclass
         class Flow:
             @transition
-            async def step(self):
+            async def step(self) -> Done:
                 return Done()
 
-            def to_domain(self):
+            def to_domain(self) -> dict[str, str]:
                 return {}
 
         class MyKey:
@@ -1495,10 +1526,10 @@ class TestIntegrationEnricherTransformComposition:
     Verify chain_enrichers ordering and filter_by_protocol classification."""
 
     @pytest.mark.anyio
-    async def test_chain_enrichers_ordering(self):
+    async def test_chain_enrichers_ordering(self) -> None:
         """chain_enrichers builds e1(e2(handler)) — first is outermost."""
         from nodnod import Scope
-        from emergent.wire.axis.surface.enrichers._impl import Passthrough
+        from emergent.wire.axis.surface.enrichers._base import EnricherNext
 
         call_order: list[str] = []
 
@@ -1506,9 +1537,9 @@ class TestIntegrationEnricherTransformComposition:
         class TrackEnricher(ScopeEnricher):
             label: str
 
-            async def enrich(self, call, scope):
+            async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
                 call_order.append(f"{self.label}_enter")
-                result = await call(scope)
+                result: R = await call(scope)
                 call_order.append(f"{self.label}_exit")
                 return result
 
@@ -1575,12 +1606,12 @@ class TestIntegrationEnricherTransformComposition:
 
         assert result == 42
 
-    def test_filter_enrichers_vs_transforms(self):
+    def test_filter_enrichers_vs_transforms(self) -> None:
         """filter_by_protocol correctly separates enrichers from transforms."""
         inject = Inject(type=str, value="x")
         as_dict = AsDict()
         as_str = AsStr()
-        transform = Transform(fn=lambda x: x)
+        transform: Transform[str, str] = Transform(fn=lambda x: x)
         mock = MockCap("tag")
 
         caps: tuple[SurfaceCapability, ...] = (inject, as_dict, as_str, transform, mock)

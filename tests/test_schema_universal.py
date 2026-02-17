@@ -54,14 +54,6 @@ from emergent.wire.axis._capability import (
     SQLAlchemyCompilable,
     PydanticModelContext,
     OpenAPISchemaContext,
-    openapi_schema,
-    argparse_arg,
-    sqlalchemy_column,
-    pydantic_metadata,
-    pydantic_extra,
-    pydantic_field,
-    sqlalchemy_table,
-    pydantic_model,
 )
 
 
@@ -128,7 +120,7 @@ class TestSchemaMeta:
 
         assert get_schema_meta(Plain) == ()
 
-    def test_get_schema_capability(self):
+    def test_get_schema_capability(self) -> None:
         @schema_meta(SchemaName("users"), SchemaDoc("desc"))
         @dataclass
         class User:
@@ -136,6 +128,7 @@ class TestSchemaMeta:
 
         name = get_schema_capability(User, SchemaName)
         assert name is not None
+        assert isinstance(name, SchemaName)
         assert name.value == "users"
 
         abstract = get_schema_capability(User, Abstract)
@@ -233,15 +226,19 @@ class TestDiscriminator:
         d = Discriminator(field="type", mapping={"dog": Dog, "cat": Cat})
         assert d.field == "type"
 
-    def test_compile_openapi_schema(self):
+    def test_compile_openapi_schema(self) -> None:
         class Dog:
             pass
 
         d = Discriminator(field="type", mapping={"dog": Dog})
         ctx = OpenAPISchemaContext(class_name="Pet")
         result = d.compile_openapi_schema(ctx)
-        assert result.schema["discriminator"]["propertyName"] == "type"
-        assert result.schema["discriminator"]["mapping"]["dog"] == "Dog"
+        disc = result.schema["discriminator"]
+        assert isinstance(disc, dict)
+        assert disc["propertyName"] == "type"
+        mapping = disc["mapping"]
+        assert isinstance(mapping, dict)
+        assert mapping["dog"] == "Dog"
 
 
 class TestAbstract:
@@ -315,19 +312,21 @@ class TestRef:
         result = ref.compile_sqlalchemy(ctx)
         assert result.column_kwargs["fk_target"] == "teams.id"
 
-    def test_resolve_fk_target_with_tablename(self):
+    def test_resolve_fk_target_with_tablename(self) -> None:
         class Order:
             __tablename__ = "orders"
 
         ref = Ref(target=Order)
-        assert ref._resolve_fk_target() == "orders.id"
+        # Testing private API deliberately
+        assert ref._resolve_fk_target() == "orders.id"  # pyright: ignore[reportPrivateUsage]
 
-    def test_resolve_fk_target_fallback(self):
+    def test_resolve_fk_target_fallback(self) -> None:
         class User:
             pass
 
         ref = Ref(target=User)
-        assert ref._resolve_fk_target() == "user.id"
+        # Testing private API deliberately
+        assert ref._resolve_fk_target() == "user.id"  # pyright: ignore[reportPrivateUsage]
 
     def test_protocol_compliance(self):
         ref = Ref(target="teams.id")
@@ -599,13 +598,15 @@ class TestFrozenness:
             Abstract(),
         ],
     )
-    def test_frozen(self, cap: SchemaAxisCapability):
+    def test_frozen(self, cap: SchemaAxisCapability) -> None:
         """All capabilities are frozen dataclasses."""
         import dataclasses
 
         assert dataclasses.is_dataclass(cap)
-        params = type(cap).__dataclass_params__  # type: ignore[attr-defined]
-        assert params.frozen is True
+        # __dataclass_params__ is an internal CPython attr not in type stubs;
+        # its type and members are unknown to pyright
+        params = type(cap).__dataclass_params__  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType, reportUnknownVariableType]
+        assert params.frozen is True  # pyright: ignore[reportUnknownMemberType]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -624,7 +625,7 @@ class TestIntegrationMultiTargetCompilation:
         sql_result = cap.compile_sqlalchemy(sql_ctx)
         assert sql_result.column_kwargs["primary_key"] is True
 
-    def test_field_capabilities_compile_to_all_targets(self):
+    def test_field_capabilities_compile_to_all_targets(self) -> None:
         """A fully-annotated field compiles correctly to all targets."""
         from emergent.wire.compile._core import fold_field
         from emergent.wire.axis.schema._inspect import inspect_type
@@ -638,7 +639,7 @@ class TestIntegrationMultiTargetCompilation:
 
         fields = inspect_type(Product)
 
-        from emergent.wire.axis._capability import OpenAPICompilable, SQLAlchemyCompilable, ArgparseContext
+        from emergent.wire.axis._capability import OpenAPICompilable, ArgparseCompilable
 
         # OpenAPI compilation
         name_openapi = fold_field(
@@ -678,7 +679,6 @@ class TestIntegrationMultiTargetCompilation:
         assert id_sql.column_kwargs["primary_key"] is True
 
         # Argparse compilation
-        from emergent.wire.axis._capability import ArgparseCompilable
         status_argparse = fold_field(
             fields["status"],
             ArgparseContext(field_name="status", field_type=str),
@@ -691,7 +691,7 @@ class TestIntegrationMultiTargetCompilation:
 class TestIntegrationSchemaMetaComposition:
     """Schema-level capabilities compose across targets and stacking."""
 
-    def test_schema_meta_stacked_and_compiled(self):
+    def test_schema_meta_stacked_and_compiled(self) -> None:
         """Stacked schema_meta compiles to SQL table + Pydantic model + OpenAPI schema."""
         @schema_meta(SchemaDoc("User account entity"))
         @schema_meta(SchemaName("user_accounts"))
@@ -703,11 +703,13 @@ class TestIntegrationSchemaMetaComposition:
         caps = get_schema_meta(User)
         assert len(caps) == 2
 
-        # Get SchemaName and SchemaDoc
+        # Get SchemaName and SchemaDoc — narrow from SchemaCapability to concrete types
         name_cap = get_schema_capability(User, SchemaName)
         doc_cap = get_schema_capability(User, SchemaDoc)
         assert name_cap is not None
         assert doc_cap is not None
+        assert isinstance(name_cap, SchemaName)
+        assert isinstance(doc_cap, SchemaDoc)
 
         # SQL table context
         sql_ctx = SQLAlchemyTableContext(class_name="User")
@@ -738,12 +740,14 @@ class TestIntegrationSchemaMetaComposition:
         pyd_result = cap.compile_pydantic_model(PydanticModelContext(class_name="Base"))
         assert pyd_result.is_abstract is True
 
-    def test_composite_constraints_with_schema_meta(self):
+    def test_composite_constraints_with_schema_meta(self) -> None:
         """CompositeUnique + CompositeIndex + SchemaName all compile together."""
+        # CompositeUnique/CompositeIndex are SQLCapability (SchemaAxisCapability),
+        # not SchemaCapability — but schema_meta works at runtime via duck typing
         @schema_meta(
             SchemaName("orders"),
-            CompositeUnique("user_id", "product_id", name="uq_user_product"),
-            CompositeIndex("status", "created_at"),
+            CompositeUnique("user_id", "product_id", name="uq_user_product"),  # pyright: ignore[reportArgumentType]  # SQLCapability not SchemaCapability, works at runtime
+            CompositeIndex("status", "created_at"),  # pyright: ignore[reportArgumentType]  # SQLCapability not SchemaCapability, works at runtime
         )
         @dataclass
         class Order:
@@ -761,16 +765,25 @@ class TestIntegrationSchemaMetaComposition:
 
         name = get_schema_capability(Order, SchemaName)
         assert name is not None
+        assert isinstance(name, SchemaName)
         table_result = name.compile_sqlalchemy_table(ctx)
         assert table_result.table_name == "orders"
 
-        cu = get_schema_capability(Order, CompositeUnique)
+        # CompositeUnique/CompositeIndex are not SchemaCapability subtypes —
+        # find them directly from the meta tuple instead of get_schema_capability
+        cu: CompositeUnique | None = None
+        ci: CompositeIndex | None = None
+        for cap in caps:
+            if isinstance(cap, CompositeUnique):
+                cu = cap
+            elif isinstance(cap, CompositeIndex):
+                ci = cap
+
         assert cu is not None
         cu_result = cu.compile_sqlalchemy_table(ctx)
         assert len(cu_result.constraints) == 1
         assert cu_result.constraints[0] == ("user_id", "product_id")
 
-        ci = get_schema_capability(Order, CompositeIndex)
         assert ci is not None
         ci_result = ci.compile_sqlalchemy_table(ctx)
         assert len(ci_result.indexes) == 1

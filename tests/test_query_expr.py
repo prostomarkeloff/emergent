@@ -48,7 +48,7 @@ class User:
     email: str = "alice@test.com"
     deleted_at: str | None = None
     tags: list[str] | None = None
-    metadata: dict | None = None
+    metadata: dict[str, object] | None = None
 
 
 ALICE = User(name="alice", balance=100.0, email="alice@gmail.com", tags=["vip", "verified"], metadata={"profile": {"name": "Alice"}, "role": "admin"})
@@ -297,7 +297,7 @@ class TestJson:
     def test_json_extract_nested_index(self):
         @dataclass
         class Item:
-            data: dict
+            data: dict[str, object]
 
         item = Item(data={"items": ["a", "b", "c"]})
         expr = JsonExtract(Field("data"), "items.1")
@@ -324,7 +324,7 @@ class TestJson:
         """Path traverses a key whose value is None — returns None."""
         @dataclass
         class Item:
-            data: dict
+            data: dict[str, object]
 
         item = Item(data={"a": None})
         expr = JsonExtract(Field("data"), "a.b.c")
@@ -334,7 +334,7 @@ class TestJson:
         """Non-digit key on a list returns None."""
         @dataclass
         class Item:
-            data: dict
+            data: dict[str, object]
 
         item = Item(data={"items": ["a", "b"]})
         expr = JsonExtract(Field("data"), "items.name")

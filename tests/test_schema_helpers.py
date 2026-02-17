@@ -3,19 +3,15 @@
 from dataclasses import dataclass
 from typing import Annotated
 
-import pytest
-
 from emergent.wire.axis.schema._universal import (
     Identity,
     Unique,
     Ref,
     MaxLen,
-    MinLen,
     Doc,
     Nested,
     Embedded,
     SchemaName,
-    SchemaCapability,
     schema_meta,
 )
 from emergent.wire.axis.schema._inspect import FieldInfo, inspect_type
@@ -180,7 +176,7 @@ class TestGetRefs:
     def test_refs(self):
         result = get_refs(User)
         assert len(result) == 1
-        name, info, ref = result[0]
+        name, _info, _ref = result[0]
         assert name == "team_id"
 
     def test_no_refs(self):
@@ -429,7 +425,7 @@ class TestIntegrationHelpersPipeline:
     def test_full_navigation_composition_query_pipeline(self):
         """Navigate → compose → query on complex entity."""
         from emergent.wire.axis.schema._universal import (
-            MinLen, Doc, Deprecated, ReadOnly, Sensitive,
+            MinLen, Doc, Deprecated, Sensitive,
         )
         from emergent.wire.axis.schema.dialects.sql import Index, SQLCapability
 

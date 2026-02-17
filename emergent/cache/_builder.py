@@ -2,8 +2,6 @@
 Cache builder — fluent API.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from collections.abc import Callable
 from kungfu import LazyCoroResult, Result, Ok, Error, Some
@@ -49,7 +47,7 @@ class Cache[K, T, E]:
     _fetch: Callable[[K], LazyCoroResult[T, E]]
     _tiers: tuple[AnyTier[T], ...]
 
-    def tier(self, t: AnyTier[T]) -> Cache[K, T, E]:
+    def tier(self, t: AnyTier[T]) -> "Cache[K, T, E]":
         """Add cache tier."""
         return Cache(
             _key_fn=self._key_fn,
@@ -57,7 +55,7 @@ class Cache[K, T, E]:
             _tiers=(*self._tiers, t),
         )
 
-    def build(self) -> CacheExecutor[K, T, E]:
+    def build(self) -> "CacheExecutor[K, T, E]":
         """Build executable cache."""
         return CacheExecutor(
             key_fn=self._key_fn,

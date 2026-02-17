@@ -71,7 +71,7 @@ from emergent.wire.compile.targets.pure import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _is_pydantic_model(typ: Any) -> bool:
+def is_pydantic_model(typ: Any) -> bool:
     """Check if type is Pydantic BaseModel."""
     try:
         from pydantic import BaseModel
@@ -89,7 +89,7 @@ def _get_pydantic_types_from_transitions(
     for method in transitions:
         params = get_method_params(method)
         for _, (_, compose_type) in params.items():
-            if _is_pydantic_model(compose_type):
+            if is_pydantic_model(compose_type):
                 result.add(compose_type)
     return result
 
@@ -197,7 +197,7 @@ def wrap_rrc_fastapi(
     return FastAPIRoute(
         endpoint=_route,
         response_model=resp_cls,
-        openapi_extra=_build_rrc_openapi_extra(handler.codec, trigger, axes),
+        openapi_extra=build_rrc_openapi_extra(handler.codec, trigger, axes),
     )
 
 
@@ -337,7 +337,7 @@ def wrap_delegate_fastapi(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _build_rrc_openapi_extra(
+def build_rrc_openapi_extra(
     codec: RequestResponseCodec,
     trigger: HTTPRouteTrigger,
     axes: Axes,
@@ -791,6 +791,8 @@ __all__ = (
     "wrap_immediate_factory_fastapi",
     "register_handler",
     "setup_fastapi_scope",
+    "is_pydantic_model",
+    "build_rrc_openapi_extra",
     "FASTAPI_COMPILER",
 )
 

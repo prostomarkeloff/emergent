@@ -282,9 +282,7 @@ class FastAPIRouteContext:
 class TelegrinderHandlerContext:
     """Telegrinder handler configuration context."""
     edit_message: bool = False
-    edit_message_cap: object | None = None
     answer_callback: bool = False
-    answer_callback_cap: object | None = None
     answer_callback_text: str | None = None
     answer_callback_show_alert: bool = False
     silent: bool = False
@@ -510,9 +508,7 @@ def telegrinder_handler(
     ctx: TelegrinderHandlerContext,
     *,
     edit_message: bool | None = None,
-    edit_message_cap: object | None = None,
     answer_callback: bool | None = None,
-    answer_callback_cap: object | None = None,
     answer_callback_text: str | None = None,
     answer_callback_show_alert: bool | None = None,
     silent: bool | None = None,
@@ -524,9 +520,7 @@ def telegrinder_handler(
     return replace(
         ctx,
         edit_message=edit_message if edit_message is not None else ctx.edit_message,
-        edit_message_cap=edit_message_cap if edit_message_cap is not None else ctx.edit_message_cap,
         answer_callback=answer_callback if answer_callback is not None else ctx.answer_callback,
-        answer_callback_cap=answer_callback_cap if answer_callback_cap is not None else ctx.answer_callback_cap,
         answer_callback_text=answer_callback_text if answer_callback_text is not None else ctx.answer_callback_text,
         answer_callback_show_alert=answer_callback_show_alert if answer_callback_show_alert is not None else ctx.answer_callback_show_alert,
         silent=silent if silent is not None else ctx.silent,

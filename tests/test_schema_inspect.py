@@ -1,13 +1,11 @@
 """Tests for emergent.wire.axis.schema._inspect — FieldInfo + inspectors."""
 
-import dataclasses
 from dataclasses import dataclass, FrozenInstanceError
 from typing import Annotated, NamedTuple, TypedDict
 
 import pytest
 
 from emergent.wire.axis.schema._universal import (
-    SchemaAxisCapability,
     UniversalCapability,
     Identity,
     Unique,
@@ -15,13 +13,10 @@ from emergent.wire.axis.schema._universal import (
     MinLen,
     Doc,
     Min,
-    Max,
     Ref,
-    Nested,
 )
 from emergent.wire.axis.schema._inspect import (
     FieldInfo,
-    Inspector,
     first_match,
     dataclass_inspector,
     pydantic_inspector,
@@ -136,7 +131,7 @@ class TestUnwrapOptional:
         assert is_opt is True
 
     def test_union_not_optional(self):
-        base, is_opt = unwrap_optional(str | int)
+        _base, is_opt = unwrap_optional(str | int)
         assert is_opt is False
 
 
@@ -565,13 +560,17 @@ class TestIntegrationInspectFullPipeline:
         assert hq_nested is not None
         assert "street" in hq_nested
         assert "city" in hq_nested
-        assert hq_nested["city"].get(MaxLen).value == 100
+        city_maxlen = hq_nested["city"].get(MaxLen)
+        assert city_maxlen is not None
+        assert city_maxlen.value == 100
 
         # street inside hq → deeper nesting
         street_nested = get_nested_info(hq_nested["street"])
         assert street_nested is not None
         assert "name" in street_nested
-        assert street_nested["name"].get(MaxLen).value == 200
+        street_name_maxlen = street_nested["name"].get(MaxLen)
+        assert street_name_maxlen is not None
+        assert street_name_maxlen.value == 200
 
         # branches → list[Address] → unwrap collection
         branch_type = get_nested_type(fields["branches"])
@@ -642,7 +641,9 @@ class TestIntegrationInspectFullPipeline:
 
         # Email pattern → Unique + MaxLen(255)
         assert fields["email"].has(Unique)
-        assert fields["email"].get(MaxLen).value == 255
+        email_maxlen = fields["email"].get(MaxLen)
+        assert email_maxlen is not None
+        assert email_maxlen.value == 255
         assert len(fields["email"].capabilities) == 2
 
         # Slug pattern → Unique + MaxLen(100) + Pattern

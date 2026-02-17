@@ -12,17 +12,19 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass, field, replace
-from typing import Annotated, Any, Generic, Protocol, TypeVar, runtime_checkable
+from collections.abc import Callable, Coroutine, Iterator
+from datetime import timedelta
+from dataclasses import dataclass, replace
+from typing import Annotated, Generic, Never, Protocol, TypeVar, runtime_checkable
 
 import pytest
 
 from emergent.ops import ops as _ops
+from emergent.ops._graph import Runner
 
 # === Schema axis imports ===
 from emergent.wire.axis.schema._universal import (
     UniversalCapability,
-    SchemaAxisCapability,
     SchemaCapability,
     schema_meta,
     get_schema_meta,
@@ -31,7 +33,7 @@ from emergent.wire.axis.schema._universal import (
     Min,
     Max,
 )
-from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
+from emergent.wire.axis.schema._inspect import inspect_dataclass
 
 # === Capability / context imports ===
 from emergent.wire.axis._capability import (
@@ -45,22 +47,20 @@ from emergent.wire.axis._capability import (
 )
 
 # === Compile imports ===
-from emergent.wire.compile._core import Axes, fold, fold_field, fold_schema
+from emergent.wire.axis._capability import Capability
+from emergent.wire.compile._core import Axes, CapabilityHandler, fold, fold_field, fold_schema
 from emergent.wire.compile._phase import (
     CompilationPhase,
-    FieldCompilation,
     compile_fields,
-    PYDANTIC_PHASE,
     OPENAPI_PHASE,
 )
 from emergent.wire.compile._target import TargetCompiler, CodecAdapter
 
 # === Surface imports ===
-from emergent.wire.axis.surface._endpoint import Endpoint, endpoint
-from emergent.wire.axis.surface._app import Application, application
+from emergent.wire.axis.surface._endpoint import endpoint
+from emergent.wire.axis.surface._app import application
 from emergent.wire.axis.surface._scan import scan, scan_endpoint
-from emergent.wire.axis.surface._handler import Handler
-from emergent.wire.axis.surface._stack import AppStack, app_stack
+from emergent.wire.axis.surface._stack import app_stack
 from emergent.wire.axis.surface._scan import scan_stack
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
@@ -68,19 +68,18 @@ from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 # === Query imports ===
 from emergent.wire.axis.query._fold import fold_query, QueryDialect, MEMORY_DIALECT
 from emergent.wire.axis.query._explain import (
-    ExplainDialect,
     explain_ops,
     format_ops,
     RELATIONAL_EXPLAIN_DIALECT,
 )
-from emergent.wire.axis.query._relational import Filter, Limit, Offset
+from emergent.wire.axis.query._relational import Filter
 from emergent.wire.axis.query._expr import Field, Const, Gt
 
 # === Storage imports ===
 from emergent.wire.axis.storage import kv, MemoryStorage, PickleCodec, JsonCodec
 from emergent.wire.axis.storage._compose import prefix_kv
 
-from kungfu import Ok, Some, Nothing
+from kungfu import Ok, Result, Option, Some, Nothing
 
 # === Bridge imports ===
 from emergent.wire.bridge._extractor import (
@@ -89,7 +88,7 @@ from emergent.wire.bridge._extractor import (
     filter_extractor,
 )
 from emergent.wire.bridge._to_wire import compose_to_wire
-from emergent.wire.bridge._types import Extracted
+from emergent.wire.bridge._types import Extracted, RouteData
 from emergent.wire.bridge._registry import FrameworkBridger, BridgeRegistry
 
 
@@ -152,10 +151,14 @@ class GameCompilable(Protocol):
     def compile_game(self, ctx: GameFieldContext) -> GameFieldContext: ...
 
 
+def _game_initial(n: str, t: type) -> GameFieldContext:
+    return GameFieldContext(n, t)
+
+
 GAME_PHASE = CompilationPhase(
     GameFieldContext,
     GameCompilable,
-    initial=lambda n, t: GameFieldContext(n, t),
+    initial=_game_initial,
 )
 
 
@@ -196,7 +199,11 @@ class PlayerAuth(SurfaceCapability):
 
     required_level: int = 1
 
-    async def enrich(self, call, scope):
+    async def enrich(
+        self,
+        call: Callable[..., Coroutine[object, object, object]],
+        scope: object,
+    ) -> object:
         return await call(scope)
 
     def compile_handler_runtime(
@@ -211,9 +218,12 @@ class ScoreMultiplier(SurfaceCapability):
 
     factor: float = 2.0
 
-    def apply_response(self, response):
-        if isinstance(response, dict) and "score" in response:
-            return {**response, "score": response["score"] * self.factor}
+    def apply_response(self, response: dict[str, object]) -> dict[str, object]:
+        if "score" in response:
+            score = response["score"]
+            assert isinstance(score, (int, float))
+            result: dict[str, object] = {**response, "score": score * self.factor}
+            return result
         return response
 
     def compile_handler_runtime(
@@ -242,28 +252,35 @@ class TopN:
     count: int
 
 
-def _handle_rank_by(op: RankBy, data: list[Any]) -> list[Any]:
+@dataclass
+class _PlayerData:
+    name: str
+    score: int
+    level: int
+
+
+def _handle_rank_by(op: RankBy, data: list[_PlayerData]) -> list[_PlayerData]:
     """Handler for RankBy op — sorts by field."""
     reverse = op.method == "desc"
     return sorted(data, key=lambda item: getattr(item, op.field), reverse=reverse)
 
 
-def _handle_top_n(op: TopN, data: list[Any]) -> list[Any]:
+def _handle_top_n(op: TopN, data: list[_PlayerData]) -> list[_PlayerData]:
     """Handler for TopN op — takes first N."""
     return data[: op.count]
 
 
-GAME_QUERY_HANDLERS = {
+GAME_QUERY_HANDLERS: dict[type, Callable[..., list[_PlayerData]]] = {
     RankBy: _handle_rank_by,
     TopN: _handle_top_n,
 }
 
 
-def _explain_rank_by(op: RankBy) -> dict[str, Any]:
+def _explain_rank_by(op: RankBy) -> dict[str, str | int]:
     return {"op": "RankBy", "field": op.field, "method": op.method}
 
 
-def _explain_top_n(op: TopN) -> dict[str, Any]:
+def _explain_top_n(op: TopN) -> dict[str, str | int]:
     return {"op": "TopN", "count": op.count}
 
 
@@ -278,16 +295,16 @@ class GameStateBackend:
     def __init__(self) -> None:
         self._store: dict[str, bytes] = {}
 
-    async def get(self, key: str):
+    async def get(self, key: str) -> Result[Option[bytes], Never]:
         if key in self._store:
             return Ok(Some(self._store[key]))
         return Ok(Nothing())
 
-    async def set(self, key: str, value: bytes, ttl=None):
+    async def set(self, key: str, value: bytes, ttl: timedelta | None = None) -> Result[None, Never]:
         self._store[key] = value
         return Ok(None)
 
-    async def delete(self, key: str):
+    async def delete(self, key: str) -> Result[None, Never]:
         self._store.pop(key, None)
         return Ok(None)
 
@@ -321,7 +338,7 @@ class GameRouteData:
 class FakeGameApp:
     """Simulates a game framework application."""
 
-    def __init__(self, routes: list[tuple[str, str, Any]]) -> None:
+    def __init__(self, routes: list[tuple[str, str, Callable[..., object]]]) -> None:
         self.game_routes = routes  # (event, room, handler_fn)
 
 
@@ -331,7 +348,7 @@ class GameFrameworkExtractor:
     def can_extract(self, source: object) -> bool:
         return isinstance(source, FakeGameApp)
 
-    def extract(self, source: object):
+    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
         assert isinstance(source, FakeGameApp)
         for event, room, handler_fn in source.game_routes:
             yield Extracted(
@@ -344,10 +361,12 @@ class GameFrameworkExtractor:
 class GameFrameworkToWire:
     """ToWire converter for GameRouteData → GameWSTrigger + GameEventCodec."""
 
-    def to_trigger(self, route: GameRouteData):
+    def to_trigger(self, route: RouteData) -> GameWSTrigger:
+        assert isinstance(route, GameRouteData)
         return GameWSTrigger(room=route.room, event=route.event)
 
-    def to_codec(self, route: GameRouteData, handler):
+    def to_codec(self, route: RouteData, handler: Callable[..., object]) -> GameEventCodec:
+        assert isinstance(route, GameRouteData)
         return GameEventCodec(version=1)
 
 
@@ -370,7 +389,28 @@ class Player:
 # ---------------------------------------------------------------------------
 
 
-def _runner():
+def _noop_wrap(_h: object, _t: object, _a: object) -> None:
+    """No-op wrap function for CodecAdapter tests."""
+
+
+def _wrap_ws_room(_h: object, t: object, _a: object) -> dict[str, str]:
+    """Wrap function that extracts WS room."""
+    assert isinstance(t, GameWSTrigger)
+    return {"ws": t.room}
+
+
+def _wrap_gql_field(_h: object, t: object, _a: object) -> dict[str, str]:
+    """Wrap function that extracts GraphQL field name."""
+    assert isinstance(t, GraphQLTrigger)
+    return {"gql": t.field_name}
+
+
+def _wrap_literal_wrapped(_h: object, _t: object, _a: object) -> str:
+    """Wrap function returning a literal 'wrapped' string."""
+    return "wrapped"
+
+
+def _runner() -> Runner:
     return _ops().compile()
 
 
@@ -542,19 +582,23 @@ class TestCompileOpenWorld:
             ctx = fc[GAME_PHASE]
             assert isinstance(ctx, GameFieldContext)
 
-    def test_game_phase_with_handlers_override(self):
-        def custom_ranked_handler(cap: Ranked, ctx: GameFieldContext) -> GameFieldContext:
+    def test_game_phase_with_handlers_override(self) -> None:
+        def custom_ranked_handler(cap: Capability, ctx: GameFieldContext) -> GameFieldContext:
+            assert isinstance(cap, Ranked)
             return replace(ctx, ranked_board=f"custom:{cap.board}")
 
-        phase = GAME_PHASE.with_handlers({Ranked: custom_ranked_handler})
+        handlers: dict[type[Capability], CapabilityHandler[GameFieldContext]] = {
+            Ranked: custom_ranked_handler,
+        }
+        phase = GAME_PHASE.with_handlers(handlers)
         axes = Axes.default()
         compiled = compile_fields(Player, axes, [phase])
         for fc in compiled:
             if fc.name == "score":
                 assert fc[phase].ranked_board == "custom:global"
 
-    def test_target_compiler_immutable_builder(self):
-        def wrap_game(handler, trigger, axes):
+    def test_target_compiler_immutable_builder(self) -> None:
+        def wrap_game(handler: object, trigger: object, axes: object) -> tuple[str, object, object]:
             return ("wrapped", handler, trigger)
 
         compiler = TargetCompiler(
@@ -564,15 +608,15 @@ class TestCompileOpenWorld:
         assert len(compiler.adapters) == 1
 
         # with_codec adds
-        extended = compiler.with_codec(int, lambda h, t, a: None)
+        extended = compiler.with_codec(int, _noop_wrap)
         assert len(extended.adapters) == 2
         assert len(compiler.adapters) == 1  # original unchanged
 
-    def test_target_compiler_replace_codec(self):
-        def wrap_v1(h, t, a):
+    def test_target_compiler_replace_codec(self) -> None:
+        def wrap_v1(_h: object, _t: object, _a: object) -> str:
             return "v1"
 
-        def wrap_v2(h, t, a):
+        def wrap_v2(_h: object, _t: object, _a: object) -> str:
             return "v2"
 
         compiler = TargetCompiler(
@@ -583,20 +627,21 @@ class TestCompileOpenWorld:
         assert replaced.adapters[0].wrap is wrap_v2
         assert compiler.adapters[0].wrap is wrap_v1  # original unchanged
 
-    def test_target_compiler_without_codec(self):
+    def test_target_compiler_without_codec(self) -> None:
         compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
             adapters=(
-                CodecAdapter(GameEventCodec, lambda h, t, a: None),
-                CodecAdapter(int, lambda h, t, a: None),
+                CodecAdapter(GameEventCodec, _noop_wrap),
+                CodecAdapter(int, _noop_wrap),
             ),
         )
         stripped = compiler.without_codec(GameEventCodec)
         assert len(stripped.adapters) == 1
         assert stripped.adapters[0].codec_type is int
 
-    def test_scan_and_wrap_custom_codec(self):
-        def wrap_game(handler, trigger, axes):
+    def test_scan_and_wrap_custom_codec(self) -> None:
+        def wrap_game(_handler: object, trigger: object, _axes: object) -> dict[str, object]:
+            assert isinstance(trigger, GameWSTrigger)
             return {"wrapped": True, "room": trigger.room}
 
         compiler = TargetCompiler(
@@ -612,16 +657,16 @@ class TestCompileOpenWorld:
         )
         results = list(compiler.scan_and_wrap(app, Axes.default()))
         assert len(results) == 1
-        trigger, handler, wrapped = results[0]
+        trigger, _handler, wrapped = results[0]
         assert isinstance(trigger, GameWSTrigger)
         assert trigger.room == "lobby"
         assert wrapped == {"wrapped": True, "room": "lobby"}
 
-    def test_scan_and_wrap_no_match(self):
+    def test_scan_and_wrap_no_match(self) -> None:
         """Codec not in compiler → no results."""
         compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
-            adapters=(CodecAdapter(int, lambda h, t, a: None),),  # int codec, not GameEventCodec
+            adapters=(CodecAdapter(int, _noop_wrap),),  # int codec, not GameEventCodec
         )
         runner = _runner()
         app = application().mount(
@@ -662,7 +707,7 @@ class TestSurfaceOpenWorld:
         )
         pairs = scan(app, GameWSTrigger)
         assert len(pairs) == 1
-        trigger, handler = pairs[0]
+        trigger, _handler = pairs[0]
         assert trigger.room == "lobby"
         assert trigger.event == "join"
 
@@ -741,9 +786,10 @@ class TestSurfaceOpenWorld:
         result = mult.apply_response({"score": 100, "name": "Alice"})
         assert result == {"score": 300.0, "name": "Alice"}
 
-    def test_score_multiplier_noop_on_non_dict(self):
+    def test_score_multiplier_noop_on_non_score_dict(self) -> None:
         mult = ScoreMultiplier(factor=3.0)
-        assert mult.apply_response("hello") == "hello"
+        no_score: dict[str, object] = {"name": "Alice"}
+        assert mult.apply_response(no_score) == {"name": "Alice"}
 
     def test_scan_preserves_capabilities(self):
         runner = _runner()
@@ -808,13 +854,6 @@ class TestSurfaceOpenWorld:
 # ═══════════════════════════════════════════════════════════════════════════════
 # PART 4: Query — custom ops through fold_query + explain
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-@dataclass
-class _PlayerData:
-    name: str
-    score: int
-    level: int
 
 
 class TestQueryOpenWorld:
@@ -949,7 +988,7 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_custom_backend_crud(self):
-        store = kv(GameStateBackend(), PickleCodec())
+        store = kv(GameStateBackend(), PickleCodec[object]())
         result = await store.set("player:1", {"name": "Alice", "score": 100})
         assert isinstance(result, Ok)
 
@@ -961,14 +1000,14 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_custom_backend_get_missing(self):
-        store = kv(GameStateBackend(), PickleCodec())
+        store = kv(GameStateBackend(), PickleCodec[object]())
         result = await store.get("nonexistent")
         assert isinstance(result, Ok)
         assert isinstance(result.unwrap(), Nothing)
 
     @pytest.mark.asyncio
     async def test_custom_backend_delete(self):
-        store = kv(GameStateBackend(), PickleCodec())
+        store = kv(GameStateBackend(), PickleCodec[object]())
         await store.set("player:1", "data")
         await store.delete("player:1")
         result = await store.get("player:1")
@@ -976,7 +1015,7 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_custom_codec_roundtrip(self):
-        codec = CompressedJsonCodec()
+        codec = CompressedJsonCodec[object]()
         data = {"name": "Alice", "score": 1500, "items": [1, 2, 3]}
         encoded = codec.encode(data)
         assert isinstance(encoded, bytes)
@@ -985,7 +1024,7 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_custom_backend_with_custom_codec(self):
-        store = kv(GameStateBackend(), CompressedJsonCodec())
+        store = kv(GameStateBackend(), CompressedJsonCodec[object]())
         player = {"name": "Bob", "score": 2000, "level": 15}
         await store.set("player:bob", player)
         result = await store.get("player:bob")
@@ -994,7 +1033,7 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_standard_backend_with_custom_codec(self):
-        store = kv(MemoryStorage(), CompressedJsonCodec())
+        store = kv(MemoryStorage[str, bytes](), CompressedJsonCodec[object]())
         data = {"event": "join", "room": "lobby"}
         await store.set("event:1", data)
         result = await store.get("event:1")
@@ -1003,7 +1042,7 @@ class TestStorageOpenWorld:
 
     @pytest.mark.asyncio
     async def test_custom_backend_with_standard_codec(self):
-        store = kv(GameStateBackend(), JsonCodec())
+        store = kv(GameStateBackend(), JsonCodec[object]())
         await store.set("state:1", {"hp": 100})
         result = await store.get("state:1")
         assert result.unwrap().unwrap() == {"hp": 100}
@@ -1011,22 +1050,24 @@ class TestStorageOpenWorld:
     @pytest.mark.asyncio
     async def test_prefix_kv_with_custom_backend(self):
         backend = GameStateBackend()
-        store = prefix_kv(kv(backend, PickleCodec()), "game:")
+        store = prefix_kv(kv(backend, PickleCodec[object]()), "game:")
         await store.set("player:1", "Alice")
         # Direct backend access should have prefixed key
-        assert b"game:player:1" not in backend._store or "game:player:1" in backend._store
+        assert b"game:player:1" not in backend._store or "game:player:1" in backend._store  # pyright: ignore[reportPrivateUsage] -- testing internal state of custom backend
         result = await store.get("player:1")
         assert isinstance(result, Ok)
         assert result.unwrap().unwrap() == "Alice"
 
     @pytest.mark.asyncio
     async def test_multiple_keys_custom_backend(self):
-        store = kv(GameStateBackend(), CompressedJsonCodec())
+        store = kv(GameStateBackend(), CompressedJsonCodec[object]())
         for i in range(5):
             await store.set(f"player:{i}", {"id": i, "score": i * 100})
         for i in range(5):
             result = await store.get(f"player:{i}")
-            assert result.unwrap().unwrap()["id"] == i
+            value = result.unwrap().unwrap()
+            assert isinstance(value, dict)
+            assert value["id"] == i
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1061,12 +1102,14 @@ class TestBridgeOpenWorld:
         assert ext.can_extract(self._fake_game_app()) is True
         assert ext.can_extract("not a game app") is False
 
-    def test_extractor_extract(self):
+    def test_extractor_extract(self) -> None:
         ext = GameFrameworkExtractor()
         extracted = list(ext.extract(self._fake_game_app()))
         assert len(extracted) == 3
-        assert extracted[0].route.event == "join"
-        assert extracted[0].route.room == "lobby"
+        route0 = extracted[0].route
+        assert isinstance(route0, GameRouteData)
+        assert route0.event == "join"
+        assert route0.room == "lobby"
         assert extracted[0].name == "_game_handler_join"
 
     def test_to_wire_trigger(self):
@@ -1087,10 +1130,10 @@ class TestBridgeOpenWorld:
         ext1 = GameFrameworkExtractor()
 
         class OtherExtractor:
-            def can_extract(self, source):
+            def can_extract(self, source: object) -> bool:
                 return False
 
-            def extract(self, source):
+            def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
                 return iter([])
 
         composed = compose_extractors(ext1, OtherExtractor())
@@ -1102,10 +1145,10 @@ class TestBridgeOpenWorld:
         ext1 = GameFrameworkExtractor()
 
         class AlsoMatchesExtractor:
-            def can_extract(self, source):
+            def can_extract(self, source: object) -> bool:
                 return isinstance(source, FakeGameApp)
 
-            def extract(self, source):
+            def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
                 yield Extracted(
                     route=GameRouteData("extra", "extra", "extra"),
                     handler=lambda: None,
@@ -1117,14 +1160,18 @@ class TestBridgeOpenWorld:
         # First extractor wins → 3 results from GameFrameworkExtractor
         assert len(extracted) == 3
 
-    def test_filter_extractor_custom(self):
+    def test_filter_extractor_custom(self) -> None:
+        def _room_not_arena(e: Extracted[RouteData]) -> bool:
+            assert isinstance(e.route, GameRouteData)
+            return e.route.room != "arena"
+
         ext = GameFrameworkExtractor()
-        filtered = filter_extractor(
-            ext, lambda e: e.route.room != "arena"
-        )
+        filtered = filter_extractor(ext, _room_not_arena)
         extracted = list(filtered.extract(self._fake_game_app()))
         assert len(extracted) == 2  # lobby only, arena filtered
-        assert all(e.route.room == "lobby" for e in extracted)
+        for e in extracted:
+            assert isinstance(e.route, GameRouteData)
+            assert e.route.room == "lobby"
 
     def test_compose_to_wire_custom(self):
         tw = compose_to_wire((GameRouteData, GameFrameworkToWire()))
@@ -1303,12 +1350,13 @@ class TestE2EPipeline:
             )
         )
 
-        def wrap_game_event(handler, trigger, axes):
+        def wrap_game_event(handler: object, trigger: object, _axes: object) -> dict[str, object]:
+            assert isinstance(trigger, GameWSTrigger)
             return {
                 "type": "game_ws",
                 "room": trigger.room,
                 "event": trigger.event,
-                "version": handler.codec.version,
+                "version": getattr(getattr(handler, "codec", None), "version", None),
             }
 
         compiler = TargetCompiler(
@@ -1317,7 +1365,7 @@ class TestE2EPipeline:
         )
         results = list(compiler.scan_and_wrap(app, Axes.default()))
         assert len(results) == 1
-        trigger, handler, wrapped = results[0]
+        _trigger, _handler, wrapped = results[0]
         assert wrapped["room"] == "lobby"
         assert wrapped["version"] == 2
 
@@ -1353,7 +1401,7 @@ class TestE2EPipeline:
     @pytest.mark.asyncio
     async def test_storage_pipeline(self):
         """9: Custom backend + codec through kv."""
-        store = kv(GameStateBackend(), CompressedJsonCodec())
+        store = kv(GameStateBackend(), CompressedJsonCodec[object]())
 
         player_data = {"name": "Alice", "score": 1500, "level": 10}
         await store.set("player:alice", player_data)
@@ -1385,6 +1433,7 @@ class TestE2EPipeline:
 
         # Detect
         found = registry.detect(fake_app)
+        assert found is not None
         assert found is bridger
 
         # Extract
@@ -1404,7 +1453,9 @@ class TestE2EPipeline:
         # 1. Schema: inspect + custom caps
         fields = inspect_dataclass(Player)
         assert fields["score"].has(Ranked)
-        assert get_schema_meta(Player)[0].game_id == "roulette"
+        player_meta = get_schema_meta(Player)[0]
+        assert isinstance(player_meta, GameMeta)
+        assert player_meta.game_id == "roulette"
 
         # 2. Compile: dual phase
         axes = Axes.default()
@@ -1427,7 +1478,7 @@ class TestE2EPipeline:
         # 4. Scan
         pairs = scan(app, GameWSTrigger, GameEventCodec)
         assert len(pairs) == 1
-        trigger, handler = pairs[0]
+        _trigger, handler = pairs[0]
 
         # 5. Runtime fold
         rt_ctx = fold(
@@ -1440,7 +1491,8 @@ class TestE2EPipeline:
         assert len(rt_ctx.response_transforms) == 1
 
         # 6. Target compiler
-        def wrap_game(h, t, a):
+        def wrap_game(_h: object, t: object, _a: object) -> dict[str, object]:
+            assert isinstance(t, GameWSTrigger)
             return {"compiled": True, "room": t.room}
 
         compiler = TargetCompiler(
@@ -1467,10 +1519,12 @@ class TestE2EPipeline:
         assert ranked[1].name == "Bob"
 
         # 8. Storage
-        store = kv(GameStateBackend(), CompressedJsonCodec())
+        store = kv(GameStateBackend(), CompressedJsonCodec[object]())
         await store.set("player:diana", {"name": "Diana", "score": 2500})
         result = await store.get("player:diana")
-        assert result.unwrap().unwrap()["score"] == 2500
+        diana_data = result.unwrap().unwrap()
+        assert isinstance(diana_data, dict)
+        assert diana_data["score"] == 2500
 
         # 9. Bridge
         ext = GameFrameworkExtractor()
@@ -1484,6 +1538,7 @@ class TestE2EPipeline:
         registry = BridgeRegistry(bridgers=()).with_bridger(bridger)
         fake_app = FakeGameApp([("join", "lobby", _game_handler_join)])
         found = registry.detect(fake_app)
+        assert found is not None
         assert found is bridger
         extracted = list(found.extractor.extract(fake_app))
         wire_trigger = found.to_wire.to_trigger(extracted[0].route)
@@ -1535,7 +1590,7 @@ class TestGracefulDegradation:
     def test_target_compiler_unknown_codec_no_match(self):
         compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
-            adapters=(CodecAdapter(GameEventCodec, lambda h, t, a: None),),
+            adapters=(CodecAdapter(GameEventCodec, _noop_wrap),),
         )
         runner = _runner()
         app = application().mount(
@@ -1658,10 +1713,14 @@ class MarketplaceCompilable(Protocol):
     ) -> MarketplaceFieldContext: ...
 
 
+def _marketplace_initial(n: str, t: type) -> MarketplaceFieldContext:
+    return MarketplaceFieldContext(n, t)
+
+
 MARKETPLACE_PHASE = CompilationPhase(
     MarketplaceFieldContext,
     MarketplaceCompilable,
-    initial=lambda n, t: MarketplaceFieldContext(n, t),
+    initial=_marketplace_initial,
 )
 
 
@@ -1706,12 +1765,7 @@ class TextSearch:
     fields: tuple[str, ...] = ()
 
 
-def _handle_facet_count(op: FacetCount, data: list[_PlayerData]) -> list[_PlayerData]:
-    """Facet count is a no-op for list context (would be handled by provider)."""
-    return data
-
-
-def _handle_text_search(op: TextSearch, data: list[_PlayerData]) -> list[_PlayerData]:
+def _handle_text_search(op: TextSearch, data: list[object]) -> list[object]:
     """Simple text search filter for in-memory data."""
     query_lower = op.query.lower()
     search_fields = op.fields or ("name",)
@@ -1747,7 +1801,11 @@ class TenantIsolation(SurfaceCapability):
 
     tenant_header: str = "X-Tenant-Id"
 
-    async def enrich(self, call, scope):
+    async def enrich(
+        self,
+        call: Callable[..., Coroutine[object, object, object]],
+        scope: object,
+    ) -> object:
         return await call(scope)
 
     def compile_handler_runtime(
@@ -1770,7 +1828,7 @@ class GraphQLRouteData:
 class FakeGraphQLApp:
     """Simulates a GraphQL framework."""
 
-    def __init__(self, resolvers: list[tuple[str, str, object]]) -> None:
+    def __init__(self, resolvers: list[tuple[str, str, Callable[..., object]]]) -> None:
         self.resolvers = resolvers  # (operation, field_name, resolver_fn)
 
 
@@ -1780,27 +1838,31 @@ class GraphQLExtractor:
     def can_extract(self, source: object) -> bool:
         return isinstance(source, FakeGraphQLApp)
 
-    def extract(self, source: object):
+    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
         assert isinstance(source, FakeGraphQLApp)
         for operation, field_name, resolver_fn in source.resolvers:
+            resolver_name: str = getattr(resolver_fn, "__name__", str(resolver_fn))
+            assert callable(resolver_fn)
             yield Extracted(
                 route=GraphQLRouteData(
                     operation=operation,
                     field_name=field_name,
-                    resolver_name=getattr(resolver_fn, "__name__", str(resolver_fn)),
+                    resolver_name=resolver_name,
                 ),
                 handler=resolver_fn,
-                name=getattr(resolver_fn, "__name__", str(resolver_fn)),
+                name=resolver_name,
             )
 
 
 class GraphQLToWire:
     """ToWire converter for GraphQLRouteData."""
 
-    def to_trigger(self, route: GraphQLRouteData):
+    def to_trigger(self, route: RouteData) -> GraphQLTrigger:
+        assert isinstance(route, GraphQLRouteData)
         return GraphQLTrigger(operation=route.operation, field_name=route.field_name)
 
-    def to_codec(self, route: GraphQLRouteData, handler):
+    def to_codec(self, route: RouteData, handler: Callable[..., object]) -> GraphQLCodec:
+        assert isinstance(route, GraphQLRouteData)
         return GraphQLCodec()
 
 
@@ -1821,15 +1883,11 @@ class MsgpackSimCodec(Generic[T]):
 
 # Resolver stubs for bridge testing
 
-def _resolve_products():
+def _resolve_products() -> None:
     pass
 
 
-def _resolve_product():
-    pass
-
-
-def _resolve_create_order():
+def _resolve_create_order() -> None:
     pass
 
 
@@ -2022,13 +2080,13 @@ class TestMultiTriggerSurfaceComposition:
         ws_compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
             adapters=(
-                CodecAdapter(GameEventCodec, lambda h, t, a: {"ws": t.room}),
+                CodecAdapter(GameEventCodec, _wrap_ws_room),
             ),
         )
         gql_compiler = TargetCompiler(
             trigger_type=GraphQLTrigger,
             adapters=(
-                CodecAdapter(GraphQLCodec, lambda h, t, a: {"gql": t.field_name}),
+                CodecAdapter(GraphQLCodec, _wrap_gql_field),
             ),
         )
 
@@ -2284,8 +2342,8 @@ class TestStorageTieredAndComposed:
     @pytest.mark.asyncio
     async def test_tiered_kv_custom_backends(self):
         """TieredKV with GameStateBackend as L1 and MemoryStorage as L2."""
-        l1 = kv(GameStateBackend(), JsonCodec())
-        l2 = kv(MemoryStorage(), JsonCodec())
+        l1 = kv(GameStateBackend(), JsonCodec[object]())
+        l2 = kv(MemoryStorage[str, bytes](), JsonCodec[object]())
 
         from emergent.wire.axis.storage._compose import tiered_kv
 
@@ -2305,8 +2363,8 @@ class TestStorageTieredAndComposed:
         """On L1 miss, L2 hit populates L1."""
         l1_backend = GameStateBackend()
         l2_backend = GameStateBackend()
-        l1 = kv(l1_backend, JsonCodec())
-        l2 = kv(l2_backend, JsonCodec())
+        l1 = kv(l1_backend, JsonCodec[object]())
+        l2 = kv(l2_backend, JsonCodec[object]())
 
         from emergent.wire.axis.storage._compose import tiered_kv
 
@@ -2328,7 +2386,7 @@ class TestStorageTieredAndComposed:
     @pytest.mark.asyncio
     async def test_prefix_kv_with_custom_codec(self):
         """PrefixKV wrapping a store with CompressedJsonCodec."""
-        store = kv(GameStateBackend(), CompressedJsonCodec())
+        store = kv(GameStateBackend(), CompressedJsonCodec[object]())
         prefixed = prefix_kv(store, "marketplace:")
 
         await prefixed.set("product:1", {"name": "Widget", "price": 500})
@@ -2344,7 +2402,7 @@ class TestStorageTieredAndComposed:
         """ReadonlyKV wrapping a custom backend disables writes."""
         from emergent.wire.axis.storage._compose import readonly_kv
 
-        store = kv(GameStateBackend(), JsonCodec())
+        store = kv(GameStateBackend(), JsonCodec[object]())
         await store.set("key", "value")
 
         ro = readonly_kv(store)
@@ -2364,8 +2422,8 @@ class TestStorageTieredAndComposed:
     @pytest.mark.asyncio
     async def test_multiple_storage_backends_independent(self):
         """Game and Marketplace stores with different backends and codecs operate independently."""
-        game_store = kv(GameStateBackend(), CompressedJsonCodec())
-        market_store = kv(MemoryStorage(), MsgpackSimCodec())
+        game_store = kv(GameStateBackend(), CompressedJsonCodec[object]())
+        market_store = kv(MemoryStorage[str, bytes](), MsgpackSimCodec[object]())
 
         await game_store.set("player:1", {"name": "Alice", "score": 1500})
         await market_store.set("product:1", {"name": "Widget", "price": 500})
@@ -2482,30 +2540,42 @@ class TestBridgeRegistryMultiFramework:
         # Original registry unchanged
         assert registry.detect(game_app) is not None
 
-    def test_filter_extractor_across_frameworks(self):
+    def test_filter_extractor_across_frameworks(self) -> None:
         """filter_extractor works uniformly on extractors from different frameworks."""
         game_ext = GameFrameworkExtractor()
         gql_ext = GraphQLExtractor()
 
+        def _is_arena(e: Extracted[RouteData]) -> bool:
+            assert isinstance(e.route, GameRouteData)
+            return e.route.room == "arena"
+
+        def _is_query(e: Extracted[RouteData]) -> bool:
+            assert isinstance(e.route, GraphQLRouteData)
+            return e.route.operation == "query"
+
         # Filter game: only arena rooms
-        arena_only = filter_extractor(game_ext, lambda e: e.route.room == "arena")
+        arena_only = filter_extractor(game_ext, _is_arena)
         game_app = FakeGameApp([
             ("join", "lobby", _game_handler_join),
             ("fight", "arena", _game_handler_fight),
         ])
-        extracted = list(arena_only.extract(game_app))
-        assert len(extracted) == 1
-        assert extracted[0].route.room == "arena"
+        extracted_game = list(arena_only.extract(game_app))
+        assert len(extracted_game) == 1
+        game_route = extracted_game[0].route
+        assert isinstance(game_route, GameRouteData)
+        assert game_route.room == "arena"
 
         # Filter GraphQL: only queries
-        queries_only = filter_extractor(gql_ext, lambda e: e.route.operation == "query")
+        queries_only = filter_extractor(gql_ext, _is_query)
         gql_app = FakeGraphQLApp([
             ("query", "products", _resolve_products),
             ("mutation", "createOrder", _resolve_create_order),
         ])
-        extracted = list(queries_only.extract(gql_app))
-        assert len(extracted) == 1
-        assert extracted[0].route.operation == "query"
+        extracted_gql = list(queries_only.extract(gql_app))
+        assert len(extracted_gql) == 1
+        gql_route = extracted_gql[0].route
+        assert isinstance(gql_route, GraphQLRouteData)
+        assert gql_route.operation == "query"
 
 
 class TestCompilationTraceIntegration:
@@ -2517,7 +2587,7 @@ class TestCompilationTraceIntegration:
 
         collector = ListCollector()
         axes = Axes.traced(collector)
-        compiled = compile_fields(Player, axes, [GAME_PHASE])
+        _compiled = compile_fields(Player, axes, [GAME_PHASE])
 
         # There should be type traces
         assert len(collector.type_traces) == 1
@@ -2566,7 +2636,7 @@ class TestCompilationTraceIntegration:
         compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
             adapters=(
-                CodecAdapter(GameEventCodec, lambda h, t, a: "wrapped"),
+                CodecAdapter(GameEventCodec, _wrap_literal_wrapped),
             ),
         )
         list(compiler.scan_and_wrap(app, axes))
@@ -2581,10 +2651,14 @@ class TestCompilationTraceIntegration:
         """Custom phase with handler override records 'handler' dispatch."""
         from emergent.wire.compile._trace import ListCollector
 
-        def custom_handler(cap: Ranked, ctx: GameFieldContext) -> GameFieldContext:
+        def custom_handler(cap: Capability, ctx: GameFieldContext) -> GameFieldContext:
+            assert isinstance(cap, Ranked)
             return replace(ctx, ranked_board=f"traced:{cap.board}")
 
-        phase = GAME_PHASE.with_handlers({Ranked: custom_handler})
+        traced_handlers: dict[type[Capability], CapabilityHandler[GameFieldContext]] = {
+            Ranked: custom_handler,
+        }
+        phase = GAME_PHASE.with_handlers(traced_handlers)
 
         collector = ListCollector()
         axes = Axes.traced(collector)
@@ -2637,28 +2711,36 @@ class TestEdgeCasesInTypeDispatch:
 
         handler_called = False
 
-        def custom_handler(cap: Ranked, ctx: GameFieldContext) -> GameFieldContext:
+        def custom_handler(cap: Capability, ctx: GameFieldContext) -> GameFieldContext:
             nonlocal handler_called
             handler_called = True
+            assert isinstance(cap, Ranked)
             return replace(ctx, ranked_board=f"override:{cap.board}")
 
+        override_handlers: dict[type[Capability], CapabilityHandler[GameFieldContext]] = {
+            Ranked: custom_handler,
+        }
         ctx = fold_field(
             fields["x"],
             GameFieldContext(field_name="x", field_type=int),
             GameCompilable,
             "compile_game",
-            handlers={Ranked: custom_handler},
+            handlers=override_handlers,
         )
         assert handler_called
         assert ctx.ranked_board == "override:test"
 
-    def test_phase_with_handlers_does_not_modify_original(self):
+    def test_phase_with_handlers_does_not_modify_original(self) -> None:
         """CompilationPhase.with_handlers returns a new phase, original unchanged."""
         original_method = GAME_PHASE.method
 
-        new_phase = GAME_PHASE.with_handlers(
-            {Ranked: lambda cap, ctx: replace(ctx, ranked_board="custom")}
-        )
+        def _custom_ranked(_cap: Capability, ctx: GameFieldContext) -> GameFieldContext:
+            return replace(ctx, ranked_board="custom")
+
+        phase_handlers: dict[type[Capability], CapabilityHandler[GameFieldContext]] = {
+            Ranked: _custom_ranked,
+        }
+        new_phase = GAME_PHASE.with_handlers(phase_handlers)
 
         # Original phase has no handlers
         assert GAME_PHASE.handlers is None
@@ -2753,8 +2835,12 @@ class TestFullCrossDomainE2E:
         assert product_fields["name"].has(Searchable)
         assert product_fields["price"].has(Filterable)
 
-        assert get_schema_meta(Player)[0].game_id == "roulette"
-        assert get_schema_meta(Product)[0].category == "electronics"
+        player_meta_e2e = get_schema_meta(Player)[0]
+        assert isinstance(player_meta_e2e, GameMeta)
+        assert player_meta_e2e.game_id == "roulette"
+        product_meta_e2e = get_schema_meta(Product)[0]
+        assert isinstance(product_meta_e2e, MarketplaceMeta)
+        assert product_meta_e2e.category == "electronics"
 
         # === 2. Compile: three phases simultaneously ===
         axes = Axes.default()
@@ -2822,13 +2908,13 @@ class TestFullCrossDomainE2E:
         ws_compiler = TargetCompiler(
             trigger_type=GameWSTrigger,
             adapters=(
-                CodecAdapter(GameEventCodec, lambda h, t, a: {"ws": t.room}),
+                CodecAdapter(GameEventCodec, _wrap_ws_room),
             ),
         )
         gql_compiler = TargetCompiler(
             trigger_type=GraphQLTrigger,
             adapters=(
-                CodecAdapter(GraphQLCodec, lambda h, t, a: {"gql": t.field_name}),
+                CodecAdapter(GraphQLCodec, _wrap_gql_field),
             ),
         )
 
@@ -2860,16 +2946,20 @@ class TestFullCrossDomainE2E:
         assert ranked[1].name == "Bob"
 
         # === 8. Storage: both domains with independent stores ===
-        game_store = kv(GameStateBackend(), CompressedJsonCodec())
-        market_store = kv(GameStateBackend(), MsgpackSimCodec())
+        game_store = kv(GameStateBackend(), CompressedJsonCodec[object]())
+        market_store = kv(GameStateBackend(), MsgpackSimCodec[object]())
 
         await game_store.set("player:diana", {"name": "Diana", "score": 2500})
         await market_store.set("product:widget", {"name": "Widget", "price": 500})
 
         g_result = await game_store.get("player:diana")
         m_result = await market_store.get("product:widget")
-        assert g_result.unwrap().unwrap()["score"] == 2500
-        assert m_result.unwrap().unwrap()["price"] == 500
+        g_data = g_result.unwrap().unwrap()
+        assert isinstance(g_data, dict)
+        assert g_data["score"] == 2500
+        m_data = m_result.unwrap().unwrap()
+        assert isinstance(m_data, dict)
+        assert m_data["price"] == 500
 
         # === 9. Bridge: both frameworks detected and converted ===
         game_bridger = FrameworkBridger(

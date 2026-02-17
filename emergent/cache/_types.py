@@ -7,9 +7,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum, auto
-from typing import Never, Protocol
+from typing import Protocol
 
-from kungfu import Ok, Option, Result, Some, Nothing
+from kungfu import Ok, Option, Some, Nothing
 
 from emergent.wire.axis.storage import Delete, DeletePattern, Get, Set
 
@@ -109,7 +109,7 @@ class LocalTier[T]:
     def name(self) -> str:
         return "local"
 
-    async def get(self, key: str) -> Result[Option[T], Never]:
+    async def get(self, key: str) -> Ok[Option[T]]:
         if key in self._cache:
             # Move to end (most recent)
             self._order.remove(key)
@@ -117,7 +117,7 @@ class LocalTier[T]:
             return Ok(Some(self._cache[key]))
         return Ok(Nothing())
 
-    async def set(self, key: str, value: T) -> Result[None, Never]:
+    async def set(self, key: str, value: T) -> Ok[None]:
         if key in self._cache:
             self._order.remove(key)
         elif len(self._cache) >= self._max_size:
@@ -129,13 +129,13 @@ class LocalTier[T]:
         self._order.append(key)
         return Ok(None)
 
-    async def delete(self, key: str) -> Result[None, Never]:
+    async def delete(self, key: str) -> Ok[None]:
         if key in self._cache:
             del self._cache[key]
             self._order.remove(key)
         return Ok(None)
 
-    async def delete_pattern(self, pattern: str) -> Result[int, Never]:
+    async def delete_pattern(self, pattern: str) -> Ok[int]:
         import fnmatch
 
         keys_to_delete = [k for k in self._cache if fnmatch.fnmatch(k, pattern)]

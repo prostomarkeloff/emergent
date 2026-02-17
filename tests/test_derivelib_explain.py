@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
-import pytest
-
 from emergent.wire.axis.schema import Identity
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
@@ -14,36 +12,29 @@ from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from derivelib import (
     derive,
     memory_node,
-    get_patterns,
-    fold_derive,
 )
 from derivelib._opspec import OpSpec
-from derivelib._effects import Read, Creates, Updates, Deletes, Pageable, Sortable, Idempotent, Cacheable
+from derivelib._effects import Read, Pageable, Sortable, Idempotent, Cacheable
 from derivelib._project import (
-    NoFields,
-    IdOnly,
-    NonId,
-    AllFields,
     EntityResponse,
     ListResponse,
     OkResponse,
     no_fields,
-    id_only,
-    non_id,
-    entity_response,
     list_response,
     ok_response,
 )
-from derivelib._handler_templates import FetchMany, FetchOneById, InsertNew, DeleteOne
-from derivelib.axes.schema import InspectEntity, RequireIdentity, inspect_entity, require_identity
-from derivelib.axes.query import BindProvider, SetBaseQuery, bind_provider, base_query
-from derivelib.axes.surface import DeriveOp, ExposeOp, AddGlobalCap
-from derivelib.adapt import AdaptBaseQuery, adapt_base_query
-from derivelib._dialect import Op, Dialect, HTTPTriggers, CLITriggers as CLITriggersGen, dialect
-from derivelib.patterns.crud import http_crud, LIST, GET, CREATE, DELETE, ALL_CRUD_OPS
+from derivelib._handler_templates import FetchMany, FetchOneById
+from derivelib.axes.schema import inspect_entity, require_identity
+from derivelib.axes.query import bind_provider, base_query
+from derivelib.axes.surface import DeriveOp, AddGlobalCap
+from derivelib.adapt import adapt_base_query
+from derivelib._dialect import Op, HTTPTriggers, dialect
+from derivelib.patterns.crud import http_crud, LIST, GET, CREATE, DELETE
 from derivelib._explain import (
-    DeriveExplainHandler,
     DERIVE_EXPLAIN,
+    ExplainDict,
+    ExplainValue,
+    DeriveExplainHandler,
     opspec_dict,
     step_dict,
     derivation_dict,
@@ -53,6 +44,33 @@ from derivelib._explain import (
     explain_derivation,
     explain_entity,
 )
+
+
+# --- Narrowing Helpers ---
+
+
+def _as_dict(val: ExplainValue) -> ExplainDict:
+    """Narrow ExplainValue to ExplainDict via assertion."""
+    assert isinstance(val, dict)
+    return val
+
+
+def _as_list(val: ExplainValue) -> list[ExplainValue]:
+    """Narrow ExplainValue to list via assertion."""
+    assert isinstance(val, list)
+    return val
+
+
+def _as_str(val: ExplainValue) -> str:
+    """Narrow ExplainValue to str via assertion."""
+    assert isinstance(val, str)
+    return val
+
+
+def _as_int(val: ExplainValue) -> int:
+    """Narrow ExplainValue to int via assertion."""
+    assert isinstance(val, int)
+    return val
 
 
 # --- Fixtures ---
@@ -79,7 +97,7 @@ class SimpleEntity:
 
 
 class TestOpSpecDict:
-    def test_basic_opspec(self):
+    def test_basic_opspec(self) -> None:
         spec = OpSpec(
             name="Get",
             entity_name="User",
@@ -95,15 +113,17 @@ class TestOpSpecDict:
         assert d["entity_name"] == "User"
         assert d["input_fields"] == ["id"]
         assert d["response_spec"] == "EntityResponse"
-        assert d["trigger"]["type"] == "HTTPRouteTrigger"
-        assert d["trigger"]["method"] == "GET"
-        assert d["trigger"]["path"] == "/api/users/{id}"
-        assert len(d["effects"]) == 3
-        effect_types = [e["type"] for e in d["effects"]]
+        trigger = _as_dict(d["trigger"])
+        assert trigger["type"] == "HTTPRouteTrigger"
+        assert trigger["method"] == "GET"
+        assert trigger["path"] == "/api/users/{id}"
+        effects = _as_list(d["effects"])
+        assert len(effects) == 3
+        effect_types = [_as_dict(e)["type"] for e in effects]
         assert "Read" in effect_types
         assert "Cacheable" in effect_types
 
-    def test_opspec_no_effects(self):
+    def test_opspec_no_effects(self) -> None:
         spec = OpSpec(
             name="Custom",
             entity_name="User",
@@ -116,7 +136,7 @@ class TestOpSpecDict:
         d = opspec_dict(spec)
         assert "effects" not in d
 
-    def test_opspec_cli_trigger(self):
+    def test_opspec_cli_trigger(self) -> None:
         spec = OpSpec(
             name="List",
             entity_name="User",
@@ -127,36 +147,37 @@ class TestOpSpecDict:
             trigger=CLITrigger("list-users"),
         )
         d = opspec_dict(spec)
-        assert d["trigger"]["type"] == "CLITrigger"
-        assert d["trigger"]["command"] == "list-users"
+        trigger = _as_dict(d["trigger"])
+        assert trigger["type"] == "CLITrigger"
+        assert trigger["command"] == "list-users"
 
 
 # --- Step Dict ---
 
 
 class TestStepDict:
-    def test_inspect_entity(self):
+    def test_inspect_entity(self) -> None:
         d = step_dict(inspect_entity())
         assert d["type"] == "InspectEntity"
 
-    def test_require_identity(self):
+    def test_require_identity(self) -> None:
         d = step_dict(require_identity())
         assert d["type"] == "RequireIdentity"
 
-    def test_bind_provider(self):
+    def test_bind_provider(self) -> None:
         d = step_dict(bind_provider(Users))
         assert d["type"] == "BindProvider"
         assert "node" in d
 
-    def test_set_base_query(self):
+    def test_set_base_query(self) -> None:
         d = step_dict(base_query())
         assert d["type"] == "SetBaseQuery"
 
-    def test_adapt_base_query(self):
+    def test_adapt_base_query(self) -> None:
         d = step_dict(adapt_base_query())
         assert d["type"] == "AdaptBaseQuery"
 
-    def test_derive_op(self):
+    def test_derive_op(self) -> None:
         step = DeriveOp(
             name="List",
             input_proj=no_fields(),
@@ -170,10 +191,12 @@ class TestStepDict:
         assert d["name"] == "List"
         assert d["input_proj"] == "NoFields"
         assert d["output"] == "ListResponse"
-        assert d["trigger"]["method"] == "GET"
-        assert len(d["effects"]) == 2
+        trigger = _as_dict(d["trigger"])
+        assert trigger["method"] == "GET"
+        effects = _as_list(d["effects"])
+        assert len(effects) == 2
 
-    def test_derive_op_no_effects(self):
+    def test_derive_op_no_effects(self) -> None:
         step = DeriveOp(
             name="Custom",
             input_proj=no_fields(),
@@ -184,7 +207,7 @@ class TestStepDict:
         d = step_dict(step)
         assert "effects" not in d
 
-    def test_add_global_cap(self):
+    def test_add_global_cap(self) -> None:
         @dataclass(frozen=True)
         class TestCap:
             level: str = "info"
@@ -192,27 +215,30 @@ class TestStepDict:
         step = AddGlobalCap(cap=TestCap())
         d = step_dict(step)
         assert d["type"] == "AddGlobalCap"
-        assert d["cap"]["type"] == "TestCap"
+        cap = _as_dict(d["cap"])
+        assert cap["type"] == "TestCap"
 
 
 # --- Derivation Dict ---
 
 
 class TestDerivationDict:
-    def test_basic_derivation(self):
+    def test_basic_derivation(self) -> None:
         steps = (inspect_entity(), require_identity())
         d = derivation_dict(steps)
         assert d["step_count"] == 2
-        assert len(d["steps"]) == 2
-        assert d["steps"][0]["type"] == "InspectEntity"
-        assert d["steps"][1]["type"] == "RequireIdentity"
+        steps_list = _as_list(d["steps"])
+        assert len(steps_list) == 2
+        assert _as_dict(steps_list[0])["type"] == "InspectEntity"
+        assert _as_dict(steps_list[1])["type"] == "RequireIdentity"
 
-    def test_full_derivation(self):
+    def test_full_derivation(self) -> None:
         pattern = http_crud("/api/users", Users)
         steps = pattern.compile(User)
         d = derivation_dict(steps)
-        assert d["step_count"] > 0
-        step_types = [s["type"] for s in d["steps"]]
+        assert _as_int(d["step_count"]) > 0
+        steps_list = _as_list(d["steps"])
+        step_types = [_as_dict(s)["type"] for s in steps_list]
         assert "InspectEntity" in step_types
         assert "RequireIdentity" in step_types
         assert "DeriveOp" in step_types
@@ -222,35 +248,42 @@ class TestDerivationDict:
 
 
 class TestEntityDerivationDict:
-    def test_decorated_entity(self):
+    def test_decorated_entity(self) -> None:
         d = entity_derivation_dict(User)
         assert d["entity"] == "User"
         assert d["pattern_count"] == 1
-        assert len(d["patterns"]) == 1
+        patterns = _as_list(d["patterns"])
+        assert len(patterns) == 1
 
-        pat = d["patterns"][0]
+        pat = _as_dict(patterns[0])
         assert pat["pattern_type"] == "Dialect"
-        assert pat["step_count"] > 0
-        assert len(pat["steps"]) > 0
-        assert len(pat["specs"]) > 0
+        assert _as_int(pat["step_count"]) > 0
+        pat_steps = _as_list(pat["steps"])
+        assert len(pat_steps) > 0
+        pat_specs = _as_list(pat["specs"])
+        assert len(pat_specs) > 0
 
-    def test_specs_have_names(self):
+    def test_specs_have_names(self) -> None:
         d = entity_derivation_dict(User)
-        specs = d["patterns"][0]["specs"]
-        spec_names = [s["name"] for s in specs]
+        patterns = _as_list(d["patterns"])
+        specs = _as_list(_as_dict(patterns[0])["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         # CRUD pattern should have these ops
         assert "List" in spec_names
         assert "Get" in spec_names
         assert "Create" in spec_names
 
-    def test_specs_have_triggers(self):
+    def test_specs_have_triggers(self) -> None:
         d = entity_derivation_dict(User)
-        specs = d["patterns"][0]["specs"]
-        for spec in specs:
+        patterns = _as_list(d["patterns"])
+        specs = _as_list(_as_dict(patterns[0])["specs"])
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
             assert "trigger" in spec
-            assert "type" in spec["trigger"]
+            trigger = _as_dict(spec["trigger"])
+            assert "type" in trigger
 
-    def test_no_patterns(self):
+    def test_no_patterns(self) -> None:
         d = entity_derivation_dict(SimpleEntity)
         assert d["entity"] == "SimpleEntity"
         assert d["pattern_count"] == 0
@@ -261,23 +294,24 @@ class TestEntityDerivationDict:
 
 
 class TestDialectDict:
-    def test_http_crud_dialect(self):
+    def test_http_crud_dialect(self) -> None:
         d_obj = http_crud("/api/users", Users)
         d = dialect_dict(d_obj)
         assert d["type"] == "Dialect"
-        assert d["op_count"] > 0
+        assert _as_int(d["op_count"]) > 0
         assert d["triggers"] == "HTTPTriggers"
         assert d["adapt"] is True
 
-    def test_ops_in_dialect(self):
+    def test_ops_in_dialect(self) -> None:
         d_obj = http_crud("/api/users", Users)
         d = dialect_dict(d_obj)
-        op_names = [op["name"] for op in d["ops"]]
+        ops = _as_list(d["ops"])
+        op_names = [_as_dict(op)["name"] for op in ops]
         assert "List" in op_names
         assert "Get" in op_names
         assert "Create" in op_names
 
-    def test_custom_dialect(self):
+    def test_custom_dialect(self) -> None:
         d_obj = dialect(
             LIST, GET,
             triggers=HTTPTriggers("/api/readonly"),
@@ -291,7 +325,7 @@ class TestDialectDict:
 
 
 class TestExplainOpSpec:
-    def test_basic(self):
+    def test_basic(self) -> None:
         spec = OpSpec(
             name="Get",
             entity_name="User",
@@ -309,7 +343,7 @@ class TestExplainOpSpec:
         assert "GET /api/users/{id}" in text
         assert "Read" in text
 
-    def test_no_input(self):
+    def test_no_input(self) -> None:
         spec = OpSpec(
             name="List",
             entity_name="User",
@@ -327,14 +361,14 @@ class TestExplainOpSpec:
 
 
 class TestExplainDerivation:
-    def test_basic(self):
+    def test_basic(self) -> None:
         steps = (inspect_entity(), require_identity())
         text = explain_derivation(steps)
         assert "Derivation (2 steps)" in text
         assert "InspectEntity" in text
         assert "RequireIdentity" in text
 
-    def test_with_derive_op(self):
+    def test_with_derive_op(self) -> None:
         step = DeriveOp(
             name="List",
             input_proj=no_fields(),
@@ -352,33 +386,33 @@ class TestExplainDerivation:
 
 
 class TestExplainEntity:
-    def test_header(self):
+    def test_header(self) -> None:
         text = explain_entity(User)
         assert "=== User Derivation ===" in text
 
-    def test_pattern_count(self):
+    def test_pattern_count(self) -> None:
         text = explain_entity(User)
         assert "1 pattern" in text
 
-    def test_steps_shown(self):
+    def test_steps_shown(self) -> None:
         text = explain_entity(User)
         assert "Steps" in text
         assert "InspectEntity" in text
         assert "DeriveOp" in text
 
-    def test_opspecs_shown(self):
+    def test_opspecs_shown(self) -> None:
         text = explain_entity(User)
         assert "OpSpecs" in text
         # Should show request/response type names
         assert "UserRequest" in text
         assert "UserResponse" in text
 
-    def test_no_patterns(self):
+    def test_no_patterns(self) -> None:
         text = explain_entity(SimpleEntity)
         assert "=== SimpleEntity Derivation ===" in text
         assert "0 patterns" in text
 
-    def test_trigger_in_output(self):
+    def test_trigger_in_output(self) -> None:
         text = explain_entity(User)
         assert "/api/users" in text
 
@@ -387,40 +421,47 @@ class TestExplainEntity:
 
 
 class TestOpenWorld:
-    def test_unknown_step_type(self):
+    def test_unknown_step_type(self) -> None:
         @dataclass(frozen=True)
         class CustomStep:
             name: str
 
-        d = step_dict(CustomStep("test"))
+        # pyright: ignore[reportArgumentType] — open-world design: step_dict accepts
+        # unknown step types at runtime via _dataclass_dict fallback
+        d = step_dict(CustomStep("test"))  # pyright: ignore[reportArgumentType]
         assert d["type"] == "CustomStep"
         assert d["name"] == "test"
 
-    def test_unknown_in_derivation(self):
+    def test_unknown_in_derivation(self) -> None:
         @dataclass(frozen=True)
         class CustomStep:
             name: str
 
+        # pyright: ignore[reportArgumentType] — open-world design: derivation_dict
+        # handles unknown step types via _dataclass_dict fallback
         steps = (inspect_entity(), CustomStep("test"))
-        d = derivation_dict(steps)
+        d = derivation_dict(steps)  # pyright: ignore[reportArgumentType]
         assert d["step_count"] == 2
-        assert d["steps"][1]["type"] == "CustomStep"
+        d_steps = _as_list(d["steps"])
+        assert _as_dict(d_steps[1])["type"] == "CustomStep"
 
-    def test_custom_handler(self):
+    def test_custom_handler(self) -> None:
         @dataclass(frozen=True)
         class CustomStep:
             url: str
 
-        def custom_handler(step: object) -> dict:
-            return {"type": "Custom", "url": getattr(step, "url", "")}
+        def custom_handler(step: CustomStep) -> ExplainDict:
+            return {"type": "Custom", "url": step.url}
 
         handlers = {**_get_handlers_dict(), CustomStep: custom_handler}
-        d = step_dict(CustomStep("http://example.com"), handlers=handlers)
+        # pyright: ignore[reportArgumentType] — open-world design: step_dict accepts
+        # unknown step types at runtime via custom handler dispatch
+        d = step_dict(CustomStep("http://example.com"), handlers=handlers)  # pyright: ignore[reportArgumentType]
         assert d["type"] == "Custom"
         assert d["url"] == "http://example.com"
 
 
-def _get_handlers_dict() -> dict:
+def _get_handlers_dict() -> dict[type, DeriveExplainHandler]:
     """Get a plain dict copy of DERIVE_EXPLAIN for merging."""
     return dict(DERIVE_EXPLAIN.items())
 
@@ -455,104 +496,106 @@ class Order:
 class TestIntegrationFullEntityDict:
     """Integration tests for full_entity_dict — three-layer schema -> derivation -> surface."""
 
-    def test_full_entity_dict_schema_layer(self):
+    def test_full_entity_dict_schema_layer(self) -> None:
         """Schema layer contains correct fields and identity information."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(User)
-        schema = data["schema"]
+        schema = _as_dict(data["schema"])
         assert isinstance(schema, dict)
         assert schema["field_count"] == 3
         assert schema["identity_count"] == 1
 
-        fields = schema["fields"]
+        fields = _as_list(schema["fields"])
         assert isinstance(fields, list)
         assert len(fields) == 3
 
-        id_field = fields[0]
+        id_field = _as_dict(fields[0])
         assert isinstance(id_field, dict)
         assert id_field["name"] == "id"
         assert id_field["identity"] is True
 
-    def test_full_entity_dict_derivation_layer(self):
+    def test_full_entity_dict_derivation_layer(self) -> None:
         """Derivation layer shows pattern and specs from fold."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(User)
-        derivation = data["derivation"]
+        derivation = _as_dict(data["derivation"])
         assert isinstance(derivation, dict)
         assert derivation["pattern_count"] == 1
 
-        patterns = derivation["patterns"]
+        patterns = _as_list(derivation["patterns"])
         assert isinstance(patterns, list)
         assert len(patterns) == 1
 
-        pat = patterns[0]
+        pat = _as_dict(patterns[0])
         assert isinstance(pat, dict)
         assert pat["pattern_type"] == "Dialect"
-        assert pat["step_count"] > 0
+        assert _as_int(pat["step_count"]) > 0
 
-        specs = pat["specs"]
+        specs = _as_list(pat["specs"])
         assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        spec_names = [_as_dict(s)["name"] for s in specs]
         assert "List" in spec_names
         assert "Get" in spec_names
         assert "Create" in spec_names
 
-    def test_full_entity_dict_surface_layer(self):
+    def test_full_entity_dict_surface_layer(self) -> None:
         """Surface layer shows materialized endpoints with triggers and codecs."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(User)
-        surface = data["surface"]
+        surface = _as_dict(data["surface"])
         assert isinstance(surface, dict)
         assert surface["endpoint_count"] == 1
 
-        endpoints = surface["endpoints"]
+        endpoints = _as_list(surface["endpoints"])
         assert isinstance(endpoints, list)
         assert len(endpoints) == 1
 
-        ep = endpoints[0]
+        ep = _as_dict(endpoints[0])
         assert isinstance(ep, dict)
-        assert ep["exposure_count"] > 0
+        assert _as_int(ep["exposure_count"]) > 0
 
-        exposures = ep["exposures"]
+        exposures = _as_list(ep["exposures"])
         assert isinstance(exposures, list)
-        for exp in exposures:
+        for exp_val in exposures:
+            exp = _as_dict(exp_val)
             assert isinstance(exp, dict)
             assert "trigger" in exp
             assert "request" in exp
             assert "response" in exp
 
-    def test_full_entity_dict_surface_triggers_match_specs(self):
+    def test_full_entity_dict_surface_triggers_match_specs(self) -> None:
         """Surface triggers align with derivation specs — each spec produces an exposure."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(User)
-        derivation = data["derivation"]
-        surface = data["surface"]
+        derivation = _as_dict(data["derivation"])
+        surface = _as_dict(data["surface"])
 
-        patterns = derivation["patterns"]
+        patterns = _as_list(derivation["patterns"])
         assert isinstance(patterns, list)
-        pat = patterns[0]
+        pat = _as_dict(patterns[0])
         assert isinstance(pat, dict)
-        spec_count = len(pat["specs"]) if isinstance(pat["specs"], list) else 0
+        pat_specs = _as_list(pat["specs"])
+        spec_count = len(pat_specs)
 
-        endpoints = surface["endpoints"]
+        endpoints = _as_list(surface["endpoints"])
         assert isinstance(endpoints, list)
-        ep = endpoints[0]
+        ep = _as_dict(endpoints[0])
         assert isinstance(ep, dict)
-        exposure_count = ep["exposure_count"]
+        exposure_count = _as_int(ep["exposure_count"])
         assert isinstance(exposure_count, int)
 
         assert exposure_count == spec_count
 
-    def test_full_entity_dict_multiple_fields_entity(self):
+    def test_full_entity_dict_multiple_fields_entity(self) -> None:
         """Full trace works with entity having more fields."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(Product)
-        schema = data["schema"]
+        schema = _as_dict(data["schema"])
         assert isinstance(schema, dict)
         assert schema["field_count"] == 4
         assert schema["identity_count"] == 1
@@ -561,7 +604,7 @@ class TestIntegrationFullEntityDict:
 class TestIntegrationExplainFull:
     """Integration tests for explain_full — human-readable full trace."""
 
-    def test_explain_full_contains_all_sections(self):
+    def test_explain_full_contains_all_sections(self) -> None:
         """explain_full output contains schema, derivation, and surface sections."""
         from derivelib._explain import explain_full
 
@@ -571,7 +614,7 @@ class TestIntegrationExplainFull:
         assert "Derivation:" in text
         assert "Surface:" in text
 
-    def test_explain_full_shows_fields(self):
+    def test_explain_full_shows_fields(self) -> None:
         """explain_full output shows entity fields."""
         from derivelib._explain import explain_full
 
@@ -581,7 +624,7 @@ class TestIntegrationExplainFull:
         assert "email (str)" in text
         assert "Identity" in text
 
-    def test_explain_full_shows_step_chain(self):
+    def test_explain_full_shows_step_chain(self) -> None:
         """explain_full output shows derivation step chain."""
         from derivelib._explain import explain_full
 
@@ -591,7 +634,7 @@ class TestIntegrationExplainFull:
         assert "InspectEntity" in text
         assert "RequireIdentity" in text
 
-    def test_explain_full_shows_ops(self):
+    def test_explain_full_shows_ops(self) -> None:
         """explain_full output shows derived ops."""
         from derivelib._explain import explain_full
 
@@ -601,7 +644,7 @@ class TestIntegrationExplainFull:
         assert "Get" in text
         assert "Create" in text
 
-    def test_explain_full_shows_surface_routes(self):
+    def test_explain_full_shows_surface_routes(self) -> None:
         """explain_full output shows endpoint routes."""
         from derivelib._explain import explain_full
 
@@ -610,7 +653,7 @@ class TestIntegrationExplainFull:
         assert "GET" in text
         assert "POST" in text
 
-    def test_explain_full_multiple_entities(self):
+    def test_explain_full_multiple_entities(self) -> None:
         """explain_full with multiple entities shows both."""
         from derivelib._explain import explain_full
 
@@ -622,7 +665,7 @@ class TestIntegrationExplainFull:
 class TestIntegrationChainedPatternExplain:
     """Integration: explaining entities derived with chained transforms."""
 
-    def test_readonly_chain_removes_mutations(self):
+    def test_readonly_chain_removes_mutations(self) -> None:
         """readonly() chain filters out mutation ops from explain output."""
         from derivelib.transforms import readonly
 
@@ -636,13 +679,11 @@ class TestIntegrationChainedPatternExplain:
             value: str
 
         d = entity_derivation_dict(ReadonlyItem)
-        pat = d["patterns"]
-        assert isinstance(pat, list) and len(pat) == 1
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        pat = _as_list(d["patterns"])
+        assert len(pat) == 1
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         # Only read ops should survive readonly()
         assert "List" in spec_names
         assert "Get" in spec_names
@@ -650,7 +691,7 @@ class TestIntegrationChainedPatternExplain:
         assert "Update" not in spec_names
         assert "Delete" not in spec_names
 
-    def test_without_delete_chain(self):
+    def test_without_delete_chain(self) -> None:
         """without_delete() chain removes Delete from explain output."""
         from derivelib.transforms import without_delete
 
@@ -664,19 +705,16 @@ class TestIntegrationChainedPatternExplain:
             data: str
 
         d = entity_derivation_dict(NoDeleteItem)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         assert "List" in spec_names
         assert "Get" in spec_names
         assert "Create" in spec_names
         assert "Delete" not in spec_names
 
-    def test_only_ops_chain(self):
+    def test_only_ops_chain(self) -> None:
         """only_ops() chain keeps only specified ops."""
         from derivelib.transforms import only_ops
 
@@ -690,29 +728,24 @@ class TestIntegrationChainedPatternExplain:
             name: str
 
         d = entity_derivation_dict(SpecificItem)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         assert spec_names == ["List", "Get"]
 
 
 class TestIntegrationSubsetOpsExplain:
     """Integration: explaining entities derived with subset of CRUD ops."""
 
-    def test_subset_ops_shows_only_selected(self):
+    def test_subset_ops_shows_only_selected(self) -> None:
         """http_crud with ops subset shows only those in explain."""
         d = entity_derivation_dict(Order)
-        pat = d["patterns"]
-        assert isinstance(pat, list) and len(pat) == 1
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        pat = _as_list(d["patterns"])
+        assert len(pat) == 1
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         assert "List" in spec_names
         assert "Get" in spec_names
         assert "Create" in spec_names
@@ -720,55 +753,51 @@ class TestIntegrationSubsetOpsExplain:
         assert "Update" not in spec_names
         assert "Patch" not in spec_names
 
-    def test_subset_ops_trigger_paths(self):
+    def test_subset_ops_trigger_paths(self) -> None:
         """Trigger paths are correct for subset of ops."""
         d = entity_derivation_dict(Order)
-        pat = d["patterns"]
-        assert isinstance(pat, list) and len(pat) == 1
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
+        pat = _as_list(d["patterns"])
+        assert len(pat) == 1
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
         paths: list[str] = []
-        for spec in specs:
-            assert isinstance(spec, dict)
-            trigger = spec.get("trigger")
-            assert isinstance(trigger, dict)
-            path = trigger.get("path", "")
-            assert isinstance(path, str)
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
+            trigger = _as_dict(spec["trigger"])
+            path_val = trigger.get("path", "")
+            path = _as_str(path_val) if path_val is not None and path_val != "" else ""
             paths.append(path)
         assert "/api/orders" in paths
         assert "/api/orders/{id}" in paths
 
-    def test_subset_ops_effects(self):
+    def test_subset_ops_effects(self) -> None:
         """Effects are preserved for subset ops in explain output."""
         d = entity_derivation_dict(Order)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
 
-        for spec in specs:
-            assert isinstance(spec, dict)
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
             name = spec.get("name")
-            effects = spec.get("effects")
+            effects_val = spec.get("effects")
             if name == "List":
-                assert isinstance(effects, list) and len(effects) > 0
-                effect_types = [e["type"] for e in effects if isinstance(e, dict)]
+                effects = _as_list(effects_val)
+                assert len(effects) > 0
+                effect_types = [_as_dict(e)["type"] for e in effects]
                 assert "Read" in effect_types
                 assert "Pageable" in effect_types
             elif name == "Delete":
-                assert isinstance(effects, list) and len(effects) > 0
-                effect_types = [e["type"] for e in effects if isinstance(e, dict)]
+                effects = _as_list(effects_val)
+                assert len(effects) > 0
+                effect_types = [_as_dict(e)["type"] for e in effects]
                 assert "Deletes" in effect_types
 
 
 class TestIntegrationCLIDialectExplain:
     """Integration: explaining entities derived with CLI triggers."""
 
-    def test_cli_crud_explain(self):
+    def test_cli_crud_explain(self) -> None:
         """CLI CRUD dialect appears correctly in explain output."""
         from derivelib.patterns.crud import cli_crud
 
@@ -781,23 +810,19 @@ class TestIntegrationCLIDialectExplain:
             name: str
 
         d = entity_derivation_dict(CLIItem)
-        pat = d["patterns"]
-        assert isinstance(pat, list) and len(pat) == 1
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
+        pat = _as_list(d["patterns"])
+        assert len(pat) == 1
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
 
-        for spec in specs:
-            assert isinstance(spec, dict)
-            trigger = spec.get("trigger")
-            assert isinstance(trigger, dict)
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
+            trigger = _as_dict(spec["trigger"])
             assert trigger["type"] == "CLITrigger"
-            command = trigger.get("command")
-            assert isinstance(command, str)
+            command = _as_str(trigger["command"])
             assert command.startswith("item-")
 
-    def test_cli_crud_dialect_dict(self):
+    def test_cli_crud_dialect_dict(self) -> None:
         """CLI dialect_dict shows CLI trigger type."""
         from derivelib.patterns.crud import cli_crud
 
@@ -807,7 +832,7 @@ class TestIntegrationCLIDialectExplain:
         assert d["triggers"] == "CLITriggers"
         assert d["op_count"] == 6
 
-    def test_cli_crud_human_readable(self):
+    def test_cli_crud_human_readable(self) -> None:
         """explain_entity for CLI CRUD shows cli commands."""
         from derivelib.patterns.crud import cli_crud
 
@@ -828,7 +853,7 @@ class TestIntegrationCLIDialectExplain:
 class TestIntegrationCustomDialectExplain:
     """Integration: explaining entities derived with custom dialects."""
 
-    def test_custom_two_op_dialect(self):
+    def test_custom_two_op_dialect(self) -> None:
         """Custom dialect with two ops shows in explain output."""
         CustomNode = memory_node()
         d_obj = dialect(
@@ -846,16 +871,13 @@ class TestIntegrationCustomDialectExplain:
         d = entity_derivation_dict(CustomEntity)
         assert d["pattern_count"] == 1
 
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        spec_names = [s["name"] for s in specs if isinstance(s, dict)]
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
+        spec_names = [_as_dict(s)["name"] for s in specs]
         assert spec_names == ["List", "Get"]
 
-    def test_custom_dialect_with_extra_effects(self):
+    def test_custom_dialect_with_extra_effects(self) -> None:
         """Custom ops with extra effects show in explain output."""
         from derivelib._effects import Filterable, Searchable
 
@@ -881,23 +903,19 @@ class TestIntegrationCustomDialectExplain:
             name: str
 
         d = entity_derivation_dict(SearchableEntity)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
 
-        list_spec = None
-        for spec in specs:
-            assert isinstance(spec, dict)
+        list_spec: ExplainDict | None = None
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
             if spec.get("name") == "List":
                 list_spec = spec
                 break
         assert list_spec is not None
-        effects = list_spec.get("effects")
-        assert isinstance(effects, list)
-        effect_types = [e["type"] for e in effects if isinstance(e, dict)]
+        effects = _as_list(list_spec["effects"])
+        effect_types = [_as_dict(e)["type"] for e in effects]
         assert "Read" in effect_types
         assert "Pageable" in effect_types
         assert "Filterable" in effect_types
@@ -907,7 +925,7 @@ class TestIntegrationCustomDialectExplain:
 class TestIntegrationExplainRoundTrip:
     """Integration: dict layer and human-readable layer produce consistent output."""
 
-    def test_dict_and_text_consistency(self):
+    def test_dict_and_text_consistency(self) -> None:
         """entity_derivation_dict and explain_entity agree on structure."""
         d = entity_derivation_dict(User)
         text = explain_entity(User)
@@ -917,25 +935,20 @@ class TestIntegrationExplainRoundTrip:
         assert "1 pattern" in text
 
         # Steps
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        step_count = pat0["step_count"]
-        assert isinstance(step_count, int)
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        step_count = _as_int(pat0["step_count"])
         assert f"Steps ({step_count}):" in text
 
         # Specs
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
-        for spec in specs:
-            assert isinstance(spec, dict)
-            spec_name = spec["name"]
-            assert isinstance(spec_name, str)
+        specs = _as_list(pat0["specs"])
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
+            spec_name = _as_str(spec["name"])
             # Each spec name appears in human-readable output
             assert spec_name in text
 
-    def test_full_dict_and_full_text_consistency(self):
+    def test_full_dict_and_full_text_consistency(self) -> None:
         """full_entity_dict and explain_full agree on structure."""
         from derivelib._explain import full_entity_dict, explain_full
 
@@ -947,71 +960,59 @@ class TestIntegrationExplainRoundTrip:
         assert "=== Product (full trace) ===" in text
 
         # Schema field count
-        schema = d["schema"]
-        assert isinstance(schema, dict)
-        field_count = schema["field_count"]
-        assert isinstance(field_count, int)
+        schema = _as_dict(d["schema"])
+        field_count = _as_int(schema["field_count"])
         assert f"{field_count} fields" in text
 
         # Derivation pattern count
-        derivation = d["derivation"]
-        assert isinstance(derivation, dict)
+        derivation = _as_dict(d["derivation"])
         assert f'{derivation["pattern_count"]} pattern' in text
 
 
 class TestIntegrationProviderNodeTracking:
     """Integration: provider node is tracked through derivation and shown in explain."""
 
-    def test_provider_node_in_entity_derivation_dict(self):
+    def test_provider_node_in_entity_derivation_dict(self) -> None:
         """entity_derivation_dict captures provider node name."""
         d = entity_derivation_dict(User)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
         assert "provider_node" in pat0
         # Provider node is the memory_node class
-        provider = pat0["provider_node"]
-        assert isinstance(provider, str)
+        provider = _as_str(pat0["provider_node"])
         assert len(provider) > 0
 
-    def test_provider_node_in_full_entity_dict(self):
+    def test_provider_node_in_full_entity_dict(self) -> None:
         """full_entity_dict also captures provider node name."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(Product)
-        derivation = data["derivation"]
-        assert isinstance(derivation, dict)
-        patterns = derivation["patterns"]
-        assert isinstance(patterns, list)
-        pat0 = patterns[0]
-        assert isinstance(pat0, dict)
+        derivation = _as_dict(data["derivation"])
+        patterns = _as_list(derivation["patterns"])
+        pat0 = _as_dict(patterns[0])
         assert "provider_node" in pat0
 
 
 class TestIntegrationNoPatternEntity:
     """Integration: entities with no patterns produce empty explain output."""
 
-    def test_no_patterns_full_entity_dict(self):
+    def test_no_patterns_full_entity_dict(self) -> None:
         """full_entity_dict for non-derived entity shows empty layers."""
         from derivelib._explain import full_entity_dict
 
         data = full_entity_dict(SimpleEntity)
         assert data["entity"] == "SimpleEntity"
 
-        schema = data["schema"]
-        assert isinstance(schema, dict)
+        schema = _as_dict(data["schema"])
         assert schema["field_count"] == 2
 
-        derivation = data["derivation"]
-        assert isinstance(derivation, dict)
+        derivation = _as_dict(data["derivation"])
         assert derivation["pattern_count"] == 0
 
-        surface = data["surface"]
-        assert isinstance(surface, dict)
+        surface = _as_dict(data["surface"])
         assert surface["endpoint_count"] == 0
 
-    def test_no_patterns_explain_full(self):
+    def test_no_patterns_explain_full(self) -> None:
         """explain_full for non-derived entity shows all sections with zero counts."""
         from derivelib._explain import explain_full
 
@@ -1024,48 +1025,54 @@ class TestIntegrationNoPatternEntity:
 class TestIntegrationCustomHandlerDispatch:
     """Integration: custom explain handlers interact correctly with the full pipeline."""
 
-    def test_custom_handler_in_full_derivation(self):
+    def test_custom_handler_in_full_derivation(self) -> None:
         """Custom step handler is used when explaining a derivation containing that step."""
         @dataclass(frozen=True)
         class AuditStep:
             level: str
 
-        def audit_handler(step: object) -> dict[str, str | int | float | bool | None | list | dict]:
-            return {"type": "AuditStep", "audit_level": getattr(step, "level", "info")}
+        def audit_handler(step: AuditStep) -> ExplainDict:
+            return {"type": "AuditStep", "audit_level": step.level}
 
-        handlers = {**_get_handlers_dict(), AuditStep: audit_handler}
+        handlers = _get_handlers_dict()
+        # pyright: ignore[reportArgumentType] — AuditStep handler conforms at runtime
+        # but DeriveExplainHandler expects Step param type; open-world design
+        handlers[AuditStep] = audit_handler  # pyright: ignore[reportArgumentType]
 
         steps = (inspect_entity(), require_identity(), AuditStep(level="debug"))
-        d = derivation_dict(steps, handlers)
+        # pyright: ignore[reportArgumentType] — open-world design: AuditStep is not a
+        # formal Step but derivation_dict handles it via custom handler dispatch
+        d = derivation_dict(steps, handlers)  # pyright: ignore[reportArgumentType]
 
         assert d["step_count"] == 3
-        assert isinstance(d["steps"], list)
-        step_dicts = d["steps"]
+        step_dicts_val = _as_list(d["steps"])
 
         # First two steps use built-in handlers
-        assert isinstance(step_dicts[0], dict)
-        assert step_dicts[0]["type"] == "InspectEntity"
-        assert isinstance(step_dicts[1], dict)
-        assert step_dicts[1]["type"] == "RequireIdentity"
+        assert _as_dict(step_dicts_val[0])["type"] == "InspectEntity"
+        assert _as_dict(step_dicts_val[1])["type"] == "RequireIdentity"
 
         # Third step uses custom handler
-        assert isinstance(step_dicts[2], dict)
-        assert step_dicts[2]["type"] == "AuditStep"
-        assert step_dicts[2]["audit_level"] == "debug"
+        assert _as_dict(step_dicts_val[2])["type"] == "AuditStep"
+        assert _as_dict(step_dicts_val[2])["audit_level"] == "debug"
 
-    def test_custom_handler_in_explain_derivation(self):
+    def test_custom_handler_in_explain_derivation(self) -> None:
         """Custom handler integrates with human-readable explain_derivation."""
         @dataclass(frozen=True)
         class ValidationStep:
             strict: bool = True
 
-        def validation_handler(step: object) -> dict[str, str | int | float | bool | None | list | dict]:
-            return {"type": "ValidationStep", "strict": getattr(step, "strict", True)}
+        def validation_handler(step: ValidationStep) -> ExplainDict:
+            return {"type": "ValidationStep", "strict": step.strict}
 
-        handlers = {**_get_handlers_dict(), ValidationStep: validation_handler}
+        handlers = _get_handlers_dict()
+        # pyright: ignore[reportArgumentType] — ValidationStep handler conforms at runtime
+        # but DeriveExplainHandler expects Step param type; open-world design
+        handlers[ValidationStep] = validation_handler  # pyright: ignore[reportArgumentType]
         steps = (inspect_entity(), ValidationStep(strict=True))
 
-        text = explain_derivation(steps, handlers)
+        # pyright: ignore[reportArgumentType] — open-world design: ValidationStep is not
+        # a formal Step but explain_derivation handles it via custom handler dispatch
+        text = explain_derivation(steps, handlers)  # pyright: ignore[reportArgumentType]
         assert "Derivation (2 steps)" in text
         assert "InspectEntity" in text
         assert "ValidationStep" in text
@@ -1074,7 +1081,7 @@ class TestIntegrationCustomHandlerDispatch:
 class TestIntegrationDialectComposition:
     """Integration: explaining composed dialect patterns (multiple dialects on one entity)."""
 
-    def test_two_patterns_on_entity(self):
+    def test_two_patterns_on_entity(self) -> None:
         """Entity with two patterns shows both in explain."""
         PatNode1 = memory_node()
         PatNode2 = memory_node()
@@ -1090,33 +1097,26 @@ class TestIntegrationDialectComposition:
 
         d = entity_derivation_dict(DualEntity)
         assert d["pattern_count"] == 2
-        pat = d["patterns"]
-        assert isinstance(pat, list)
+        pat = _as_list(d["patterns"])
         assert len(pat) == 2
 
         # First pattern: HTTP
-        p0 = pat[0]
-        assert isinstance(p0, dict)
-        specs0 = p0["specs"]
-        assert isinstance(specs0, list)
-        for spec in specs0:
-            assert isinstance(spec, dict)
-            trigger = spec.get("trigger")
-            assert isinstance(trigger, dict)
+        p0 = _as_dict(pat[0])
+        specs0 = _as_list(p0["specs"])
+        for spec_val in specs0:
+            spec = _as_dict(spec_val)
+            trigger = _as_dict(spec["trigger"])
             assert trigger["type"] == "HTTPRouteTrigger"
 
         # Second pattern: CLI
-        p1 = pat[1]
-        assert isinstance(p1, dict)
-        specs1 = p1["specs"]
-        assert isinstance(specs1, list)
-        for spec in specs1:
-            assert isinstance(spec, dict)
-            trigger = spec.get("trigger")
-            assert isinstance(trigger, dict)
+        p1 = _as_dict(pat[1])
+        specs1 = _as_list(p1["specs"])
+        for spec_val in specs1:
+            spec = _as_dict(spec_val)
+            trigger = _as_dict(spec["trigger"])
             assert trigger["type"] == "CLITrigger"
 
-    def test_two_patterns_explain_entity(self):
+    def test_two_patterns_explain_entity(self) -> None:
         """Human-readable output shows both patterns."""
         PatNode3 = memory_node()
         PatNode4 = memory_node()
@@ -1139,7 +1139,7 @@ class TestIntegrationDialectComposition:
 class TestIntegrationOpSpecEffectDetails:
     """Integration: effect details (data-carrying effects) are preserved in explain."""
 
-    def test_pageable_default_size_in_opspec_dict(self):
+    def test_pageable_default_size_in_opspec_dict(self) -> None:
         """Pageable effect carries default_size through to opspec_dict."""
         spec = OpSpec(
             name="List",
@@ -1152,18 +1152,17 @@ class TestIntegrationOpSpecEffectDetails:
             effects=(Read(), Pageable(default_size=50)),
         )
         d = opspec_dict(spec)
-        effects = d.get("effects")
-        assert isinstance(effects, list)
-        pageable = None
-        for e in effects:
-            assert isinstance(e, dict)
+        effects = _as_list(d["effects"])
+        pageable: ExplainDict | None = None
+        for e_val in effects:
+            e = _as_dict(e_val)
             if e.get("type") == "Pageable":
                 pageable = e
                 break
         assert pageable is not None
         assert pageable["default_size"] == 50
 
-    def test_sortable_default_fields_in_opspec_dict(self):
+    def test_sortable_default_fields_in_opspec_dict(self) -> None:
         """Sortable effect carries default_field/default_order through to opspec_dict."""
         spec = OpSpec(
             name="List",
@@ -1176,11 +1175,10 @@ class TestIntegrationOpSpecEffectDetails:
             effects=(Read(), Sortable(default_field="name", default_order="desc")),
         )
         d = opspec_dict(spec)
-        effects = d.get("effects")
-        assert isinstance(effects, list)
-        sortable = None
-        for e in effects:
-            assert isinstance(e, dict)
+        effects = _as_list(d["effects"])
+        sortable: ExplainDict | None = None
+        for e_val in effects:
+            e = _as_dict(e_val)
             if e.get("type") == "Sortable":
                 sortable = e
                 break
@@ -1188,7 +1186,7 @@ class TestIntegrationOpSpecEffectDetails:
         assert sortable["default_field"] == "name"
         assert sortable["default_order"] == "desc"
 
-    def test_cacheable_ttl_in_explain_opspec(self):
+    def test_cacheable_ttl_in_explain_opspec(self) -> None:
         """Cacheable effect with TTL shows in human-readable explain_opspec."""
         spec = OpSpec(
             name="Get",
@@ -1208,7 +1206,7 @@ class TestIntegrationOpSpecEffectDetails:
 class TestIntegrationCompositeIdentity:
     """Integration: entities with composite identity keys work correctly in explain."""
 
-    def test_composite_identity_schema(self):
+    def test_composite_identity_schema(self) -> None:
         """Entity with composite identity shows multiple identity fields."""
         from derivelib._explain import full_entity_dict
 
@@ -1222,17 +1220,15 @@ class TestIntegrationCompositeIdentity:
             role: str
 
         data = full_entity_dict(Membership)
-        schema = data["schema"]
-        assert isinstance(schema, dict)
+        schema = _as_dict(data["schema"])
         assert schema["identity_count"] == 2
         assert schema["field_count"] == 3
 
-        fields = schema["fields"]
-        assert isinstance(fields, list)
-        id_fields = [f for f in fields if isinstance(f, dict) and f.get("identity")]
+        fields = _as_list(schema["fields"])
+        id_fields = [_as_dict(f) for f in fields if isinstance(f, dict) and f.get("identity")]
         assert len(id_fields) == 2
 
-    def test_composite_identity_trigger_paths(self):
+    def test_composite_identity_trigger_paths(self) -> None:
         """Composite identity produces correct path params in triggers."""
         CompositeNode2 = memory_node()
 
@@ -1244,23 +1240,18 @@ class TestIntegrationCompositeIdentity:
             points: int
 
         d = entity_derivation_dict(Score)
-        pat = d["patterns"]
-        assert isinstance(pat, list)
-        pat0 = pat[0]
-        assert isinstance(pat0, dict)
-        specs = pat0["specs"]
-        assert isinstance(specs, list)
+        pat = _as_list(d["patterns"])
+        pat0 = _as_dict(pat[0])
+        specs = _as_list(pat0["specs"])
 
-        get_spec = None
-        for spec in specs:
-            assert isinstance(spec, dict)
+        get_spec: ExplainDict | None = None
+        for spec_val in specs:
+            spec = _as_dict(spec_val)
             if spec.get("name") == "Get":
                 get_spec = spec
                 break
         assert get_spec is not None
-        trigger = get_spec["trigger"]
-        assert isinstance(trigger, dict)
-        path = trigger.get("path", "")
-        assert isinstance(path, str)
+        trigger = _as_dict(get_spec["trigger"])
+        path = _as_str(trigger.get("path", ""))
         assert "{player_id}" in path
         assert "{game_id}" in path

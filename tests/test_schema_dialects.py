@@ -1,7 +1,8 @@
 """Tests for emergent.wire.axis.schema.dialects — all dialect capabilities."""
 
+import dataclasses
 from dataclasses import dataclass, FrozenInstanceError
-from typing import Annotated
+from typing import Annotated, Callable
 
 import pytest
 
@@ -13,9 +14,6 @@ from emergent.wire.axis._capability import (
     PydanticModelContext,
     ExtraColumnSpec,
     ExtraFieldSpec,
-    UNSET,
-    sqlalchemy_table,
-    pydantic_model,
 )
 
 
@@ -964,7 +962,7 @@ class TestDeltaDialect:
         class Account:
             id: int
             balance: Annotated[int, DeltaField("numeric")]
-            tags: Annotated[list, DeltaField("collection")]
+            tags: Annotated[list[str], DeltaField("collection")]
 
         AccountDelta = delta_type(Account)
         account = Account(id=1, balance=100, tags=["basic"])
@@ -1000,7 +998,6 @@ class TestDeltaDialect:
         from emergent.wire.axis.schema.dialects.delta import (
             DeltaField,
             NumericDelta,
-            StringDelta,
             delta_type,
             validate_delta,
         )
@@ -1039,7 +1036,6 @@ class TestDeltaDialect:
         """validate_delta reports error when delta field doesn't exist on entity."""
         from dataclasses import make_dataclass, field as dc_field
         from emergent.wire.axis.schema.dialects.delta import (
-            DeltaField,
             NumericDelta,
             validate_delta,
         )
@@ -1117,7 +1113,7 @@ class TestDeltaDialect:
         @dataclass
         class Bag:
             id: int
-            items: Annotated[list, DeltaField("collection")]
+            items: Annotated[list[str], DeltaField("collection")]
 
         BagDelta = delta_type(Bag)
         d1 = BagDelta(items=CollectionDelta(push=("a",), pop=1))
@@ -1367,8 +1363,10 @@ class TestPydanticValidators:
         from pydantic.fields import FieldInfo as PydFieldInfo
         from pydantic import BeforeValidator
 
-        func = lambda v: v.strip() if isinstance(v, str) else v
-        cap = ValidatorBefore(func=func)
+        def strip_str(v: object) -> object:
+            return v.strip() if isinstance(v, str) else v
+
+        cap = ValidatorBefore(func=strip_str)
         fi = PydFieldInfo(annotation=str)
         ctx = PydanticContext(field_name="name", field_type=str, field_info=fi)
         result = cap.compile_pydantic(ctx)
@@ -1382,8 +1380,12 @@ class TestPydanticValidators:
         from pydantic.fields import FieldInfo as PydFieldInfo
         from pydantic import AfterValidator
 
-        func = lambda v: v.upper()
-        cap = ValidatorAfter(func=func)
+        def upper_str(v: object) -> object:
+            if isinstance(v, str):
+                return v.upper()
+            return v
+
+        cap = ValidatorAfter(func=upper_str)
         fi = PydFieldInfo(annotation=str)
         ctx = PydanticContext(field_name="code", field_type=str, field_info=fi)
         result = cap.compile_pydantic(ctx)
@@ -1396,8 +1398,10 @@ class TestPydanticValidators:
         from pydantic.fields import FieldInfo as PydFieldInfo
         from pydantic import WrapValidator
 
-        func = lambda v, handler: handler(v)
-        cap = ValidatorWrap(func=func)
+        def wrap_handler(v: object, handler: Callable[[object], object]) -> object:
+            return handler(v)
+
+        cap = ValidatorWrap(func=wrap_handler)
         fi = PydFieldInfo(annotation=str)
         ctx = PydanticContext(field_name="val", field_type=str, field_info=fi)
         result = cap.compile_pydantic(ctx)
@@ -1410,8 +1414,10 @@ class TestPydanticValidators:
         from emergent.wire.axis._capability import PydanticContext
         from pydantic.fields import FieldInfo as PydFieldInfo
 
-        func = lambda v: v
-        cap = ValidatorBefore(func=func)
+        def identity(v: object) -> object:
+            return v
+
+        cap = ValidatorBefore(func=identity)
         fi = PydFieldInfo(annotation=str)
         ctx = PydanticContext(field_name="x", field_type=str, field_info=fi)
         original_meta_len = len(ctx.field_info.metadata)
@@ -1419,16 +1425,33 @@ class TestPydanticValidators:
         assert len(ctx.field_info.metadata) == original_meta_len  # original untouched
         assert len(result.field_info.metadata) > original_meta_len
 
-    def test_validator_frozen(self):
+    def test_validator_frozen(self) -> None:
         from emergent.wire.axis.schema.dialects.pydantic import (
             ValidatorBefore,
             ValidatorAfter,
             ValidatorWrap,
         )
 
-        for cls in (ValidatorBefore, ValidatorAfter, ValidatorWrap):
-            cap = cls(func=lambda v: v)
-            assert cap.__dataclass_params__.frozen is True
+        def identity(v: object) -> object:
+            return v
+
+        def wrap_identity(v: object, handler: Callable[[object], object]) -> object:
+            return handler(v)
+
+        before_cap = ValidatorBefore(func=identity)
+        assert dataclasses.is_dataclass(before_cap)
+        with pytest.raises(FrozenInstanceError):
+            before_cap.func = identity  # type: ignore[misc]
+
+        after_cap = ValidatorAfter(func=identity)
+        assert dataclasses.is_dataclass(after_cap)
+        with pytest.raises(FrozenInstanceError):
+            after_cap.func = identity  # type: ignore[misc]
+
+        wrap_cap = ValidatorWrap(func=wrap_identity)
+        assert dataclasses.is_dataclass(wrap_cap)
+        with pytest.raises(FrozenInstanceError):
+            wrap_cap.func = wrap_identity  # type: ignore[misc]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1437,7 +1460,7 @@ class TestPydanticValidators:
 
 
 class TestCLIEnv:
-    def test_env_reads_variable(self, monkeypatch):
+    def test_env_reads_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from emergent.wire.axis.schema.dialects.cli import Env
 
         monkeypatch.setenv("TEST_API_TOKEN", "secret123")
@@ -1446,7 +1469,7 @@ class TestCLIEnv:
         result = cap.compile_argparse(ctx)
         assert result.kwargs["default"] == "secret123"
 
-    def test_env_missing_variable(self, monkeypatch):
+    def test_env_missing_variable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from emergent.wire.axis.schema.dialects.cli import Env
 
         monkeypatch.delenv("NONEXISTENT_VAR_12345", raising=False)
@@ -1922,7 +1945,7 @@ class TestIntegrationCrossDialectCompilation:
 
     def test_extra_column_and_field_specs(self):
         """ExtraColumnSpec and ExtraFieldSpec compile through table/model contexts."""
-        from emergent.wire.axis.schema._universal import SchemaName, schema_meta
+        from emergent.wire.axis.schema._universal import SchemaName
 
         name_cap = SchemaName("test_table")
         table_ctx = SQLAlchemyTableContext(class_name="Test")
