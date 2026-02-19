@@ -33,7 +33,12 @@ from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 from derivelib._codegen import create_sentinel_operation
 from derivelib._ctx import SurfaceCtx
 from derivelib.patterns.tg.browse import (
+    ActionConfirm,
+    ActionRedirect,
+    ActionRefresh,
     ActionResult,
+    ActionResultT,
+    ActionStay,
     BrowseCB,
     BrowseSession,
     _ActionEntry,
@@ -47,6 +52,54 @@ from derivelib.patterns.tg.browse import (
 )
 from derivelib.patterns.tg.uilib.keyboard import build_nav_keyboard
 from derivelib.patterns.tg.uilib.theme import UITheme
+
+from datetime import timedelta
+
+from kungfu import Ok
+
+from emergent.wire.axis.storage import MemoryStorage
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SessionStore — typed wrapper over MemoryStorage with TTL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class SessionStore[K, V]:
+    """Thin typed wrapper over MemoryStorage — unwraps Result+Option.
+
+    Replaces raw ``dict[K, V]`` session stores in TG patterns with
+    proper MemoryStorage backing + automatic 1h TTL to prevent leaks.
+    """
+
+    def __init__(self, ttl: timedelta = timedelta(hours=1)) -> None:
+        self._storage: MemoryStorage[K, V] = MemoryStorage()
+        self._ttl = ttl
+
+    async def get(self, key: K) -> V | None:
+        result = await self._storage.get(key)
+        match result:
+            case Ok(opt):
+                match opt:
+                    case Some(v):
+                        return v
+                    case _:
+                        return None
+            case _:
+                return None
+
+    async def get_or(self, key: K, default: V) -> V:
+        value = await self.get(key)
+        return value if value is not None else default
+
+    async def set(self, key: K, value: V) -> None:
+        await self._storage.set(key, value, self._ttl)
+
+    async def delete(self, key: K) -> None:
+        await self._storage.delete(key)
+
+    async def contains(self, key: K) -> bool:
+        return await self.get(key) is not None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -242,7 +295,7 @@ async def run_action_di(
     composer: Composer,
     *,
     confirmed: bool = False,
-) -> ActionResult:
+) -> ActionResultT:
     """Run @action method with DI. Injects confirmed=True when applicable.
 
     Actions that want confirm-awareness declare ``confirmed: bool = False``
@@ -268,7 +321,7 @@ async def run_action_di(
 
 
 async def dispatch_action_result(
-    result: ActionResult,
+    result: ActionResultT,
     cb: CallbackQueryCute,
     name: str,
     action_method_name: str,
@@ -276,7 +329,7 @@ async def dispatch_action_result(
     theme: UITheme,
     refresh: Callable[[str], Awaitable[tuple[str, InlineKeyboard] | None]],
     *,
-    redirect_store: dict[tuple[str, str], tuple[object, ...]] | None = None,
+    redirect_store: SessionStore[tuple[str, str], tuple[object, ...]] | None = None,
     user_key: str = "",
 ) -> None:
     """Handle ActionResult — shared by browse, dashboard, search.
@@ -289,28 +342,28 @@ async def dispatch_action_result(
         entity_id: Entity ID (for confirm callback data).
         theme: UI theme.
         refresh: Async callable(prefix) → (text, kb) | None for re-rendering.
-        redirect_store: Optional store for redirect context (browse/search).
+        redirect_store: Optional SessionStore for redirect context (browse/search).
         user_key: User key for redirect store keying.
     """
-    if result.kind == "refresh":
+    if isinstance(result, ActionRefresh):
         render_result = await refresh(result.message)
         if render_result is not None:
             text, kb = render_result
             await cb.edit_text(text, reply_markup=kb.get_markup())
 
-    elif result.kind == "stay":
+    elif isinstance(result, ActionStay):
         if result.message:
             await cb.answer(result.message, show_alert=True)
 
-    elif result.kind == "redirect":
+    elif isinstance(result, ActionRedirect):
         if redirect_store is not None and result.redirect_context and user_key:
-            redirect_store[(user_key, result.command)] = result.redirect_context
+            await redirect_store.set((user_key, result.command), result.redirect_context)
         await cb.edit_text(
             f"{result.message}\n\n/{result.command}" if result.message
             else f"/{result.command}",
         )
 
-    elif result.kind == "confirm":
+    elif isinstance(result, ActionConfirm):
         confirm_kb = InlineKeyboard()
         confirm_kb.add(InlineButton(
             text=theme.action.yes,
@@ -324,7 +377,7 @@ async def dispatch_action_result(
             text=theme.action.no,
             callback_data=BrowseCB(b=name, a="noop"),
         ))
-        await cb.edit_text(result.confirm_prompt, reply_markup=confirm_kb.get_markup())
+        await cb.edit_text(result.prompt, reply_markup=confirm_kb.get_markup())
 
 
 async def handle_action_callback(
@@ -337,7 +390,7 @@ async def handle_action_callback(
     fetch_entity: Callable[[], Awaitable[object | None]],
     refresh: Callable[[str], Awaitable[tuple[str, InlineKeyboard] | None]],
     *,
-    redirect_store: dict[tuple[str, str], tuple[object, ...]] | None = None,
+    redirect_store: SessionStore[tuple[str, str], tuple[object, ...]] | None = None,
     user_key: str = "",
 ) -> None:
     """Handle action/confirm callback — shared by browse, dashboard, search.
@@ -367,8 +420,8 @@ async def handle_action_callback(
         confirmed=is_confirmed,
     )
     # Guard: already confirmed but action returns confirm again → treat as refresh
-    if is_confirmed and result.kind == "confirm":
-        result = ActionResult.refresh()
+    if is_confirmed and isinstance(result, ActionConfirm):
+        result = ActionRefresh()
 
     await dispatch_action_result(
         result, cb, name, action_entry.method_name,

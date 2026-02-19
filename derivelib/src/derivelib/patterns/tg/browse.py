@@ -4,7 +4,7 @@ Compiles annotated entity class → DelegateCodec handlers for command + inline 
 
     from derivelib.patterns.tg.browse import tg_browse, query, action, ActionResult
 
-    @derive(tg_browse(command="tasks", provider_node=TaskStore, key_node=ChatIdNode, page_size=5))
+    @derive(tg_browse(command="tasks", key_node=ChatIdNode, page_size=5))
     @dataclass
     class TaskCard:
         id: Annotated[int, Identity]
@@ -102,6 +102,16 @@ class BrowseSource(Protocol[T_co]):
     async def count(self) -> int: ...
 
 
+@runtime_checkable
+class BrowseSourceWithFetch(BrowseSource[T_co], Protocol[T_co]):
+    """Extended protocol with direct entity fetch by ID.
+
+    Implementations can provide O(1) lookups instead of O(n) scan.
+    """
+
+    async def fetch_by_id(self, entity_id: int) -> T_co | None: ...
+
+
 @dataclass
 class ListBrowseSource(Generic[T]):
     """Simple in-memory BrowseSource backed by a list."""
@@ -114,6 +124,12 @@ class ListBrowseSource(Generic[T]):
     async def count(self) -> int:
         return len(self.items)
 
+    async def fetch_by_id(self, entity_id: int) -> T | None:
+        for item in self.items:
+            if getattr(item, "id", None) == entity_id:
+                return item
+        return None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ActionResult — return type for @action handlers
@@ -121,43 +137,71 @@ class ListBrowseSource(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class ActionResult:
-    """Result from a browse action handler.
+class ActionRefresh:
+    """Re-render current page after mutation."""
 
-    Determines what happens after the action executes.
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ActionRedirect:
+    """Redirect to another browse/flow/command.
+
+    Context objects are stored and injected into the target command's
+    @query/@action methods via compose.Retrieve.
     """
 
-    kind: str  # "refresh", "redirect", "stay", "confirm"
+    command: str
     message: str = ""
-    command: str = ""
     redirect_context: tuple[object, ...] = ()
-    confirm_prompt: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ActionStay:
+    """Show message but don't change the page."""
+
+    message: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ActionConfirm:
+    """Show confirmation dialog before proceeding."""
+
+    prompt: str
+
+
+type ActionResultT = ActionRefresh | ActionRedirect | ActionStay | ActionConfirm
+
+
+class ActionResult:
+    """Convenience factory — backward compatible.
+
+    Users can call ``ActionResult.refresh()``, ``ActionResult.redirect(...)``
+    etc. to construct typed result variants.
+    """
 
     @staticmethod
-    def refresh(message: str = "") -> ActionResult:
+    def refresh(message: str = "") -> ActionRefresh:
         """Re-render current page after mutation."""
-        return ActionResult(kind="refresh", message=message)
+        return ActionRefresh(message=message)
 
     @staticmethod
-    def redirect(command: str, *context: object) -> ActionResult:
+    def redirect(command: str, *context: object) -> ActionRedirect:
         """Redirect to another browse/flow/command.
-
-        Context objects are stored and injected into the target command's
-        @query/@action methods via compose.Retrieve.
 
             return ActionResult.redirect("tasks", project)
         """
-        return ActionResult(kind="redirect", command=command, redirect_context=context)
+        return ActionRedirect(command=command, redirect_context=context)
 
     @staticmethod
-    def stay(message: str = "") -> ActionResult:
+    def stay(message: str = "") -> ActionStay:
         """Show message but don't change the page."""
-        return ActionResult(kind="stay", message=message)
+        return ActionStay(message=message)
 
     @staticmethod
-    def confirm(prompt: str) -> ActionResult:
+    def confirm(prompt: str) -> ActionConfirm:
         """Show confirmation dialog before proceeding."""
-        return ActionResult(kind="confirm", confirm_prompt=prompt)
+        return ActionConfirm(prompt=prompt)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -384,13 +428,53 @@ class _BrowseNameCheck(ABCRule):
 
 
 def _default_render_card(entity: object) -> str:
-    """Default entity card rendering — field: value format."""
+    """Default entity card rendering — respects TG annotations (tg.Bold etc).
+
+    Uses wire's to_telegram_fields when available to read style, skip,
+    line_before annotations. Falls back to plain field: value format.
+    """
     import dataclasses
 
     if not dataclasses.is_dataclass(entity):
         return str(entity)
 
-    lines: list[str] = []
+    entity_cls = type(entity)
+    try:
+        from emergent.wire.compile._generate import to_telegram_fields
+        from emergent.wire.compile._core import Axes
+
+        fields = to_telegram_fields(entity_cls, Axes.default())
+        lines: list[str] = []
+        for rc in fields:
+            if rc.skip:
+                continue
+            value = getattr(entity, rc.field_name, None)
+            if value is None:
+                continue
+            text = str(value)
+            if rc.style == "bold":
+                text = f"<b>{text}</b>"
+            elif rc.style == "italic":
+                text = f"<i>{text}</i>"
+            elif rc.style == "code":
+                text = f"<code>{text}</code>"
+            elif rc.style == "pre":
+                text = f"<pre>{text}</pre>"
+            elif rc.style == "strike":
+                text = f"<s>{text}</s>"
+            elif rc.style == "underline":
+                text = f"<u>{text}</u>"
+            label = rc.field_name.replace("_", " ").title()
+            line = f"{label}: {text}"
+            if rc.line_before:
+                line = "\n" + line
+            lines.append(line)
+        if lines:
+            return "\n".join(lines)
+    except Exception:
+        pass
+    # Fallback — plain field: value
+    lines = []
     for f in dataclasses.fields(entity):
         value = getattr(entity, f.name)
         if value is not None:
@@ -480,11 +564,13 @@ class BrowseSurfaceStep:
         _theme = self.theme
         _agent_cls = self.agent_cls
 
+        from derivelib.patterns.tg._shared import SessionStore
+
         # Session store: chat_id → BrowseSession
-        _sessions: dict[str, BrowseSession] = {}
+        _sessions: SessionStore[str, BrowseSession] = SessionStore()
 
         # Redirect context store: (chat_id, command) → objects
-        _redirect_store: dict[tuple[str, str], tuple[object, ...]] = {}
+        _redirect_store: SessionStore[tuple[str, str], tuple[object, ...]] = SessionStore()
 
         async def _run_query(
             scope: Scope,
@@ -507,7 +593,7 @@ class BrowseSurfaceStep:
             card: object,
             scope: Scope,
             confirmed: bool = False,
-        ) -> ActionResult:
+        ) -> ActionResultT:
             """Run @action method with card + compose params resolved from scope.
 
             The card entity is injected into scope by its runtime type so
@@ -574,11 +660,7 @@ class BrowseSurfaceStep:
                 prefix=prefix, filter_key=session.filter_key,
             )
 
-        def _msg_user_key(message: MessageCute) -> str:
-            """Session key — user ID when available, fallback to chat ID."""
-            if isinstance(message.from_user, Some):
-                return str(message.from_user.value.id)
-            return str(message.chat.id)
+        from derivelib.patterns.tg._shared import msg_user_key as _msg_user_key
 
         # --- Command handler (DelegateCodec) ---
         # Declares MessageCute + Context — compiler resolves both from scope.
@@ -586,7 +668,7 @@ class BrowseSurfaceStep:
         async def command_handler(message: MessageCute, scope: Scope) -> None:
             key = _msg_user_key(message)
             session = BrowseSession(page=0)
-            _sessions[key] = session
+            await _sessions.set(key, session)
 
             result = await _query_and_render(scope, session)
             if result is None:
@@ -599,7 +681,7 @@ class BrowseSurfaceStep:
         # Handles text messages when user has an active browse session.
         async def search_handler(message: MessageCute, scope: Scope) -> None:
             key = _msg_user_key(message)
-            session = _sessions.get(key)
+            session = await _sessions.get(key)
             if session is None:
                 return
 
@@ -611,7 +693,7 @@ class BrowseSurfaceStep:
 
             session.search_query = search_text
             session.page = 0
-            _sessions[key] = session
+            await _sessions.set(key, session)
 
             result = await _query_and_render(scope, session)
             if result is None:
@@ -640,14 +722,14 @@ class BrowseSurfaceStep:
                 return
 
             key = str(cb.from_user.id)
-            session = _sessions.get(key, BrowseSession())
+            session = await _sessions.get_or(key, BrowseSession())
 
             # Tab switching
             if cb_data.a.startswith("_tab_"):
                 tab_key = cb_data.a[5:]
                 session.filter_key = tab_key
                 session.page = 0
-                _sessions[key] = session
+                await _sessions.set(key, session)
 
                 result = await _query_and_render(scope, session)
                 if result is not None:
@@ -656,7 +738,7 @@ class BrowseSurfaceStep:
 
             elif cb_data.a in ("prev", "next"):
                 session.page = cb_data.p
-                _sessions[key] = session
+                await _sessions.set(key, session)
 
                 result = await _query_and_render(scope, session)
                 if result is not None:
@@ -680,29 +762,32 @@ class BrowseSurfaceStep:
                 if action_entry is None:
                     return
 
-                # Fetch entity by ID
+                # Fetch entity by ID — O(1) if source supports it, O(n) fallback
                 source = await _run_query(scope, session)
-                total = await source.count()
-                items = await source.fetch_page(0, total)
                 target = None
-                for item in items:
-                    if _get_entity_id(item) == cb_data.e:
-                        target = item
-                        break
+                if isinstance(source, BrowseSourceWithFetch):
+                    target = await source.fetch_by_id(cb_data.e)
+                else:
+                    total = await source.count()
+                    items = await source.fetch_page(0, total)
+                    for item in items:
+                        if _get_entity_id(item) == cb_data.e:
+                            target = item
+                            break
 
                 if target is None:
                     await cb.edit_text(_theme.display.entity_not_found)
                     return
 
-                result: ActionResult = await _run_action(
+                result: ActionResultT = await _run_action(
                     action_entry.method_name, target, scope,
                     confirmed=is_confirmed,
                 )
                 # Guard: already confirmed but action returns confirm again
-                if is_confirmed and result.kind == "confirm":
-                    result = ActionResult.refresh()
+                if is_confirmed and isinstance(result, ActionConfirm):
+                    result = ActionRefresh()
 
-                if result.kind == "refresh":
+                if isinstance(result, ActionRefresh):
                     render_result = await _query_and_render(
                         scope, session, prefix=result.message,
                     )
@@ -710,19 +795,19 @@ class BrowseSurfaceStep:
                         text, kb = render_result
                         await cb.edit_text(text, reply_markup=kb.get_markup())
 
-                elif result.kind == "stay":
+                elif isinstance(result, ActionStay):
                     if result.message:
                         await cb.answer(result.message, show_alert=True)
 
-                elif result.kind == "redirect":
+                elif isinstance(result, ActionRedirect):
                     if result.redirect_context:
-                        _redirect_store[(key, result.command)] = result.redirect_context
+                        await _redirect_store.set((key, result.command), result.redirect_context)
                     await cb.edit_text(
                         f"{result.message}\n\n/{result.command}" if result.message
                         else f"/{result.command}",
                     )
 
-                elif result.kind == "confirm":
+                elif isinstance(result, ActionConfirm):
                     kb = InlineKeyboard()
                     kb.add(InlineButton(
                         text=_theme.action.yes,
@@ -736,7 +821,7 @@ class BrowseSurfaceStep:
                         text=_theme.action.no,
                         callback_data=BrowseCB(b=_browse_name, a="noop"),
                     ))
-                    await cb.edit_text(result.confirm_prompt, reply_markup=kb.get_markup())
+                    await cb.edit_text(result.prompt, reply_markup=kb.get_markup())
 
         # --- Build exposures ---
 
@@ -785,8 +870,7 @@ class TGBrowsePattern:
 
     Implements the Pattern protocol (has .compile(entity) -> Derivation).
 
-        @derive(tg_browse(command="tasks", provider_node=TaskStore,
-                          key_node=ChatIdNode, page_size=5))
+        @derive(tg_browse(command="tasks", key_node=ChatIdNode, page_size=5))
         @dataclass
         class TaskCard:
             id: Annotated[int, Identity]
@@ -794,7 +878,6 @@ class TGBrowsePattern:
     """
 
     command: str
-    provider_node: type
     key_node: type
     page_size: int = 5
     empty_text: str = "Nothing found."
@@ -835,7 +918,6 @@ class TGBrowsePattern:
 
 def tg_browse(
     command: str,
-    provider_node: type,
     key_node: type,
     page_size: int = 5,
     empty_text: str = "Nothing found.",
@@ -850,7 +932,6 @@ def tg_browse(
 
     Args:
         command: Telegram command name (e.g., "tasks" → /tasks).
-        provider_node: nodnod node for data provider.
         key_node: nodnod node for session routing.
         page_size: Items per page.
         empty_text: Message when no items found.
@@ -864,8 +945,7 @@ def tg_browse(
 
     Example::
 
-        @derive(tg_browse(command="tasks", provider_node=TaskStore,
-                          key_node=ChatIdNode, page_size=5,
+        @derive(tg_browse(command="tasks", key_node=ChatIdNode, page_size=5,
                           description="Browse tasks", order=1))
         @dataclass
         class TaskCard:
@@ -884,7 +964,6 @@ def tg_browse(
     """
     return TGBrowsePattern(
         command=command,
-        provider_node=provider_node,
         key_node=key_node,
         page_size=page_size,
         empty_text=empty_text,
@@ -908,8 +987,14 @@ __all__ = (
     "TGBrowsePattern",
     # Source
     "BrowseSource",
+    "BrowseSourceWithFetch",
     "ListBrowseSource",
     # Result
+    "ActionRefresh",
+    "ActionRedirect",
+    "ActionStay",
+    "ActionConfirm",
+    "ActionResultT",
     "ActionResult",
     # Decorators
     "query",

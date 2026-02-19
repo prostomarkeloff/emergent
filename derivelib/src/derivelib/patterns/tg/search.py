@@ -74,6 +74,7 @@ from derivelib.patterns.tg.browse import (
     _BrowseNameCheck,
 )
 from derivelib.patterns.tg._shared import (
+    SessionStore,
     add_delegate_exposure,
     get_entity_id,
     handle_action_callback,
@@ -97,10 +98,10 @@ class _HasActiveSearchSession(ABCRule):
     Rejects commands (starting with /) so they route to Command rules instead.
     """
 
-    def __init__(self, sessions: dict[str, BrowseSession]) -> None:
+    def __init__(self, sessions: SessionStore[str, BrowseSession]) -> None:
         self._sessions = sessions
 
-    def check(self, update: Update, ctx: Context) -> bool:
+    async def check(self, update: Update, ctx: Context) -> bool:
         match update.message:
             case Some(msg):
                 # Skip commands — let Command rules handle them
@@ -115,7 +116,7 @@ class _HasActiveSearchSession(ABCRule):
                         key = str(user.id)
                     case _:
                         key = str(msg.chat.id)
-                return key in self._sessions
+                return await self._sessions.contains(key)
             case _:
                 return False
 
@@ -159,11 +160,13 @@ class SearchSurfaceStep:
         _prompt = self.prompt
         _agent_cls = self.agent_cls
 
+        from derivelib.patterns.tg._shared import SessionStore
+
         # Session store: user_key → BrowseSession
-        _sessions: dict[str, BrowseSession] = {}
+        _sessions: SessionStore[str, BrowseSession] = SessionStore()
 
         # Redirect context store
-        _redirect_store: dict[tuple[str, str], tuple[object, ...]] = {}
+        _redirect_store: SessionStore[tuple[str, str], tuple[object, ...]] = SessionStore()
 
         async def _do_query_and_render(
             scope: Scope,
@@ -181,13 +184,13 @@ class SearchSurfaceStep:
         # --- Command handler: send search prompt ---
         async def command_handler(message: MessageCute, ctx: Context) -> None:
             key = msg_user_key(message)
-            _sessions[key] = BrowseSession(page=0, search_query="")
+            await _sessions.set(key, BrowseSession(page=0, search_query=""))
             await message.answer(_prompt)
 
         # --- Text handler: receive search query, show results ---
         async def text_handler(message: MessageCute, scope: Scope) -> None:
             key = msg_user_key(message)
-            session = _sessions.get(key)
+            session = await _sessions.get(key)
             if session is None:
                 return
 
@@ -202,7 +205,7 @@ class SearchSurfaceStep:
 
             session.search_query = search_text
             session.page = 0
-            _sessions[key] = session
+            await _sessions.set(key, session)
 
             result = await _do_query_and_render(scope, session)
             if result is None:
@@ -218,14 +221,14 @@ class SearchSurfaceStep:
                 return
 
             key = str(cb.from_user.id)
-            session = _sessions.get(key, BrowseSession())
+            session = await _sessions.get_or(key, BrowseSession())
 
             # Tab switching
             if cb_data.a.startswith("_tab_"):
                 tab_key = cb_data.a[5:]
                 session.filter_key = tab_key
                 session.page = 0
-                _sessions[key] = session
+                await _sessions.set(key, session)
 
                 result = await _do_query_and_render(scope, session)
                 if result is not None:
@@ -234,7 +237,7 @@ class SearchSurfaceStep:
 
             elif cb_data.a in ("prev", "next"):
                 session.page = cb_data.p
-                _sessions[key] = session
+                await _sessions.set(key, session)
 
                 result = await _do_query_and_render(scope, session)
                 if result is not None:
@@ -249,11 +252,15 @@ class SearchSurfaceStep:
                 composer = Composer.create(scope, _agent_cls)
 
                 async def fetch_entity() -> object | None:
+                    from derivelib.patterns.tg.browse import BrowseSourceWithFetch
+
                     source = await run_query_di(
                         info.entity, info.query_name, composer,
                         filter_key=session.filter_key,
                         search_query=session.search_query,
                     )
+                    if isinstance(source, BrowseSourceWithFetch):
+                        return await source.fetch_by_id(cb_data.e)
                     total = await source.count()
                     items: Sequence[object] = await source.fetch_page(0, total)
                     for item in items:

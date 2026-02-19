@@ -253,8 +253,10 @@ class SettingsSurfaceStep:
             for f in _prompted
         )
 
+        from derivelib.patterns.tg._shared import SessionStore
+
         # Session store: user_key → SettingsSession
-        _sessions: dict[str, SettingsSession] = {}
+        _sessions: SessionStore[str, SettingsSession] = SessionStore()
 
         async def _run_query(scope: Scope) -> EntityT:
             """Run @query to load current settings."""
@@ -330,7 +332,7 @@ class SettingsSurfaceStep:
         # --- Command handler ---
         async def command_handler(message: MessageCute, scope: Scope) -> None:
             key = msg_user_key(message)
-            _sessions[key] = SettingsSession()
+            await _sessions.set(key, SettingsSession())
 
             settings_obj = await _run_query(scope)
             text = _render_overview(settings_obj)
@@ -355,7 +357,7 @@ class SettingsSurfaceStep:
                 return
 
             key = str(cb.from_user.id)
-            session = _sessions.get(key, SettingsSession())
+            session = await _sessions.get_or(key, SettingsSession())
 
             # Overview mode — handle field selection and back
             if session.editing_field == "":
@@ -366,7 +368,7 @@ class SettingsSurfaceStep:
                         return
 
                     session.editing_field = field_name
-                    _sessions[key] = session
+                    await _sessions.set(key, session)
 
                     # Render widget with current value
                     settings_obj = await _run_query(scope)
@@ -429,7 +431,7 @@ class SettingsSurfaceStep:
                     await _run_save(updated, scope)
 
                     session.editing_field = ""
-                    _sessions[key] = session
+                    await _sessions.set(key, session)
 
                     # Re-render overview
                     fresh = await _run_query(scope)
@@ -462,7 +464,7 @@ class SettingsSurfaceStep:
         # --- Message handler (for text-input fields) ---
         async def message_handler(message: MessageCute, scope: Scope) -> None:
             key = msg_user_key(message)
-            session = _sessions.get(key)
+            session = await _sessions.get(key)
             if session is None or session.editing_field == "":
                 return
 
@@ -486,7 +488,7 @@ class SettingsSurfaceStep:
                     await _run_save(updated, scope)
 
                     session.editing_field = ""
-                    _sessions[key] = session
+                    await _sessions.set(key, session)
 
                     fresh = await _run_query(scope)
                     text = _render_overview(fresh)
@@ -539,7 +541,7 @@ class SettingsSurfaceStep:
             class _HasActiveEdit(ABCRule):
                 """Match only when user is editing a text-input field."""
 
-                def check(self, context: Context) -> bool:
+                async def check(self, context: Context) -> bool:
                     # Extract user key from the update
                     from telegrinder.types import Update
                     update = context.get("update")
@@ -554,7 +556,7 @@ class SettingsSurfaceStep:
                                 uid_key = str(msg.chat.id)
                         case _:
                             return False
-                    session = _sess_ref.get(uid_key)
+                    session = await _sess_ref.get(uid_key)
                     if session is None or session.editing_field == "":
                         return False
                     ff = _find_field(session.editing_field)

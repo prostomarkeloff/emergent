@@ -53,7 +53,12 @@ from derivelib.axes.schema import inspect_entity
 
 # Re-exports from browse (user convenience)
 from derivelib.patterns.tg.browse import (
+    ActionConfirm,
+    ActionRedirect,
+    ActionRefresh,
     ActionResult,
+    ActionResultT,
+    ActionStay,
     BrowseCB,
     _BrowseNameCheck,
     action,
@@ -110,8 +115,10 @@ class DashboardSurfaceStep:
         _theme = self.theme
         _agent_cls = self.agent_cls
 
+        from derivelib.patterns.tg._shared import SessionStore
+
         # Session store: user_key → active_filter
-        _filter_state: dict[str, str] = {}
+        _filter_state: SessionStore[str, str] = SessionStore()
 
         def _render_dashboard(
             entity_obj: object,
@@ -132,7 +139,7 @@ class DashboardSurfaceStep:
         # --- Command handler (DelegateCodec) ---
         async def command_handler(message: MessageCute, scope: Scope) -> None:
             key = msg_user_key(message)
-            filter_key = _filter_state.get(key, "")
+            filter_key = await _filter_state.get_or(key, "")
             composer = Composer.create(scope, _agent_cls)
 
             entity_obj = await run_query_di(
@@ -153,14 +160,14 @@ class DashboardSurfaceStep:
                 return
 
             key = str(cb.from_user.id)
-            filter_key = _filter_state.get(key, "")
+            filter_key = await _filter_state.get_or(key, "")
             composer = Composer.create(scope, _agent_cls)
 
             # Tab switching
             if cb_data.a.startswith("_tab_"):
                 tab_key = cb_data.a[5:]
                 filter_key = tab_key
-                _filter_state[key] = tab_key
+                await _filter_state.set(key, tab_key)
 
                 entity_obj = await run_query_di(
                     info.entity, info.query_name, composer,
@@ -342,4 +349,9 @@ __all__ = (
     "format_card",
     "view_filter",
     "ActionResult",
+    "ActionRefresh",
+    "ActionRedirect",
+    "ActionStay",
+    "ActionConfirm",
+    "ActionResultT",
 )

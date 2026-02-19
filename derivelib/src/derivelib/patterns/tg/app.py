@@ -10,7 +10,7 @@ Shared key_node, theme, callback registry.
     class Registration:
         name: Annotated[str, TextInput("Name?")]
 
-    @derive(tg.browse("tasks", provider_node=TaskStore))
+    @derive(tg.browse("tasks"))
     @dataclass
     class TaskCard:
         id: Annotated[int, Identity]
@@ -124,7 +124,6 @@ class TGApp:
     def browse(
         self,
         command: str,
-        provider_node: type,
         *caps: SurfaceCapability,
         page_size: int = 5,
         empty_text: str = "Nothing found.",
@@ -141,7 +140,6 @@ class TGApp:
         self.registry.register_callback(actual_prefix, "browse", command)
         return TGBrowsePattern(
             command=command,
-            provider_node=provider_node,
             key_node=self.key_node,
             page_size=page_size,
             empty_text=empty_text,

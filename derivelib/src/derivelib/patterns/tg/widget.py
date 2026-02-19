@@ -38,34 +38,7 @@ F = TypeVar("F", bound=Callable[..., object])
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-@dataclass(frozen=True, slots=True)
-class MinLen:
-    """Minimum text length validation.
-
-        name: Annotated[str, TextInput("Name:"), MinLen(2)]
-    """
-
-    length: int
-
-
-@dataclass(frozen=True, slots=True)
-class MaxLen:
-    """Maximum text length validation.
-
-        name: Annotated[str, TextInput("Name:"), MaxLen(50)]
-    """
-
-    length: int
-
-
-@dataclass(frozen=True, slots=True)
-class Pattern:
-    r"""Regex pattern validation.
-
-        date: Annotated[str, TextInput("Date YYYY-MM-DD:"), Pattern(r"^\\d{4}-\\d{2}-\\d{2}$")]
-    """
-
-    regex: str
+from emergent.wire.axis.schema._universal import MinLen, MaxLen, Pattern
 
 
 def _validate_text(
@@ -75,10 +48,10 @@ def _validate_text(
 ) -> str | None:
     """Run validators on text input. Returns error message or None."""
     for v in validators:
-        if isinstance(v, MinLen) and len(text) < v.length:
-            return theme.errors.too_short.format(v.length)
-        if isinstance(v, MaxLen) and len(text) > v.length:
-            return theme.errors.too_long.format(v.length)
+        if isinstance(v, MinLen) and len(text) < v.value:
+            return theme.errors.too_short.format(v.value)
+        if isinstance(v, MaxLen) and len(text) > v.value:
+            return theme.errors.too_long.format(v.value)
         if isinstance(v, Pattern) and not re.match(v.regex, text):
             return theme.errors.invalid_format.format(v.regex)
     return None
@@ -613,6 +586,31 @@ class Radio:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Typed widget state — replaces raw dicts for type safety
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class DatePickerState:
+    year: int
+    month: int
+    view: str  # "day" | "month"
+
+
+@dataclass(frozen=True, slots=True)
+class TimePickerState:
+    view: str  # "hour" | "minute"
+    hour: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RecurrenceState:
+    view: str  # "days" | "hour" | "minute"
+    days: str = ""
+    hour: int = 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DatePicker — calendar date selection
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -634,20 +632,20 @@ class DatePicker:
     def needs_callback(self) -> bool:
         return True
 
-    def _view_state(self, ctx: WidgetContext) -> dict[str, int | str]:
+    def _view_state(self, ctx: WidgetContext) -> DatePickerState:
         cv = ctx.current_value
         if isinstance(cv, Some):
             raw: object = cv.value
-            if isinstance(raw, dict):
-                return raw  # type: ignore[return-value]
+            if isinstance(raw, DatePickerState):
+                return raw
         today = date.today()
-        return {"year": today.year, "month": today.month, "view": "day"}
+        return DatePickerState(year=today.year, month=today.month, view="day")
 
     async def render(self, ctx: WidgetContext) -> tuple[str, InlineKeyboard | None]:
         vs = self._view_state(ctx)
-        view = str(vs.get("view", "day"))
-        year = int(vs.get("year", date.today().year))
-        month = int(vs.get("month", date.today().month))
+        view = vs.view
+        year = vs.year
+        month = vs.month
 
         kb = InlineKeyboard()
 
@@ -707,28 +705,28 @@ class DatePicker:
 
     async def handle_callback(self, value: str, ctx: WidgetContext) -> WidgetResult:
         vs = self._view_state(ctx)
-        year = int(vs.get("year", date.today().year))
-        month = int(vs.get("month", date.today().month))
+        year = vs.year
+        month = vs.month
 
         if value == "dp:pm":
             month -= 1
             if month < 1:
                 month, year = 12, year - 1
-            return Stay(new_value={"year": year, "month": month, "view": "day"})
+            return Stay(new_value=DatePickerState(year=year, month=month, view="day"))
         elif value == "dp:nm":
             month += 1
             if month > 12:
                 month, year = 1, year + 1
-            return Stay(new_value={"year": year, "month": month, "view": "day"})
+            return Stay(new_value=DatePickerState(year=year, month=month, view="day"))
         elif value == "dp:py":
-            return Stay(new_value={"year": year - 1, "month": month, "view": "month"})
+            return Stay(new_value=DatePickerState(year=year - 1, month=month, view="month"))
         elif value == "dp:ny":
-            return Stay(new_value={"year": year + 1, "month": month, "view": "month"})
+            return Stay(new_value=DatePickerState(year=year + 1, month=month, view="month"))
         elif value == "dp:mv":
-            return Stay(new_value={"year": year, "month": month, "view": "month"})
+            return Stay(new_value=DatePickerState(year=year, month=month, view="month"))
         elif value.startswith("dp:m:"):
             m = int(value[5:])
-            return Stay(new_value={"year": year, "month": m, "view": "day"})
+            return Stay(new_value=DatePickerState(year=year, month=m, view="day"))
         elif value.startswith("dp:d:"):
             d = date.fromisoformat(value[5:])
             return Advance(value=d, summary=d.strftime(ctx.theme.display.date_format))
@@ -1021,16 +1019,16 @@ class TimePicker:
     def needs_callback(self) -> bool:
         return True
 
-    def _view_state(self, ctx: WidgetContext) -> dict[str, int | str]:
+    def _view_state(self, ctx: WidgetContext) -> TimePickerState:
         if isinstance(ctx.current_value, Some):
             raw = ctx.current_value.value
-            if isinstance(raw, dict):
-                return raw  # type: ignore[return-value]
-        return {"view": "hour"}
+            if isinstance(raw, TimePickerState):
+                return raw
+        return TimePickerState(view="hour")
 
     async def render(self, ctx: WidgetContext) -> tuple[str, InlineKeyboard | None]:
         vs = self._view_state(ctx)
-        view = str(vs.get("view", "hour"))
+        view = vs.view
         kb = InlineKeyboard()
 
         if view == "hour":
@@ -1042,7 +1040,7 @@ class TimePicker:
             return f"{self.prompt}\n\nSelect hour:", kb
 
         elif view == "minute":
-            hour = int(vs.get("hour", 0))
+            hour = vs.hour
             items = [
                 (f":{m:02d}", ctx.callback_data(f"tp:m:{m}"))
                 for m in range(0, 60, self.step_minutes)
@@ -1061,14 +1059,14 @@ class TimePicker:
     async def handle_callback(self, value: str, ctx: WidgetContext) -> WidgetResult:
         if value.startswith("tp:h:"):
             h = int(value[5:])
-            return Stay(new_value={"view": "minute", "hour": h})
+            return Stay(new_value=TimePickerState(view="minute", hour=h))
         elif value.startswith("tp:m:"):
             vs = self._view_state(ctx)
-            h = int(vs.get("hour", 0))
+            h = vs.hour
             m = int(value[5:])
             return Advance(value=time(h, m), summary=f"{h:02d}:{m:02d}")
         elif value == "tp:back":
-            return Stay(new_value={"view": "hour"})
+            return Stay(new_value=TimePickerState(view="hour"))
         return NoOp()
 
 
@@ -1691,17 +1689,16 @@ class RecurrencePicker:
     def needs_callback(self) -> bool:
         return True
 
-    def _state(self, ctx: WidgetContext) -> dict[str, str | int]:
+    def _state(self, ctx: WidgetContext) -> RecurrenceState:
         if isinstance(ctx.current_value, Some):
             raw = ctx.current_value.value
-            if isinstance(raw, dict):
-                return raw  # type: ignore[return-value]
-        return {"view": "days", "days": ""}
+            if isinstance(raw, RecurrenceState):
+                return raw
+        return RecurrenceState(view="days")
 
-    def _selected_days(self, st: dict[str, str | int]) -> set[str]:
-        days_str = str(st.get("days", ""))
-        if days_str:
-            return set(days_str.split(","))
+    def _selected_days(self, st: RecurrenceState) -> set[str]:
+        if st.days:
+            return set(st.days.split(","))
         return set()
 
     def _day_summary(self, selected: set[str]) -> str:
@@ -1709,7 +1706,7 @@ class RecurrencePicker:
 
     async def render(self, ctx: WidgetContext) -> tuple[str, InlineKeyboard | None]:
         st = self._state(ctx)
-        view = str(st.get("view", "days"))
+        view = st.view
         selected = self._selected_days(st)
 
         kb = InlineKeyboard()
@@ -1743,7 +1740,7 @@ class RecurrencePicker:
             return f"{self.prompt}\n\n{self._day_summary(selected)}\nSelect hour:", kb
 
         elif view == "minute":
-            hour = int(st.get("hour", 0))
+            hour = st.hour
             items = [
                 (f":{m:02d}", ctx.callback_data(f"rc:m:{m}"))
                 for m in range(0, 60, self.step_minutes)
@@ -1774,29 +1771,29 @@ class RecurrencePicker:
             else:
                 selected.add(day)
             new_days = ",".join(sorted(selected)) if selected else ""
-            return Stay(new_value={**st, "days": new_days})
+            return Stay(new_value=RecurrenceState(view=st.view, days=new_days, hour=st.hour))
 
         elif value == "rc:next":
             if not selected:
                 return Reject(message=ctx.theme.errors.select_days)
-            return Stay(new_value={**st, "view": "hour"})
+            return Stay(new_value=RecurrenceState(view="hour", days=st.days, hour=st.hour))
 
         elif value.startswith("rc:h:"):
             h = int(value[5:])
-            return Stay(new_value={**st, "view": "minute", "hour": h})
+            return Stay(new_value=RecurrenceState(view="minute", days=st.days, hour=h))
 
         elif value.startswith("rc:m:"):
             m = int(value[5:])
-            hour = int(st.get("hour", 0))
+            hour = st.hour
             summary = f"{self._day_summary(selected)} at {hour:02d}:{m:02d}"
             final = f"{','.join(sorted(selected))}@{hour:02d}:{m:02d}"
             return Advance(value=final, summary=summary)
 
         elif value == "rc:back:days":
-            return Stay(new_value={**st, "view": "days"})
+            return Stay(new_value=RecurrenceState(view="days", days=st.days, hour=st.hour))
 
         elif value == "rc:back:hour":
-            return Stay(new_value={**st, "view": "hour"})
+            return Stay(new_value=RecurrenceState(view="hour", days=st.days, hour=st.hour))
 
         return NoOp()
 
@@ -2085,6 +2082,10 @@ __all__ = (
     "MinLen",
     "MaxLen",
     "Pattern",
+    # Typed widget state
+    "DatePickerState",
+    "TimePickerState",
+    "RecurrenceState",
     # Context
     "WidgetContext",
     # Result algebra
