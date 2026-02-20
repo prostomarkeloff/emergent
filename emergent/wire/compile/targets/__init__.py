@@ -21,11 +21,12 @@ except ImportError:
 from emergent.wire.compile.targets import cli as cli
 __all__.append("cli")
 
-# Telegrinder
+# Telegrinder (RuntimeError: telegrinder may fail at import time on some
+# Python versions due to asyncio.get_event_loop() removal in 3.14+)
 try:
     from emergent.wire.compile.targets import telegrinder as telegrinder
     __all__.append("telegrinder")
-except ImportError:
+except (ImportError, RuntimeError):
     pass
 
 # Event (always available)

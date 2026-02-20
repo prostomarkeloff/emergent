@@ -52,7 +52,14 @@ from kungfu import Result
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
-from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
+
+# TelegrindTrigger is optional — telegrinder may not be installed.
+_TelegrindTrigger: type | None = None
+try:
+    from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger as _TT
+    _TelegrindTrigger = _TT
+except (ImportError, RuntimeError):
+    pass
 
 from derivelib import (
     Derivation,
@@ -179,7 +186,7 @@ def _enhance_trigger_with_args(
     Inspects raw Annotated hints for tg.CommandArg() and builds Argument objects.
     Returns the original trigger unchanged if not a TelegrindTrigger or no args found.
     """
-    if not isinstance(trigger, TelegrindTrigger):
+    if _TelegrindTrigger is None or not isinstance(trigger, _TelegrindTrigger):
         return trigger
 
     from typing import Annotated
@@ -224,7 +231,7 @@ def _enhance_trigger_with_args(
         else:
             new_rules.append(rule)
 
-    return TelegrindTrigger(*new_rules, view=trigger.view)
+    return _TelegrindTrigger(*new_rules, view=trigger.view)
 
 
 # --- surface step: one method + one trigger -> one endpoint ---
@@ -331,11 +338,18 @@ class MethodsPattern:
         return ChainedPattern(self, transforms)
 
     def compile(self, entity: type) -> Derivation:
-        from derivelib.patterns.tg.methods import (
-            DELEGATE_ENTRIES_ATTR,
-            ExposeDelegateMethod,
-            _DelegateEntry,
-        )
+        # TG delegate support is optional — telegrinder may not be installed
+        # or may fail at import time (e.g. Python 3.14+ asyncio changes).
+        _delegate_imports: tuple[str, type, type] | None = None
+        try:
+            from derivelib.patterns.tg.methods import (
+                DELEGATE_ENTRIES_ATTR,
+                ExposeDelegateMethod,
+                _DelegateEntry,
+            )
+            _delegate_imports = (DELEGATE_ENTRIES_ATTR, ExposeDelegateMethod, _DelegateEntry)
+        except (ImportError, RuntimeError):
+            pass
 
         steps: list[Step] = [inspect_entity()]
         for name in dir(entity):
@@ -364,18 +378,21 @@ class MethodsPattern:
                 )
 
             # Delegate entries → ExposeDelegateMethod (DelegateCodec)
-            delegate_entries: list[_DelegateEntry] = getattr(fn, DELEGATE_ENTRIES_ATTR, [])
-            for entry in delegate_entries:
-                steps.append(
-                    ExposeDelegateMethod(
-                        service=entity,
-                        method_name=name,
-                        trigger=entry.trigger,
-                        capabilities=(*self.capabilities, *entry.capabilities),
-                        description=entry.description,
-                        order=entry.order,
+            if _delegate_imports is not None:
+                delegate_attr, DelegateStep, DelegateEntry = _delegate_imports
+                delegate_entries: list[object] = getattr(fn, delegate_attr, [])
+                for entry in delegate_entries:
+                    assert isinstance(entry, DelegateEntry)
+                    steps.append(
+                        DelegateStep(
+                            service=entity,
+                            method_name=name,
+                            trigger=entry.trigger,
+                            capabilities=(*self.capabilities, *entry.capabilities),
+                            description=entry.description,
+                            order=entry.order,
+                        )
                     )
-                )
         return tuple(steps)
 
 
