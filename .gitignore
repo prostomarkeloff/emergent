@@ -9,6 +9,10 @@ wheels/
 # Virtual environments
 .venv
 
+# deployme generated Dockerfile (transient, written by ComposeTarget)
+.deployme.Dockerfile
+
+deployme.py
 _sematest
 emergent_meta
 _semman_test

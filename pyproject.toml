@@ -44,13 +44,13 @@ reportMissingTypeStubs = false
 reportUnknownMemberType = false
 
 [tool.hatch.build.targets.wheel]
-packages = ["emergent", "derivelib/src/derivelib"]
+packages = ["emergent", "derivelib/src/derivelib", "deployme.py/deployme"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
 
 [tool.uv.workspace]
-members = ["derivelib"]
+members = ["derivelib", "deployme.py"]
 
 [dependency-groups]
 dev = [

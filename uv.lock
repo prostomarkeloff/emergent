@@ -8,6 +8,7 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "deployme",
     "derivelib",
     "emergent",
 ]
@@ -159,6 +160,23 @@ wheels = [
 ]
 
 [[package]]
+name = "deployme"
+version = "0.1.0"
+source = { editable = "deployme.py" }
+dependencies = [
+    { name = "emergent" },
+    { name = "fastapi" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "emergent", editable = "." },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "uvicorn", specifier = ">=0.34" },
+]
+
+[[package]]
 name = "derivelib"
 version = "0.1.0"
 source = { editable = "derivelib" }
@@ -171,7 +189,7 @@ requires-dist = [{ name = "emergent", editable = "." }]
 
 [[package]]
 name = "emergent"
-version = "0.6.1"
+version = "0.6.1rc1"
 source = { editable = "." }
 dependencies = [
     { name = "combinators-py" },
