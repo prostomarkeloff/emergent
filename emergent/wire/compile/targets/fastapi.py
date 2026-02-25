@@ -164,10 +164,14 @@ def wrap_rrc_fastapi(
 
         # Parse request data based on method
         if trigger.method in ("POST", "PUT", "PATCH"):
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
+            content_type = request.headers.get("content-type", "")
+            if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+                body = dict(await request.form())
+            else:
+                try:
+                    body = await request.json()
+                except Exception:
+                    body = {}
         else:
             body = dict(request.query_params)
 
@@ -678,6 +682,9 @@ def fastapi_compile(
 
     for middleware_cls, kwargs in app_ctx.middleware:
         fapi.add_middleware(middleware_cls, **kwargs)
+
+    for router in app_ctx.routers:
+        fapi.include_router(router)
 
     # 3. Exception handlers — via pure compiler + FastAPI scope injection
     for exc_trigger, _, exc_route in EXCEPTION_COMPILER.scan_and_wrap(app, base_axes):

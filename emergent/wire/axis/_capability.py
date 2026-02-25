@@ -725,7 +725,7 @@ class FastAPIAppContext:
     """FastAPI application-level configuration.
 
     Used by FastAPIAppCompilable capabilities to configure
-    application-wide middleware. CORS is just middleware too.
+    application-wide middleware and routers.
 
     Example::
 
@@ -745,6 +745,9 @@ class FastAPIAppContext:
     middleware: tuple[tuple[type, Mapping[str, object]], ...] = field(
         default_factory=_empty_middleware
     )
+    # FastAPI APIRouter objects stored as ``object`` to avoid fastapi import
+    # in the wire axis layer.  fastapi_compile calls include_router on each.
+    routers: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

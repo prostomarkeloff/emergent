@@ -109,16 +109,12 @@ T = TypeVar("T")
 def _python_type_to_sqlalchemy(
     py_type: type[Any],
     max_length: int | None = None,
-    type_override: Any = None,
 ) -> Any:
     """Map Python type to SQLAlchemy column type.
 
     Pure function — reads pre-computed values from fold results,
     never raw capabilities.
     """
-    if type_override is not None:
-        return Text
-
     if py_type is int:
         return Integer
     elif py_type is float:
@@ -128,7 +124,7 @@ def _python_type_to_sqlalchemy(
     elif py_type is str:
         if max_length:
             return String(max_length)
-        return String(255)  # Default string length
+        return Text  # Unbounded text; use MaxLen(n) for String(n)
     elif py_type is datetime:
         return DateTime
     else:
@@ -233,11 +229,13 @@ def compile_model(
         )
 
         # Determine column type from fold results (no raw capability reads)
-        col_type = _python_type_to_sqlalchemy(
-            info.base_type,
-            max_length=constraints_ctx.max_length,
-            type_override=sa_ctx.column_kwargs.get("type_"),
-        )
+        if sa_ctx.column_type is not None:
+            col_type = sa_ctx.column_type
+        else:
+            col_type = _python_type_to_sqlalchemy(
+                info.base_type,
+                max_length=constraints_ctx.max_length,
+            )
 
         # Extract column kwargs from fold result
         col_kwargs: dict[str, Any] = dict(sa_ctx.column_kwargs)
@@ -400,16 +398,32 @@ def entity_to_model(entity: object, model_class: type[Any]) -> Any:
     return model_class(**data)
 
 
+def _coerce_field_value(value: object, field_type: type) -> object:
+    """Coerce storage value to match entity field type.
+
+    Handles impedance mismatch between storage types and entity types.
+    E.g. JSON round-trip: tuple → list, so coerce list → tuple when
+    entity declares tuple.
+    """
+    if value is None:
+        return None
+    if isinstance(value, list) and (
+        field_type is tuple or getattr(field_type, "__origin__", None) is tuple
+    ):
+        return tuple(value)
+    return value
+
+
 def model_to_entity(model: Any, entity_class: type[T]) -> T:
     """Convert SQLAlchemy model instance to dataclass entity."""
     if not dataclasses.is_dataclass(entity_class):
         raise TypeError(f"{entity_class} must be a dataclass")
 
-    # Get field names from entity class
-    field_names = [f.name for f in dataclasses.fields(entity_class)]
-
-    # Extract values from model
-    data = {name: getattr(model, name) for name in field_names}
+    fields = inspect_dataclass(entity_class)
+    data = {
+        name: _coerce_field_value(getattr(model, name), info.base_type)
+        for name, info in fields.items()
+    }
 
     return entity_class(**data)
 

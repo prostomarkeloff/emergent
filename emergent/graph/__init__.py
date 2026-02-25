@@ -27,6 +27,20 @@ from emergent.graph._compiled import (
     graph,
 )
 from emergent.graph._family import ScopeFamily
+from emergent.graph.runtime import (
+    ThreadedAgent,
+    RuntimeAgent,
+    RuntimePolicy,
+    SchedulingCompilable,
+    Cooperative,
+    WorkStealing,
+    WorkStealingContext,
+    WorkStealingCompilable,
+    FailFast,
+    GILResolvable,
+    AutoDowngrade,
+    RequireFreeThreaded,
+)
 from emergent.graph._visualize import (
     to_mermaid,
     to_tree,
@@ -49,6 +63,19 @@ __all__ = (
     "CompiledRun",
     # Scope families
     "ScopeFamily",
+    # Runtime
+    "RuntimeAgent",
+    "RuntimePolicy",
+    "ThreadedAgent",
+    "SchedulingCompilable",
+    "Cooperative",
+    "WorkStealing",
+    "WorkStealingContext",
+    "WorkStealingCompilable",
+    "FailFast",
+    "GILResolvable",
+    "AutoDowngrade",
+    "RequireFreeThreaded",
     # Visualization
     "to_mermaid",
     "to_tree",

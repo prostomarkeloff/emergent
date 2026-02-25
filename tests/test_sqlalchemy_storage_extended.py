@@ -740,14 +740,6 @@ class TestPythonTypeToSqlalchemy:
         assert isinstance(result, String)
         assert result.length == 64
 
-    def test_type_override_returns_text(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(int, type_override="anything")
-        assert result is Text
-
-    def test_type_override_takes_precedence_over_known_type(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(str, max_length=128, type_override="col_override")
-        assert result is Text
-
     def test_unknown_type_returns_text(self) -> None:
         result = _python_type_to_sqlalchemy_fn(bytes)
         assert result is Text

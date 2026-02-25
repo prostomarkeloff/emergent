@@ -67,17 +67,20 @@ class FullText(SQLCapability):
 
 @dataclass(frozen=True, slots=True)
 class Type(SQLCapability):
-    """Override inferred SQL type.
+    """Override inferred SQL type with a SQLAlchemy type.
 
     Examples:
-        bio: Annotated[str, sql.Type("TEXT")]
-        data: Annotated[dict, sql.Type("JSONB")]
-        amount: Annotated[float, sql.Type("DECIMAL(19,4)")]
+        from sqlalchemy import Text, Numeric
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        bio: Annotated[str, sql.Type(Text)]
+        data: Annotated[dict, sql.Type(JSONB)]
+        amount: Annotated[float, sql.Type(Numeric(19, 4))]
     """
-    sql_type: str
+    sql_type: type
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
-        return replace(ctx, column_kwargs={**ctx.column_kwargs, "type_": self.sql_type})
+        return replace(ctx, column_type=self.sql_type)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -251,6 +254,44 @@ class CompositeIndex(SQLCapability):
         return replace(ctx, indexes=(*ctx.indexes, self.fields))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# JSON Storage
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class Json(SQLCapability):
+    """Store field as JSON column.
+
+    For collection types (tuple, list, dict) that don't have a native
+    SQL column type. The storage compiler serializes to/from JSON.
+
+    Examples:
+        tags: Annotated[tuple[str, ...], sql.Json] = ()
+        metadata: Annotated[dict[str, str], sql.Json] = field(default_factory=dict)
+    """
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        from sqlalchemy import JSON
+        return replace(ctx, column_type=JSON)
+
+
+@dataclass(frozen=True, slots=True)
+class JsonB(SQLCapability):
+    """Store field as JSONB column (Postgres-specific, indexable).
+
+    Same as Json but uses Postgres JSONB for indexing and query support.
+
+    Examples:
+        tags: Annotated[tuple[str, ...], sql.JsonB] = ()
+        metadata: Annotated[dict[str, str], sql.JsonB] = field(default_factory=dict)
+    """
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        from sqlalchemy.dialects.postgresql import JSONB
+        return replace(ctx, column_type=JSONB)
+
+
 __all__ = (
     "SQLCapability",
     # Indexing
@@ -266,6 +307,9 @@ __all__ = (
     "PrimaryKey",
     # Foreign Key
     "ForeignKey",
+    # JSON
+    "Json",
+    "JsonB",
     # Table-Level
     "TableName",
     "CompositeIndex",
