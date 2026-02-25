@@ -3,8 +3,7 @@
 IMPORTANT: Backend does NOT own transactions. Caller provides session, caller commits.
 
 Usage:
-    from emergent.wire.axis import storage
-    from emergent.wire.axis.schema import Identity, Unique, MaxLen
+    from emergent.wire.axis.storage.contrib import sqlalchemy
 
     @dataclass
     class User:
@@ -12,21 +11,14 @@ Usage:
         email: Annotated[str, Unique, MaxLen(255)]
         balance: Annotated[int, Min(0)]
 
-    async with session_factory() as session:
-        users = storage.sqlalchemy(
-            session,
-            entity=User,
-            tablename="users",
-        )
+    UserStore = sqlalchemy.store(User, "users")
 
-        # KV-style by primary key
+    async with session_factory() as session:
+        users = UserStore(session)
+
         await users.set(user)
         user = await users.get(123)
         await users.delete(123)
-
-        # Relational queries
-        active = await users.find(lambda u: u.balance > 0)
-        one = await users.find_one(lambda u: u.email == "alice@example.com")
 
         await session.commit()  # Caller commits!
 
@@ -36,9 +28,10 @@ Requires: sqlalchemy[asyncio]
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Generic, TypeVar, cast
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -55,7 +48,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.engine import CursorResult
 
 from kungfu import Result, Ok, Error, Option, Some, Nothing
 
@@ -63,6 +55,7 @@ from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
 from emergent.wire.axis._capability import (
     SQLAlchemyContext, SQLAlchemyCompilable,
     ConstraintsContext, ConstraintsCompilable,
+    CoercionContext, CoercionCompilable,
 )
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -97,8 +90,8 @@ from emergent.wire.axis.query._expr import (
 )
 from emergent.wire.axis.query._proxy import EntityProxy, build_expr
 
-
-T = TypeVar("T")
+if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -106,32 +99,31 @@ T = TypeVar("T")
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _python_type_to_sqlalchemy(
-    py_type: type[Any],
+def _default_column_type(
+    py_type: type,
     max_length: int | None = None,
-) -> Any:
+) -> type:
     """Map Python type to SQLAlchemy column type.
 
-    Pure function — reads pre-computed values from fold results,
-    never raw capabilities.
+    Pure function — no post-fold fallback. Used to set initial SA context
+    from coercion-aware base type.
     """
     if py_type is int:
         return Integer
-    elif py_type is float:
+    if py_type is float:
         return Float
-    elif py_type is bool:
+    if py_type is bool:
         return Boolean
-    elif py_type is str:
+    if py_type is str:
         if max_length:
-            return String(max_length)
-        return Text  # Unbounded text; use MaxLen(n) for String(n)
-    elif py_type is datetime:
-        return DateTime
-    else:
+            return String(max_length)  # type: ignore[return-value]
         return Text
+    if py_type is datetime:
+        return DateTime
+    return Text
 
 
-def _get_identity_field(fields: dict[str, FieldInfo]) -> str | None:
+def _get_identity_field(fields: Mapping[str, FieldInfo]) -> str | None:
     """Find field marked with Identity capability via fold."""
     from emergent.wire.compile._core import fold_field
 
@@ -157,62 +149,54 @@ class _GeneratedBase(DeclarativeBase):
     pass
 
 
-def compile_model(
+# Type alias for the coercion map stored on compiled models
+type _CoercionMap = dict[str, tuple[Callable[[object], object], Callable[[object], object]]]
+
+
+def compile_model[T](
     entity: type[T],
     tablename: str,
     base: type[DeclarativeBase] | None = None,
     schema: str | None = None,
-) -> type[Any]:
+) -> type[DeclarativeBase]:
     """Compile dataclass with schema annotations to SQLAlchemy model.
 
-    Reads capabilities from entity fields:
-    - Identity → primary_key=True
-    - Unique → unique=True
-    - MaxLen(n) → String(n)
-    - Ref(Target) → ForeignKey
-    - sql.Index(...) → Index
-    - sql.ServerDefault(...) → server_default
-    - sql.PrimaryKey → primary_key=True
-    - sql.ForeignKey(...) → ForeignKey
-
-    Args:
-        entity: Dataclass with Annotated fields
-        tablename: SQL table name
-        base: SQLAlchemy declarative base (default: auto-created)
-        schema: Database schema (optional)
+    Three-fold compilation per field:
+    1. Constraints fold — max_length, identity, unique, etc.
+    2. Coercion fold — storage_type + to/from callables (Coerce, custom CoercionCompilable)
+    3. SA fold — column_type (initial from coercion-aware base), column_kwargs (PK, FK, nullable, etc.)
 
     Returns:
-        SQLAlchemy model class
+        SQLAlchemy model class with _field_coercion and _identity_field attrs.
     """
     from emergent.wire.compile._core import fold_field
 
     if not dataclasses.is_dataclass(entity):
         raise TypeError(f"{entity} must be a dataclass")
 
-    # Use provided base or create new one
     model_base = base or _GeneratedBase
 
-    # Check if table already exists in this base's metadata — reuse it
+    # Reuse existing model if table already compiled
     if tablename in model_base.metadata.tables:
-        # Find existing model class for this table
         for mapper in model_base.registry.mappers:
             if hasattr(mapper.class_, '__tablename__') and mapper.class_.__tablename__ == tablename:
                 return mapper.class_
 
-    # Inspect entity fields
     fields = inspect_dataclass(entity)
     identity_field = _get_identity_field(fields)
 
-    # Build column definitions
-    columns: dict[str, Any] = {
-        "__tablename__": tablename,
+    # Build column definitions + coercion map
+    attrs: dict[str, Column[object] | str | dict[str, str]] = {
+        "__tablename__": tablename,  # type: ignore[dict-item]
     }
 
     if schema:
-        columns["__table_args__"] = {"schema": schema}
+        attrs["__table_args__"] = {"schema": schema}  # type: ignore[assignment]
+
+    field_coercion: _CoercionMap = {}
 
     for name, info in fields.items():
-        # Fold constraints (for max_length, identity, etc.)
+        # FOLD 1: Constraints (max_length, identity, etc.)
         constraints_ctx = fold_field(
             info,
             ConstraintsContext(field_name=name, field_type=info.base_type),
@@ -220,28 +204,40 @@ def compile_model(
             "compile_constraints",
         )
 
-        # Fold all capabilities → SQLAlchemyContext
+        # FOLD 2: Coercion (BEFORE SA — provides storage_type)
+        coercion_ctx = fold_field(
+            info,
+            CoercionContext(field_name=name, field_type=info.base_type),
+            CoercionCompilable,
+            "compile_coercion",
+        )
+        if coercion_ctx.to_storage is not None and coercion_ctx.from_storage is not None:
+            field_coercion[name] = (coercion_ctx.to_storage, coercion_ctx.from_storage)
+
+        # Use storage_type from coercion (if Coerce present) → correct base for column type
+        base_type = coercion_ctx.storage_type if coercion_ctx.storage_type is not None else info.base_type
+
+        # FOLD 3: SA context — initial column_type derived from coercion-aware base_type
         sa_ctx = fold_field(
             info,
-            SQLAlchemyContext(field_name=name, field_type=info.base_type),
+            SQLAlchemyContext(
+                field_name=name,
+                field_type=info.base_type,
+                column_type=_default_column_type(base_type, max_length=constraints_ctx.max_length),
+            ),
             SQLAlchemyCompilable,
             "compile_sqlalchemy",
         )
 
-        # Determine column type from fold results (no raw capability reads)
-        if sa_ctx.column_type is not None:
-            col_type = sa_ctx.column_type
-        else:
-            col_type = _python_type_to_sqlalchemy(
-                info.base_type,
-                max_length=constraints_ctx.max_length,
-            )
+        # column_type is now fully resolved — either from default, Coerce's storage_type, or SA capabilities
+        col_type = sa_ctx.column_type
 
-        # Extract column kwargs from fold result
-        col_kwargs: dict[str, Any] = dict(sa_ctx.column_kwargs)
+        # Column kwargs
+        col_kwargs: dict[str, str | int | bool | None] = dict(sa_ctx.column_kwargs)
+
         col_kwargs.setdefault("nullable", info.is_optional)
 
-        # Extract FK config → SA ForeignKey instance
+        # Extract FK config
         fk_target = col_kwargs.pop("fk_target", None)
         fk_ondelete = col_kwargs.pop("fk_ondelete", None)
         fk_onupdate = col_kwargs.pop("fk_onupdate", None)
@@ -250,25 +246,25 @@ def compile_model(
         if fk_target is not None:
             fk_instance = ForeignKey(
                 fk_target,
-                ondelete=fk_ondelete or "CASCADE",
-                onupdate=fk_onupdate or "CASCADE",
+                ondelete=str(fk_ondelete or "CASCADE"),
+                onupdate=str(fk_onupdate or "CASCADE"),
             )
 
-        # Create column
         if fk_instance is not None:
-            columns[name] = Column(col_type, fk_instance, **col_kwargs)
+            attrs[name] = Column(col_type, fk_instance, **col_kwargs)  # type: ignore[arg-type]
         else:
-            columns[name] = Column(col_type, **col_kwargs)
+            attrs[name] = Column(col_type, **col_kwargs)  # type: ignore[arg-type]
 
-    # Create model class dynamically
+    # Create model class
     model_name = f"{entity.__name__}Model"
-    model_class: type[Any] = type(model_name, (model_base,), columns)
+    model_class = type(model_name, (model_base,), attrs)
 
-    # Store reference to original entity for mapping
+    # Attach metadata used by entity<->model mapping
     model_class._entity_class = entity  # type: ignore[attr-defined]
     model_class._identity_field = identity_field  # type: ignore[attr-defined]
+    model_class._field_coercion = field_coercion  # type: ignore[attr-defined]
 
-    return model_class
+    return model_class  # type: ignore[return-value]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -276,12 +272,8 @@ def compile_model(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def compile_expr(expr: Expr, model: type[Any], *extra_models: type[Any]) -> Any:
-    """Compile query Expr to SQLAlchemy column expression.
-
-    For join ON clauses, pass the join model as extra_models so fields
-    from both sides resolve correctly.
-    """
+def compile_expr(expr: Expr, model: type[DeclarativeBase], *extra_models: type[DeclarativeBase]) -> object:
+    """Compile query Expr to SQLAlchemy column expression."""
     match expr:
         case Field(name=name):
             if hasattr(model, name):
@@ -291,8 +283,8 @@ def compile_expr(expr: Expr, model: type[Any], *extra_models: type[Any]) -> Any:
                     return getattr(m, name)
             return getattr(model, name)  # raises AttributeError
 
-        case Const():
-            return cast(Any, expr).value
+        case Const(value=value):
+            return value
 
         case Eq(left=left, right=right):
             return compile_expr(left, model, *extra_models) == compile_expr(right, model, *extra_models)
@@ -325,60 +317,60 @@ def compile_expr(expr: Expr, model: type[Any], *extra_models: type[Any]) -> Any:
             return not_(compile_expr(operand, model, *extra_models))
 
         case In(field=field, values=values):
-            return compile_expr(field, model, *extra_models).in_(values)
+            return compile_expr(field, model, *extra_models).in_(values)  # type: ignore[union-attr]
 
         case Contains(field=field, substring=substring):
-            return compile_expr(field, model, *extra_models).contains(substring)
+            return compile_expr(field, model, *extra_models).contains(substring)  # type: ignore[union-attr]
 
         case StartsWith(field=field, prefix=prefix):
-            return compile_expr(field, model, *extra_models).startswith(prefix)
+            return compile_expr(field, model, *extra_models).startswith(prefix)  # type: ignore[union-attr]
 
         case EndsWith(field=field, suffix=suffix):
-            return compile_expr(field, model, *extra_models).endswith(suffix)
+            return compile_expr(field, model, *extra_models).endswith(suffix)  # type: ignore[union-attr]
 
         case IsNull(field=field):
-            return compile_expr(field, model, *extra_models).is_(None)
+            return compile_expr(field, model, *extra_models).is_(None)  # type: ignore[union-attr]
 
         case IsNotNull(field=field):
-            return compile_expr(field, model, *extra_models).isnot(None)
+            return compile_expr(field, model, *extra_models).isnot(None)  # type: ignore[union-attr]
 
         case Between(field=field, low=low, high=high):
-            return compile_expr(field, model, *extra_models).between(
+            return compile_expr(field, model, *extra_models).between(  # type: ignore[union-attr]
                 compile_expr(low, model, *extra_models), compile_expr(high, model, *extra_models)
             )
 
         case Like(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).like(pattern)
+            return compile_expr(field, model, *extra_models).like(pattern)  # type: ignore[union-attr]
 
         case ILike(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).ilike(pattern)
+            return compile_expr(field, model, *extra_models).ilike(pattern)  # type: ignore[union-attr]
 
         case Regex(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).regexp_match(pattern)
+            return compile_expr(field, model, *extra_models).regexp_match(pattern)  # type: ignore[union-attr]
 
         case JsonExtract(field=field, path=path):
             col = compile_expr(field, model, *extra_models)
             for key in path.split("."):
-                col = col[key]
+                col = col[key]  # type: ignore[index]
             return col
 
         case JsonContains(field=field, value=value):
-            return compile_expr(field, model, *extra_models).contains(value)
+            return compile_expr(field, model, *extra_models).contains(value)  # type: ignore[union-attr]
 
         case JsonHasKey(field=field, key=key):
-            return compile_expr(field, model, *extra_models).has_key(key)
+            return compile_expr(field, model, *extra_models).has_key(key)  # type: ignore[union-attr]
 
         case ArrayContains(field=field, value=value):
-            return compile_expr(field, model, *extra_models).contains([value])
+            return compile_expr(field, model, *extra_models).contains([value])  # type: ignore[union-attr]
 
         case ArrayAny(field=field, values=values):
-            return compile_expr(field, model, *extra_models).overlap(list(values))
+            return compile_expr(field, model, *extra_models).overlap(list(values))  # type: ignore[union-attr]
 
         case ArrayAll(field=field, values=values):
-            return compile_expr(field, model, *extra_models).contains(list(values))
+            return compile_expr(field, model, *extra_models).contains(list(values))  # type: ignore[union-attr]
 
         case ArrayOverlap(field=field, values=values):
-            return compile_expr(field, model, *extra_models).overlap(list(values))
+            return compile_expr(field, model, *extra_models).overlap(list(values))  # type: ignore[union-attr]
 
         case _:
             raise TypeError(f"Unsupported expression type: {type(expr)}")
@@ -389,41 +381,46 @@ def compile_expr(expr: Expr, model: type[Any], *extra_models: type[Any]) -> Any:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def entity_to_model(entity: object, model_class: type[Any]) -> Any:
-    """Convert dataclass entity to SQLAlchemy model instance."""
+def entity_to_model[T](entity: T, model_class: type[DeclarativeBase]) -> DeclarativeBase:
+    """Convert dataclass entity to SQLAlchemy model instance.
+
+    Applies to_storage coercion from _field_coercion map.
+    """
     if not dataclasses.is_dataclass(entity):
         raise TypeError(f"{entity} must be a dataclass instance")
 
-    data = dataclasses.asdict(entity)  # type: ignore[arg-type]
+    coercion: _CoercionMap = getattr(model_class, "_field_coercion", {})
+    data: dict[str, object] = {}
+
+    for f in dataclasses.fields(entity):  # type: ignore[arg-type]
+        value = getattr(entity, f.name)
+        to_storage_fn = coercion.get(f.name)
+        if to_storage_fn is not None:
+            value = to_storage_fn[0](value)
+        data[f.name] = value
+
     return model_class(**data)
 
 
-def _coerce_field_value(value: object, field_type: type) -> object:
-    """Coerce storage value to match entity field type.
+def model_to_entity[T](model: DeclarativeBase, entity_class: type[T]) -> T:
+    """Convert SQLAlchemy model instance to dataclass entity.
 
-    Handles impedance mismatch between storage types and entity types.
-    E.g. JSON round-trip: tuple → list, so coerce list → tuple when
-    entity declares tuple.
+    Applies from_storage coercion from _field_coercion map.
     """
-    if value is None:
-        return None
-    if isinstance(value, list) and (
-        field_type is tuple or getattr(field_type, "__origin__", None) is tuple
-    ):
-        return tuple(value)
-    return value
-
-
-def model_to_entity(model: Any, entity_class: type[T]) -> T:
-    """Convert SQLAlchemy model instance to dataclass entity."""
     if not dataclasses.is_dataclass(entity_class):
         raise TypeError(f"{entity_class} must be a dataclass")
 
+    model_class = type(model)
+    coercion: _CoercionMap = getattr(model_class, "_field_coercion", {})
     fields = inspect_dataclass(entity_class)
-    data = {
-        name: _coerce_field_value(getattr(model, name), info.base_type)
-        for name, info in fields.items()
-    }
+    data: dict[str, object] = {}
+
+    for name in fields:
+        value = getattr(model, name)
+        from_storage_fn = coercion.get(name)
+        if from_storage_fn is not None:
+            value = from_storage_fn[1](value)
+        data[name] = value
 
     return entity_class(**data)
 
@@ -433,7 +430,7 @@ def model_to_entity(model: Any, entity_class: type[T]) -> T:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class StorageError:
     """Storage operation error."""
     message: str
@@ -441,306 +438,11 @@ class StorageError:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SQLAlchemy Storage Backend
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class SQLAlchemyStorage(Generic[T]):
-    """SQLAlchemy storage backend with auto-generated model.
-
-    IMPORTANT: Does NOT own transactions. Receives session, does NOT commit.
-    Caller is responsible for transaction boundaries.
-
-    Provides:
-    - KV-style access by primary key: get, set, delete
-    - Relational queries: find, find_one, count, exists
-
-    Usage:
-        async with session_factory() as session:
-            users = SQLAlchemyStorage(
-                session,
-                entity=User,
-                tablename="users",
-            )
-
-            # KV operations
-            await users.set(user)
-            user = await users.get(123)
-            await users.delete(123)
-
-            # Queries
-            active = await users.find(lambda u: u.balance > 0)
-
-            await session.commit()  # Caller commits!
-    """
-
-    __slots__ = ("_session", "_entity", "_model", "_identity_field")
-
-    _session: AsyncSession
-    _entity: type[T]
-    _model: type[Any]
-    _identity_field: str | None
-
-    def __init__(
-        self,
-        session: AsyncSession,
-        entity: type[T],
-        tablename: str,
-        base: type[DeclarativeBase] | None = None,
-        schema: str | None = None,
-    ) -> None:
-        """
-        Args:
-            session: SQLAlchemy async session (caller owns it)
-            entity: Dataclass with schema annotations
-            tablename: SQL table name
-            base: SQLAlchemy declarative base (optional)
-            schema: Database schema (optional)
-        """
-        self._session = session
-        self._entity = entity
-        self._model = compile_model(entity, tablename, base, schema)
-        self._identity_field = self._model._identity_field  # type: ignore[attr-defined]
-
-    @property
-    def entity(self) -> type[T]:
-        """Entity dataclass type."""
-        return self._entity
-
-    @property
-    def model(self) -> type[Any]:
-        """Generated SQLAlchemy model class."""
-        return self._model
-
-    # ─── KV Operations (by primary key) ───────────────────────────────────────
-
-    async def get(self, key: Any) -> Result[Option[T], StorageError]:
-        """Get entity by primary key."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
-        try:
-            stmt = select(self._model).where(
-                getattr(self._model, self._identity_field) == key
-            )
-            result = await self._session.execute(stmt)
-            row = result.scalar_one_or_none()
-
-            if row is None:
-                return Ok(Nothing())
-
-            return Ok(Some(model_to_entity(row, self._entity)))
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to get: {e}", e))
-
-    async def set(self, entity: T) -> Result[T, StorageError]:
-        """Insert or update entity (upsert by primary key)."""
-        try:
-            model_instance = entity_to_model(entity, self._model)
-            merged = await self._session.merge(model_instance)
-            await self._session.flush()
-            return Ok(model_to_entity(merged, self._entity))
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to set: {e}", e))
-
-    async def delete(self, key: Any) -> Result[bool, StorageError]:
-        """Delete entity by primary key. Returns True if existed."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
-        try:
-            stmt = select(self._model).where(
-                getattr(self._model, self._identity_field) == key
-            )
-            result = await self._session.execute(stmt)
-            row = result.scalar_one_or_none()
-
-            if row is None:
-                return Ok(False)
-
-            await self._session.delete(row)
-            return Ok(True)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to delete: {e}", e))
-
-    async def exists(self, key: Any) -> Result[bool, StorageError]:
-        """Check if entity exists by primary key."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
-        try:
-            stmt = select(func.count()).select_from(self._model).where(
-                getattr(self._model, self._identity_field) == key
-            )
-            result = await self._session.execute(stmt)
-            count_val: int = result.scalar_one()
-            return Ok(count_val > 0)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to check exists: {e}", e))
-
-    # ─── Relational Operations ────────────────────────────────────────────────
-
-    async def find(
-        self,
-        predicate: Callable[[EntityProxy[T]], Expr],
-    ) -> Result[list[T], StorageError]:
-        """Find all entities matching predicate."""
-        try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
-
-            stmt = select(self._model).where(where_clause)
-            result = await self._session.execute(stmt)
-            rows = result.scalars().all()
-
-            entities = [model_to_entity(row, self._entity) for row in rows]
-            return Ok(entities)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to find: {e}", e))
-
-    async def find_one(
-        self,
-        predicate: Callable[[EntityProxy[T]], Expr],
-    ) -> Result[Option[T], StorageError]:
-        """Find single entity matching predicate."""
-        try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
-
-            stmt = select(self._model).where(where_clause).limit(1)
-            result = await self._session.execute(stmt)
-            row = result.scalar_one_or_none()
-
-            if row is None:
-                return Ok(Nothing())
-
-            return Ok(Some(model_to_entity(row, self._entity)))
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to find_one: {e}", e))
-
-    async def count(
-        self,
-        predicate: Callable[[EntityProxy[T]], Expr] | None = None,
-    ) -> Result[int, StorageError]:
-        """Count entities, optionally filtered."""
-        try:
-            stmt = select(func.count()).select_from(self._model)
-
-            if predicate is not None:
-                expr = build_expr(self._entity, predicate)
-                where_clause = compile_expr(expr, self._model)
-                stmt = stmt.where(where_clause)
-
-            result = await self._session.execute(stmt)
-            count_val: int = result.scalar_one()
-            return Ok(count_val)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to count: {e}", e))
-
-    async def delete_where(
-        self,
-        predicate: Callable[[EntityProxy[T]], Expr],
-    ) -> Result[int, StorageError]:
-        """Delete all entities matching predicate. Returns count."""
-        try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
-
-            stmt = delete(self._model).where(where_clause)
-            cursor = cast(CursorResult[Any], await self._session.execute(stmt))
-            return Ok(cursor.rowcount)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to delete_where: {e}", e))
-
-    # ─── Bulk Operations ──────────────────────────────────────────────────────
-
-    async def set_many(self, entities: list[T]) -> Result[list[T], StorageError]:
-        """Insert or update multiple entities."""
-        try:
-            results: list[T] = []
-            for ent in entities:
-                model_instance = entity_to_model(ent, self._model)
-                merged = await self._session.merge(model_instance)
-                results.append(model_to_entity(merged, self._entity))
-            await self._session.flush()
-            return Ok(results)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to set_many: {e}", e))
-
-    async def all(self) -> Result[list[T], StorageError]:
-        """Get all entities."""
-        try:
-            stmt = select(self._model)
-            result = await self._session.execute(stmt)
-            rows = result.scalars().all()
-            entities = [model_to_entity(row, self._entity) for row in rows]
-            return Ok(entities)
-
-        except Exception as e:
-            return Error(StorageError(f"Failed to get all: {e}", e))
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Factory Function
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def sqlalchemy(
-    session: AsyncSession,
-    entity: type[T],
-    tablename: str,
-    base: type[DeclarativeBase] | None = None,
-    schema: str | None = None,
-) -> SQLAlchemyStorage[T]:
-    """Create SQLAlchemy storage for entity.
-
-    Generates SQLAlchemy model from entity schema annotations.
-
-    Args:
-        session: SQLAlchemy async session
-        entity: Dataclass with Annotated fields
-        tablename: SQL table name
-        base: SQLAlchemy declarative base (optional)
-        schema: Database schema (optional)
-
-    Returns:
-        SQLAlchemyStorage instance
-
-    Example:
-        @dataclass
-        class User:
-            id: Annotated[int, Identity]
-            email: Annotated[str, Unique, MaxLen(255)]
-
-        async with session_factory() as session:
-            users = sqlalchemy(session, User, "users")
-            await users.set(User(id=1, email="alice@example.com"))
-            await session.commit()
-    """
-    return SQLAlchemyStorage(
-        session=session,
-        entity=entity,
-        tablename=tablename,
-        base=base,
-        schema=schema,
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
 # Store Pattern — separates configuration from session
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class SQLAlchemyStore(Generic[T]):
+class SQLAlchemyStore[T]:
     """Store factory — configure once, use with any session.
 
     Separates storage configuration from session lifecycle.
@@ -752,15 +454,9 @@ class SQLAlchemyStore(Generic[T]):
 
         # Use with any session
         async with session_factory() as session:
-            users = UserStore.bind(session)
+            users = UserStore(session)
             await users.set(user)
             await session.commit()
-
-        # Or use context manager
-        async with session_factory() as session:
-            async with UserStore.session(session) as users:
-                await users.set(user)
-            # auto-flush on exit (no commit)
     """
 
     __slots__ = ("_entity", "_tablename", "_base", "_schema", "_model", "_identity_field")
@@ -769,7 +465,7 @@ class SQLAlchemyStore(Generic[T]):
     _tablename: str
     _base: type[DeclarativeBase] | None
     _schema: str | None
-    _model: type[Any]
+    _model: type[DeclarativeBase]
     _identity_field: str | None
 
     def __init__(
@@ -779,47 +475,27 @@ class SQLAlchemyStore(Generic[T]):
         base: type[DeclarativeBase] | None = None,
         schema: str | None = None,
     ) -> None:
-        """
-        Args:
-            entity: Dataclass with schema annotations
-            tablename: SQL table name
-            base: SQLAlchemy declarative base (optional)
-            schema: Database schema (optional)
-        """
         self._entity = entity
         self._tablename = tablename
         self._base = base
         self._schema = schema
-        # Compile model once
         self._model = compile_model(entity, tablename, base, schema)
         self._identity_field = self._model._identity_field  # type: ignore[attr-defined]
 
     @property
     def entity(self) -> type[T]:
-        """Entity dataclass type."""
         return self._entity
 
     @property
-    def model(self) -> type[Any]:
-        """Generated SQLAlchemy model class."""
+    def model(self) -> type[DeclarativeBase]:
         return self._model
 
     @property
     def tablename(self) -> str:
-        """SQL table name."""
         return self._tablename
 
     def bind(self, session: AsyncSession) -> BoundSQLAlchemyStore[T]:
-        """Bind store to session.
-
-        Returns a BoundSQLAlchemyStore with all storage operations.
-
-        Usage:
-            async with session_factory() as session:
-                users = UserStore.bind(session)
-                await users.set(user)
-                await session.commit()
-        """
+        """Bind store to session — returns object with all storage operations."""
         return BoundSQLAlchemyStore(
             session=session,
             entity=self._entity,
@@ -828,18 +504,14 @@ class SQLAlchemyStore(Generic[T]):
         )
 
     def __call__(self, session: AsyncSession) -> BoundSQLAlchemyStore[T]:
-        """Shortcut for bind(session).
-
-        Usage:
-            users = UserStore(session)
-        """
+        """Shortcut for bind(session)."""
         return self.bind(session)
 
 
-class BoundSQLAlchemyStore(Generic[T]):
+class BoundSQLAlchemyStore[T]:
     """Store bound to a session — provides all storage operations.
 
-    Created by SQLAlchemyStore.bind(session).
+    Created by SQLAlchemyStore.bind(session) or SQLAlchemyStore(session).
 
     IMPORTANT: Does NOT own transactions. Caller commits.
     """
@@ -848,14 +520,14 @@ class BoundSQLAlchemyStore(Generic[T]):
 
     _session: AsyncSession
     _entity: type[T]
-    _model: type[Any]
+    _model: type[DeclarativeBase]
     _identity_field: str | None
 
     def __init__(
         self,
         session: AsyncSession,
         entity: type[T],
-        model: type[Any],
+        model: type[DeclarativeBase],
         identity_field: str | None,
     ) -> None:
         self._session = session
@@ -865,17 +537,15 @@ class BoundSQLAlchemyStore(Generic[T]):
 
     @property
     def entity(self) -> type[T]:
-        """Entity dataclass type."""
         return self._entity
 
     @property
-    def model(self) -> type[Any]:
-        """SQLAlchemy model class."""
+    def model(self) -> type[DeclarativeBase]:
         return self._model
 
     # ─── KV Operations ────────────────────────────────────────────────────────
 
-    async def get(self, key: Any) -> Result[Option[T], StorageError]:
+    async def get(self, key: object) -> Result[Option[T], StorageError]:
         """Get entity by primary key."""
         if self._identity_field is None:
             return Error(StorageError("No Identity field defined"))
@@ -906,7 +576,7 @@ class BoundSQLAlchemyStore(Generic[T]):
         except Exception as e:
             return Error(StorageError(f"Failed to set: {e}", e))
 
-    async def delete(self, key: Any) -> Result[bool, StorageError]:
+    async def delete(self, key: object) -> Result[bool, StorageError]:
         """Delete entity by primary key. Returns True if existed."""
         if self._identity_field is None:
             return Error(StorageError("No Identity field defined"))
@@ -927,7 +597,7 @@ class BoundSQLAlchemyStore(Generic[T]):
         except Exception as e:
             return Error(StorageError(f"Failed to delete: {e}", e))
 
-    async def exists(self, key: Any) -> Result[bool, StorageError]:
+    async def exists(self, key: object) -> Result[bool, StorageError]:
         """Check if entity exists by primary key."""
         if self._identity_field is None:
             return Error(StorageError("No Identity field defined"))
@@ -1015,7 +685,7 @@ class BoundSQLAlchemyStore(Generic[T]):
             where_clause = compile_expr(expr, self._model)
 
             stmt = delete(self._model).where(where_clause)
-            cursor = cast(CursorResult[Any], await self._session.execute(stmt))
+            cursor: CursorResult[tuple[object, ...]] = await self._session.execute(stmt)  # type: ignore[assignment]
             return Ok(cursor.rowcount)
 
         except Exception as e:
@@ -1023,7 +693,7 @@ class BoundSQLAlchemyStore(Generic[T]):
 
     # ─── Bulk Operations ──────────────────────────────────────────────────────
 
-    async def set_many(self, entities: list[T]) -> Result[list[T], StorageError]:
+    async def set_many(self, entities: Sequence[T]) -> Result[list[T], StorageError]:
         """Insert or update multiple entities."""
         try:
             results: list[T] = []
@@ -1050,7 +720,41 @@ class BoundSQLAlchemyStore(Generic[T]):
             return Error(StorageError(f"Failed to get all: {e}", e))
 
 
-def store(
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backwards-Compat Alias
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class SQLAlchemyStorage[T](BoundSQLAlchemyStore[T]):
+    """Backwards-compat: old API that takes session in __init__.
+
+    Prefer SQLAlchemyStore (configure once) + .bind(session).
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        entity: type[T],
+        tablename: str,
+        base: type[DeclarativeBase] | None = None,
+        schema: str | None = None,
+    ) -> None:
+        model = compile_model(entity, tablename, base, schema)
+        identity_field: str | None = model._identity_field  # type: ignore[attr-defined]
+        super().__init__(
+            session=session,
+            entity=entity,
+            model=model,
+            identity_field=identity_field,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Factory Functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def store[T](
     entity: type[T],
     tablename: str,
     base: type[DeclarativeBase] | None = None,
@@ -1061,31 +765,44 @@ def store(
     Store separates configuration from session — configure once, use with any session.
     Model is compiled once at creation.
 
-    Args:
-        entity: Dataclass with Annotated fields
-        tablename: SQL table name
-        base: SQLAlchemy declarative base (optional)
-        schema: Database schema (optional)
-
-    Returns:
-        SQLAlchemyStore factory
-
     Example:
-        # Configure once (at app startup)
         from emergent.wire.axis.storage.contrib import sqlalchemy
 
         UserStore = sqlalchemy.store(User, "users")
 
-        # Use with any session
         async with session_factory() as session:
-            users = UserStore(session)  # or UserStore.bind(session)
-
+            users = UserStore(session)
             await users.set(User(id=1, email="alice@example.com"))
-            user = await users.get(1)
-
             await session.commit()
     """
     return SQLAlchemyStore(
+        entity=entity,
+        tablename=tablename,
+        base=base,
+        schema=schema,
+    )
+
+
+def sqlalchemy[T](
+    session: AsyncSession,
+    entity: type[T],
+    tablename: str,
+    base: type[DeclarativeBase] | None = None,
+    schema: str | None = None,
+) -> SQLAlchemyStorage[T]:
+    """Create bound SQLAlchemy storage for entity (convenience one-liner).
+
+    Compiles model and binds to session in one call.
+    Prefer store() for production — compile once, bind many.
+
+    Example:
+        async with session_factory() as session:
+            users = sqlalchemy(session, User, "users")
+            await users.set(User(id=1, email="alice@example.com"))
+            await session.commit()
+    """
+    return SQLAlchemyStorage(
+        session=session,
         entity=entity,
         tablename=tablename,
         base=base,
@@ -1101,12 +818,14 @@ __all__ = (
     # Mapping
     "entity_to_model",
     "model_to_entity",
-    # Storage (inline)
+    # Storage error
     "StorageError",
-    "SQLAlchemyStorage",
-    "sqlalchemy",
-    # Store (factory pattern)
+    # Store (factory pattern) — primary API
     "SQLAlchemyStore",
     "BoundSQLAlchemyStore",
     "store",
+    # Convenience one-liner
+    "sqlalchemy",
+    # Backwards-compat alias
+    "SQLAlchemyStorage",
 )

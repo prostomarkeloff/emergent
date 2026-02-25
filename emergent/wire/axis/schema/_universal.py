@@ -39,7 +39,10 @@ from emergent.wire.axis._capability import (
 EnumValue = str | int | float | bool | None
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from emergent.wire.axis._capability import (
+        CoercionContext,
         # Field-level
         PydanticContext,
         OpenAPIContext,
@@ -723,6 +726,120 @@ class Computed(UniversalCapability):
         return openapi_schema(ctx, readOnly=True, **{"x-computed": True})
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Storage Coercion
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _resolve_coerce(
+    origin: type,
+) -> tuple[
+    "Callable[[object], object] | None",
+    "Callable[[object], object] | None",
+    type | None,
+]:
+    """Pure dispatch — resolve coercion fns + storage base type for known types.
+
+    Returns (to_storage, from_storage, storage_type) or (None, None, None).
+    """
+    if origin is tuple:
+        return (
+            lambda v: list(v) if isinstance(v, tuple) else v,
+            lambda v: tuple(v) if isinstance(v, list) else v,
+            list,
+        )
+    if origin is set:
+        return (
+            lambda v: list(v) if isinstance(v, set) else v,
+            lambda v: set(v) if isinstance(v, list) else v,
+            list,
+        )
+    if origin is frozenset:
+        return (
+            lambda v: list(v) if isinstance(v, frozenset) else v,
+            lambda v: frozenset(v) if isinstance(v, list) else v,
+            list,
+        )
+    from kungfu import Option, Some, Nothing
+    if origin is Option:
+        def _to(v: object) -> object:
+            if isinstance(v, Some):
+                return v.value
+            if isinstance(v, Nothing):
+                return None
+            return v
+
+        def _from(v: object) -> object:
+            return Nothing() if v is None else Some(v)
+
+        return (_to, _from, None)  # storage_type resolved in __init__ from source args
+
+    return (None, None, None)
+
+
+@dataclass(frozen=True, slots=True)
+class Coerce(UniversalCapability):
+    """Storage coercion — self-contained fold participant.
+
+    Resolves to/from functions + storage base type at construction.
+    Backend reads folded CoercionContext — never touches Coerce directly.
+
+    Usage:
+        email: Annotated[Option[str], Nullable, Coerce(Option[str])]
+        tags: Annotated[tuple[str, ...], Coerce(tuple)]
+        custom: Annotated[X, Coerce(X, to_storage=my_to, from_storage=my_from)]
+
+    Extension (open-world via fold):
+        @dataclass(frozen=True, slots=True)
+        class MyCoerce(UniversalCapability):
+            def compile_coercion(self, ctx: CoercionContext) -> CoercionContext:
+                return replace(ctx, to_storage=..., from_storage=..., storage_type=...)
+    """
+
+    to_storage: "Callable[[object], object]"
+    from_storage: "Callable[[object], object]"
+    storage_type: type | None
+
+    def __init__(
+        self,
+        source: type,
+        *,
+        to_storage: "Callable[[object], object] | None" = None,
+        from_storage: "Callable[[object], object] | None" = None,
+    ) -> None:
+        origin = getattr(source, "__origin__", source)
+        default_to, default_from, default_storage = _resolve_coerce(origin)
+
+        resolved_to = to_storage if to_storage is not None else default_to
+        resolved_from = from_storage if from_storage is not None else default_from
+
+        if resolved_to is None or resolved_from is None:
+            raise TypeError(
+                f"No built-in coercion for {source!r}. "
+                "Provide to_storage= and from_storage= overrides, "
+                "or create a custom capability implementing compile_coercion."
+            )
+
+        # Resolve storage_type: for Option[str] → str (from __args__)
+        storage = default_storage
+        if storage is None and hasattr(source, "__args__") and source.__args__:
+            from kungfu import Option
+            if origin is Option:
+                storage = source.__args__[0]
+
+        object.__setattr__(self, "to_storage", resolved_to)
+        object.__setattr__(self, "from_storage", resolved_from)
+        object.__setattr__(self, "storage_type", storage)
+
+    def compile_coercion(self, ctx: "CoercionContext") -> "CoercionContext":
+        return replace(
+            ctx,
+            to_storage=self.to_storage,
+            from_storage=self.from_storage,
+            storage_type=self.storage_type,
+        )
+
+
 __all__ = (
     "SchemaAxisCapability",
     "UniversalCapability",
@@ -762,4 +879,6 @@ __all__ = (
     "Alias",
     # Computed
     "Computed",
+    # Coercion
+    "Coerce",
 )

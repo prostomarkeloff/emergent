@@ -7,12 +7,11 @@
         id: Annotated[int, Identity]
         email: Annotated[str, Unique, MaxLen(255)]
 
+    UserStore = sqlalchemy.store(User, "users")
+
     async with session_factory() as session:
-        users = sqlalchemy.sqlalchemy(session, User, "users")
-
+        users = UserStore(session)
         await users.set(User(id=1, email="alice@example.com"))
-        user = await users.get(1)
-
         await session.commit()
 
 Requires: sqlalchemy[asyncio]
@@ -27,14 +26,16 @@ try:
         # Mapping
         entity_to_model as entity_to_model,
         model_to_entity as model_to_entity,
-        # Storage (inline)
+        # Storage error
         StorageError as StorageError,
-        SQLAlchemyStorage as SQLAlchemyStorage,
-        sqlalchemy as sqlalchemy,
-        # Store (factory pattern)
+        # Store (factory pattern) — primary API
         SQLAlchemyStore as SQLAlchemyStore,
         BoundSQLAlchemyStore as BoundSQLAlchemyStore,
         store as store,
+        # Convenience one-liner
+        sqlalchemy as sqlalchemy,
+        # Backwards-compat alias
+        SQLAlchemyStorage as SQLAlchemyStorage,
     )
 
     __all__ = (
@@ -43,11 +44,11 @@ try:
         "entity_to_model",
         "model_to_entity",
         "StorageError",
-        "SQLAlchemyStorage",
-        "sqlalchemy",
         "SQLAlchemyStore",
         "BoundSQLAlchemyStore",
         "store",
+        "sqlalchemy",
+        "SQLAlchemyStorage",
     )
 
 except ImportError as e:

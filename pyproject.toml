@@ -1,6 +1,6 @@
 [project]
 name = "emergent"
-version = "0.6.1-rc1"
+version = "0.6.2"
 description = "Type-safe DSLs for common patterns. Composable, local-first, lazy."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -12,7 +12,9 @@ license = { text = "MIT" }
 dependencies = [
     "kungfu-fp @ git+https://github.com/timoniq/kungfu.git",
     "combinators-py @ git+https://github.com/prostomarkeloff/combinators.py.git",
-    "nodnod @ git+https://github.com/timoniq/nodnod.git"
+    "nodnod @ git+https://github.com/timoniq/nodnod.git",
+    "aiohttp>=3.13.3",
+    "beautifulsoup4>=4.14.3",
 ]
 
 [project.optional-dependencies]
@@ -50,7 +52,11 @@ packages = ["emergent", "derivelib/src/derivelib", "deployme.py/deployme"]
 allow-direct-references = true
 
 [tool.uv.workspace]
-members = ["derivelib", "deployme.py"]
+members = [
+    "derivelib",
+ "deployme.py",
+ ".data/agents/ScriptBuilder/.data/agents/ScriptBuilder/.data/agents/ScriptBuilder/ScriptBuilder",
+]
 
 [dependency-groups]
 dev = [

@@ -184,6 +184,16 @@ class ConstraintsContext:
     is_unique: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class CoercionContext:
+    """Coercion fold context — to/from storage callables + storage base type."""
+    field_name: str
+    field_type: type
+    to_storage: Callable[[object], object] | None = None
+    from_storage: Callable[[object], object] | None = None
+    storage_type: type | None = None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Schema-Level Spec Types (Generic)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -614,6 +624,14 @@ class ConstraintsCompilable(Protocol):
         ...
 
 
+@runtime_checkable
+class CoercionCompilable(Protocol):
+    """Capability that compiles to storage coercion functions."""
+
+    def compile_coercion(self, ctx: CoercionContext) -> CoercionContext:
+        ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Compilation Protocols (schema-level)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -927,6 +945,8 @@ __all__ = (
     "DeltaCompilable",
     "QuerySchemaCompilable",
     "ConstraintsCompilable",
+    "CoercionContext",
+    "CoercionCompilable",
     # Schema axis field-level protocols
     "PydanticCompilable",
     "OpenAPICompilable",

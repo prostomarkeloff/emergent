@@ -5,10 +5,11 @@ build/
 dist/
 wheels/
 *.egg-info
+.env
 
 # Virtual environments
 .venv
-
+.data/*
 # deployme generated Dockerfile (transient, written by ComposeTarget)
 .deployme.Dockerfile
 
@@ -17,3 +18,5 @@ _sematest
 emergent_meta
 _semman_test
 examples/tictactoe/data/
+emergent_tmp
+openemergent

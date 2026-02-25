@@ -1,5 +1,5 @@
 """Extended tests for SQLAlchemy storage — compile_expr, relational ops,
-BoundSQLAlchemyStore ops, _python_type_to_sqlalchemy edge cases, no-identity error paths.
+BoundSQLAlchemyStore ops, _default_column_type edge cases, no-identity error paths.
 
 Covers lines 317-386 (expression compilation), 578-675 (relational operations),
 897-1036 (BoundSQLAlchemyStore operations), type mapping edge cases, and identity error paths.
@@ -63,7 +63,7 @@ from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
 
 # Access private function via getattr for testing internal behavior;
 # pyright disallows direct use of private names from other modules.
-_python_type_to_sqlalchemy_fn = getattr(_sa_mod, "_python_type_to_sqlalchemy")
+_default_column_type_fn = getattr(_sa_mod, "_default_column_type")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -713,39 +713,38 @@ async def test_bound_all_empty(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. _python_type_to_sqlalchemy — edge cases
+# 4. _default_column_type — edge cases
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestPythonTypeToSqlalchemy:
+class TestDefaultColumnType:
     def test_int_returns_integer(self) -> None:
-        assert _python_type_to_sqlalchemy_fn(int) is Integer
+        assert _default_column_type_fn(int) is Integer
 
     def test_float_returns_float(self) -> None:
-        assert _python_type_to_sqlalchemy_fn(float) is Float
+        assert _default_column_type_fn(float) is Float
 
     def test_bool_returns_boolean(self) -> None:
-        assert _python_type_to_sqlalchemy_fn(bool) is Boolean
+        assert _default_column_type_fn(bool) is Boolean
 
     def test_datetime_returns_datetime(self) -> None:
-        assert _python_type_to_sqlalchemy_fn(datetime) is DateTime
+        assert _default_column_type_fn(datetime) is DateTime
 
-    def test_str_without_max_length_returns_string_255(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(str)
-        assert isinstance(result, String)
-        assert result.length == 255
+    def test_str_without_max_length_returns_text(self) -> None:
+        result = _default_column_type_fn(str)
+        assert result is Text
 
     def test_str_with_max_length_returns_string_n(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(str, max_length=64)
+        result = _default_column_type_fn(str, max_length=64)
         assert isinstance(result, String)
         assert result.length == 64
 
     def test_unknown_type_returns_text(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(bytes)
+        result = _default_column_type_fn(bytes)
         assert result is Text
 
     def test_another_unknown_type_returns_text(self) -> None:
-        result = _python_type_to_sqlalchemy_fn(list)
+        result = _default_column_type_fn(list)
         assert result is Text
 
 
