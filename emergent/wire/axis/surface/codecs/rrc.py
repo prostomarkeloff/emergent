@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Self, TypeVar
+from typing import Any, Protocol, Self, TypeVar, runtime_checkable
 
 from kungfu import Result
 
@@ -21,6 +21,7 @@ class ToDomain(Protocol[DomainT_co]):
     def to_domain(self) -> DomainT_co: ...
 
 
+@runtime_checkable
 class FromDomain(Protocol[DomainT_contra]):
     """Protocol for types that can convert from domain Results.
 

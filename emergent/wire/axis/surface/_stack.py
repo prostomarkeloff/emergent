@@ -32,7 +32,7 @@ class AppStack:
     def root(self, app: Application) -> AppStack:
         """Set root application (top-level commands)."""
         return AppStack(
-            root_app=Application(endpoints=[*self.root_app.endpoints, *app.endpoints]),
+            root_app=Application(endpoints=(*self.root_app.endpoints, *app.endpoints)),
             mounts=self.mounts,
         )
 

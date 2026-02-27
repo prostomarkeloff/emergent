@@ -82,20 +82,22 @@ async def execute_stateful_done(
                 scope_extras[key] = value.value
         op_result = await handler.runner.run(op, scope_extras=scope_extras)
 
-        # Format response
-        response_type = codec.response
-        if hasattr(response_type, "from_domain"):
-            return response_type.from_domain(op_result)  # type: ignore[reportUnknownMemberType]
+        # Format response via FromDomain protocol
+        from emergent.wire.axis.surface.codecs.rrc import FromDomain
 
-        # Union type — find member with from_domain
+        response_type = codec.response
+        if isinstance(response_type, type) and issubclass(response_type, FromDomain):
+            return response_type.from_domain(op_result)
+
+        # Union type — find member implementing FromDomain
         from typing import get_origin, get_args, Union
         origin = get_origin(response_type)
         if origin is Union:
             for member in get_args(response_type):
-                if hasattr(member, "from_domain"):
-                    return member.from_domain(op_result)  # type: ignore[reportUnknownMemberType]
-            raise TypeError(f"No from_domain in {response_type}")
-        raise TypeError(f"Response type {response_type} has no from_domain")
+                if isinstance(member, type) and issubclass(member, FromDomain):
+                    return member.from_domain(op_result)
+            raise TypeError(f"No FromDomain implementor in {response_type}")
+        raise TypeError(f"Response type {response_type} does not implement FromDomain")
 
     # Extract enrichers via fold
     rt_ctx = fold_handler_runtime(handler.capabilities)

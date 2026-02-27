@@ -207,6 +207,11 @@ from emergent.wire.axis.query.providers import (
     MemoryAPIListResult,
 )
 
+# Coercion — Expr AST transform for storage coercion
+from emergent.wire.axis.query._coerce import (
+    ExprCoercer,
+)
+
 # Serialization — pure functions for expr ↔ dict conversion
 from emergent.wire.axis.query import _serialize as serialize
 from emergent.wire.axis.query._serialize import (
@@ -362,6 +367,8 @@ __all__ = (
     "flatten_or",
     "unflatten_and",
     "unflatten_or",
+    # Coercion
+    "ExprCoercer",
     # Fold layer
     "OpHandler",
     "fold_query",

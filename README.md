@@ -29,6 +29,14 @@ uv add git+https://github.com/prostomarkeloff/emergent.git
 
 ---
 
+## Where we are
+
+emergent is young — started January 2026, on end of Februrary — two months in. emergent + derivelib already run in production. The core architecture (IR model, compilers, capabilities) is stable and expressive enough to describe anything you'd want to build. What's still growing: the ecosystem, the stdlib, the number of built-in targets and dialects. Breaking changes happen, but we try to keep them well-motivated.
+
+This is an **LLM-native framework**. emergent is built with AI agents, and it's designed to be worked on by them. The three-part architecture — typed IR model, fold-based compilers, self-contained capabilities — means an LLM never needs to understand the whole program. It reads the local annotations, understands the local types, and produces correct results. No spooky action at a distance, no implicit global state, no framework magic to reverse-engineer. That's not a side effect of the design — it's a core goal.
+
+---
+
 ## Quick taste
 
 ```python
@@ -109,6 +117,7 @@ Four levels of control — pure algebra, algebra + methods, pure methods, pure w
 
 | Layer | What |
 |---|---|
+| [deployme.py](https://github.com/prostomarkeloff/deployme.py) | Application → infrastructure (compose, k8s) |
 | emergent | ops, wire, saga, cache, graph, idempotency |
 | derivelib | algebraic derivation over wire's 4-axis IR |
 | [nodnod](https://github.com/timoniq/nodnod) | dependency graphs |

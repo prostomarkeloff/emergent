@@ -39,7 +39,7 @@ class FrameworkBridger:
     """How to bridge FROM one framework — all pieces bundled.
 
     Pairs framework detection with extraction and conversion.
-    Immutable value. Symmetric to CodecAdapter in compile/_target.py.
+    Immutable value. Symmetric to CodecBinding in compile/_target.py.
 
     Attributes:
         name: Human-readable identifier ("fastapi", "django", etc.)

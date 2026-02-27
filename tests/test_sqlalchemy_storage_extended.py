@@ -57,13 +57,14 @@ from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     BoundSQLAlchemyStore,
     SQLAlchemyStorage,
     compile_expr,
+    compile_sa,
     compile_model,
     store,
 )
+from emergent.wire.compile._phase import Compilation
 
-# Access private function via getattr for testing internal behavior;
-# pyright disallows direct use of private names from other modules.
-_default_column_type_fn = getattr(_sa_mod, "_default_column_type")
+# Access SA_TYPE_MAP for testing type mapping behavior.
+SA_TYPE_MAP = getattr(_sa_mod, "SA_TYPE_MAP")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -91,9 +92,18 @@ class Product:
     price: int = 0
 
 
-# Compile models once for expression tests
-UserModel = compile_model(User, "ext_users", base=ExtTestBase)
-ProductModel = compile_model(Product, "ext_products", base=ExtTestBase)
+@dataclass
+class NoIdEntity:
+    """Entity without Identity — compiled through fold, identity_field is None."""
+    name: str
+    value: str
+
+
+# Compile once for expression tests
+_user_compiled = compile_sa(User, "ext_users", base=ExtTestBase)
+_product_compiled = compile_sa(Product, "ext_products", base=ExtTestBase)
+UserModel = _user_compiled.model
+ProductModel = _product_compiled.model
 
 
 class _PgOnlyBase(DeclarativeBase):
@@ -121,12 +131,22 @@ class JsonTestModel(_PgOnlyBase):
     tags = Column(PG_ARRAY(String), nullable=True)
 
 
+# Compilation wrapper for manually-defined JsonTestModel (not from a dataclass)
+_json_compiled: Compilation[object, DeclarativeBase] = Compilation(
+    model=JsonTestModel,
+    entity=object,
+    fields=(),
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # DB Fixtures
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 UserStoreFact = store(User, "ext_users", base=ExtTestBase)
+
+
 
 
 @pytest_asyncio.fixture
@@ -158,32 +178,6 @@ async def user_storage(session: AsyncSession) -> SQLAlchemyStorage[User]:
 async def user_bound(session: AsyncSession) -> BoundSQLAlchemyStore[User]:
     return UserStoreFact.bind(session)
 
-
-@pytest_asyncio.fixture
-async def no_identity_storage(session: AsyncSession) -> SQLAlchemyStorage[User]:
-    """A SQLAlchemyStorage where _identity_field is None, to test error paths."""
-    stg = SQLAlchemyStorage(
-        session=session,
-        entity=User,
-        tablename="ext_users",
-        base=ExtTestBase,
-    )
-    # Override identity field to None to exercise no-identity error paths.
-    # Using setattr because _identity_field is a protected attribute, accessed
-    # here only to test the error path when no identity is defined.
-    setattr(stg, "_identity_field", None)
-    return stg
-
-
-@pytest_asyncio.fixture
-async def no_identity_bound(session: AsyncSession) -> BoundSQLAlchemyStore[User]:
-    """A BoundSQLAlchemyStore where identity_field is None, to test error paths."""
-    return BoundSQLAlchemyStore(
-        session=session,
-        entity=User,
-        model=UserModel,
-        identity_field=None,
-    )
 
 
 async def _seed_users(
@@ -217,7 +211,7 @@ class TestCompileExprLogical:
             Eq(Field("name"), Const("Alice")),
             Gt(Field("score"), Const(50)),
         )
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "name" in sql_str
         assert "score" in sql_str
@@ -227,7 +221,7 @@ class TestCompileExprLogical:
             Eq(Field("name"), Const("Alice")),
             Eq(Field("name"), Const("Bob")),
         )
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "OR" in sql_str.upper()
 
@@ -238,7 +232,7 @@ class TestCompileExprLogical:
             Lt(Field("score"), Const(100)),
         )
         expr = Not(inner)
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "NOT" in sql_str.upper()
 
@@ -248,25 +242,25 @@ class TestCompileExprCollection:
 
     def test_in_produces_clause(self) -> None:
         expr = In(Field("name"), ("Alice", "Bob"))
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "IN" in sql_str.upper()
 
     def test_contains_produces_clause(self) -> None:
         expr = Contains(Field("email"), "example")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "example" in sql_str
 
     def test_startswith_produces_clause(self) -> None:
         expr = StartsWith(Field("name"), "Al")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "Al" in sql_str
 
     def test_endswith_produces_clause(self) -> None:
         expr = EndsWith(Field("email"), ".com")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert ".com" in sql_str
 
@@ -276,13 +270,13 @@ class TestCompileExprNull:
 
     def test_is_null_produces_clause(self) -> None:
         expr = IsNull(Field("name"))
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "NULL" in sql_str.upper()
 
     def test_is_not_null_produces_clause(self) -> None:
         expr = IsNotNull(Field("name"))
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         upper = sql_str.upper()
         assert "NOT" in upper and "NULL" in upper
@@ -293,7 +287,7 @@ class TestCompileExprRange:
 
     def test_between_produces_clause(self) -> None:
         expr = Between(Field("score"), Const(10), Const(100))
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "BETWEEN" in sql_str.upper()
 
@@ -303,18 +297,18 @@ class TestCompileExprPattern:
 
     def test_like_produces_clause(self) -> None:
         expr = Like(Field("email"), "%@example.com")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "LIKE" in sql_str.upper()
 
     def test_ilike_produces_clause(self) -> None:
         expr = ILike(Field("email"), "%@EXAMPLE.COM")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         assert clause is not None
 
     def test_regex_produces_clause(self) -> None:
         expr = Regex(Field("email"), r"^[\w]+@")
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         assert clause is not None
 
 
@@ -327,22 +321,22 @@ class TestCompileExprJson:
 
     def test_json_extract_produces_expression(self) -> None:
         expr = JsonExtract(Field("data"), "foo.bar")
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_json_extract_single_key(self) -> None:
         expr = JsonExtract(Field("data"), "single")
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_json_contains_produces_expression(self) -> None:
         expr = JsonContains(Field("data"), "value")
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_json_has_key_produces_expression(self) -> None:
         expr = JsonHasKey(Field("data"), "key")
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
 
@@ -355,22 +349,22 @@ class TestCompileExprArray:
 
     def test_array_contains_produces_expression(self) -> None:
         expr = ArrayContains(Field("tags"), "value")
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_array_any_produces_expression(self) -> None:
         expr = ArrayAny(Field("tags"), ("a", "b"))
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_array_all_produces_expression(self) -> None:
         expr = ArrayAll(Field("tags"), ("a", "b"))
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
     def test_array_overlap_produces_expression(self) -> None:
         expr = ArrayOverlap(Field("tags"), ("a", "b"))
-        clause = compile_expr(expr, JsonTestModel)
+        clause = compile_expr(expr, _json_compiled)
         assert clause is not None
 
 
@@ -383,22 +377,22 @@ class TestCompileExprEdgeCases:
                 return None
 
         with pytest.raises(TypeError, match="Unsupported expression type"):
-            compile_expr(FakeExpr(), UserModel)
+            compile_expr(FakeExpr(), _user_compiled)
 
     def test_field_resolved_from_extra_model(self) -> None:
         # Field "label" exists on ProductModel, not UserModel
         expr = Field("label")
-        clause = compile_expr(expr, UserModel, ProductModel)
+        clause = compile_expr(expr, _user_compiled, _product_compiled)
         assert clause is not None
 
     def test_field_missing_from_all_models_raises(self) -> None:
         expr = Field("nonexistent_field_xyz")
         with pytest.raises(AttributeError):
-            compile_expr(expr, UserModel)
+            compile_expr(expr, _user_compiled)
 
     def test_const_returns_raw_value(self) -> None:
         expr = Const(42)
-        result = compile_expr(expr, UserModel)
+        result = compile_expr(expr, _user_compiled)
         assert result == 42
 
     def test_nested_and_or_not(self) -> None:
@@ -412,7 +406,7 @@ class TestCompileExprEdgeCases:
                 ),
             )
         )
-        clause = compile_expr(expr, UserModel)
+        clause = compile_expr(expr, _user_compiled)
         sql_str = str(clause.compile(compile_kwargs={"literal_binds": True}))
         assert "NOT" in sql_str.upper()
 
@@ -713,95 +707,45 @@ async def test_bound_all_empty(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 4. _default_column_type — edge cases
+# 4. SA_TYPE_MAP — type mapping as data
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestDefaultColumnType:
-    def test_int_returns_integer(self) -> None:
-        assert _default_column_type_fn(int) is Integer
+class TestSATypeMap:
+    def test_int_maps_to_integer(self) -> None:
+        assert SA_TYPE_MAP[int] is Integer
 
-    def test_float_returns_float(self) -> None:
-        assert _default_column_type_fn(float) is Float
+    def test_float_maps_to_float(self) -> None:
+        assert SA_TYPE_MAP[float] is Float
 
-    def test_bool_returns_boolean(self) -> None:
-        assert _default_column_type_fn(bool) is Boolean
+    def test_bool_maps_to_boolean(self) -> None:
+        assert SA_TYPE_MAP[bool] is Boolean
 
-    def test_datetime_returns_datetime(self) -> None:
-        assert _default_column_type_fn(datetime) is DateTime
+    def test_datetime_maps_to_datetime(self) -> None:
+        assert SA_TYPE_MAP[datetime] is DateTime
 
-    def test_str_without_max_length_returns_text(self) -> None:
-        result = _default_column_type_fn(str)
-        assert result is Text
+    def test_str_maps_to_text(self) -> None:
+        assert SA_TYPE_MAP[str] is Text
 
-    def test_str_with_max_length_returns_string_n(self) -> None:
-        result = _default_column_type_fn(str, max_length=64)
-        assert isinstance(result, String)
-        assert result.length == 64
+    def test_unknown_type_not_in_map(self) -> None:
+        assert bytes not in SA_TYPE_MAP
 
-    def test_unknown_type_returns_text(self) -> None:
-        result = _default_column_type_fn(bytes)
-        assert result is Text
-
-    def test_another_unknown_type_returns_text(self) -> None:
-        result = _default_column_type_fn(list)
-        assert result is Text
+    def test_list_not_in_map(self) -> None:
+        assert list not in SA_TYPE_MAP
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 5. No identity field error paths
+# 5. No identity — compiler rejects at compile time
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.asyncio
-async def test_storage_get_no_identity_returns_error(
-    no_identity_storage: SQLAlchemyStorage[User],
-) -> None:
-    result = await no_identity_storage.get("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
+def test_compile_sa_rejects_entity_without_identity() -> None:
+    """Entity without Identity → compile_sa raises TypeError, not a runtime error."""
+    with pytest.raises(TypeError, match="has no field annotated with Identity"):
+        compile_sa(NoIdEntity, "should_fail", base=ExtTestBase)
 
 
-@pytest.mark.asyncio
-async def test_storage_delete_no_identity_returns_error(
-    no_identity_storage: SQLAlchemyStorage[User],
-) -> None:
-    result = await no_identity_storage.delete("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
-
-
-@pytest.mark.asyncio
-async def test_storage_exists_no_identity_returns_error(
-    no_identity_storage: SQLAlchemyStorage[User],
-) -> None:
-    result = await no_identity_storage.exists("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
-
-
-@pytest.mark.asyncio
-async def test_bound_get_no_identity_returns_error(
-    no_identity_bound: BoundSQLAlchemyStore[User],
-) -> None:
-    result = await no_identity_bound.get("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
-
-
-@pytest.mark.asyncio
-async def test_bound_delete_no_identity_returns_error(
-    no_identity_bound: BoundSQLAlchemyStore[User],
-) -> None:
-    result = await no_identity_bound.delete("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
-
-
-@pytest.mark.asyncio
-async def test_bound_exists_no_identity_returns_error(
-    no_identity_bound: BoundSQLAlchemyStore[User],
-) -> None:
-    result = await no_identity_bound.exists("some_key")
-    assert isinstance(result, Error)
-    assert "No Identity field defined" in result.error.message
+def test_store_rejects_entity_without_identity() -> None:
+    """store() calls compile_sa → same compile-time error."""
+    with pytest.raises(TypeError, match="has no field annotated with Identity"):
+        store(NoIdEntity, "should_fail", base=ExtTestBase)

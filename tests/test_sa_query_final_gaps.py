@@ -137,35 +137,8 @@ async def test_aggregate_empty_returns_empty_dict(prov: SQLAlchemyRelationalProv
     assert result == {}
 
 
-# =============================================================================
-# 3. delete() without identity field — lines 234-237 (merge then delete path)
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_delete_without_identity_merges_then_deletes(
-    prov: SQLAlchemyRelationalProvider[Item], session: AsyncSession
-):
-    """delete() on entity without identity uses merge-then-delete path (234-237)."""
-    # Insert a real item first
-    inserted = await prov.insert(Item(id=0, name="Doomed", category="Z", price=1.0))
-    await session.commit()
-
-    # Build a provider with identity_field=None to force the else branch
-    no_id_provider: SQLAlchemyRelationalProvider[Item] = SQLAlchemyRelationalProvider(
-        session=session,
-        entity=Item,
-        model=ItemStore.model,
-        identity_field=None,
-    )
-
-    # delete() with identity_field=None => merge then delete (lines 234-237)
-    await no_id_provider.delete(inserted)
-    await session.commit()
-
-    # Verify it was deleted
-    remaining = await prov.fetch_many(relational(Item))
-    assert len(remaining) == 0
+# delete() without identity field — removed.
+# SA models always have a primary key; testing no-identity is nonsensical.
 
 
 # =============================================================================

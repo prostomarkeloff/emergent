@@ -133,6 +133,7 @@ class SQLAlchemyContext:
     field_type: type
     column_type: type | None = None
     column_kwargs: Mapping[str, str | int | bool | None] = field(default_factory=_empty_column_kwargs)
+    type_map: Mapping[type, type] = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -185,10 +186,18 @@ class ConstraintsContext:
 
 
 @dataclass(frozen=True, slots=True)
-class CoercionContext:
-    """Coercion fold context — to/from storage callables + storage base type."""
+class StorageFieldContext:
+    """Unified per-field storage metadata — one fold, not three.
+
+    Produced by STORAGE_FIELD_PHASE. Capabilities contribute via compile_storage_field:
+    - Identity → is_identity=True
+    - Coerce → to_storage, from_storage, storage_type
+
+    Used by entity_to_model, model_to_entity, compile_expr — read ONE phase.
+    """
     field_name: str
     field_type: type
+    is_identity: bool = False
     to_storage: Callable[[object], object] | None = None
     from_storage: Callable[[object], object] | None = None
     storage_type: type | None = None
@@ -625,10 +634,10 @@ class ConstraintsCompilable(Protocol):
 
 
 @runtime_checkable
-class CoercionCompilable(Protocol):
-    """Capability that compiles to storage coercion functions."""
+class StorageFieldCompilable(Protocol):
+    """Capability that compiles to unified storage field metadata."""
 
-    def compile_coercion(self, ctx: CoercionContext) -> CoercionContext:
+    def compile_storage_field(self, ctx: StorageFieldContext) -> StorageFieldContext:
         ...
 
 
@@ -882,6 +891,41 @@ def combine(*caps: Capability) -> tuple[Capability, ...]:
     return caps
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Request Pipeline — CoercionSpec
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class CoercionSpec:
+    """Complete coercion config — compile + assemble + validate in one type.
+
+    Callable fields are configuration data (same pattern as CompilationPhase.initial).
+    Pre-built constants: PYDANTIC_COERCION, etc. Users build custom specs.
+
+    Example::
+
+        PYDANTIC_COERCION = CoercionSpec(
+            compiler=SchemaCompiler(phases=(PYDANTIC_PHASE,)),
+            assemble=assemble_pydantic,
+            validate=lambda model, raw: model(**raw).model_dump(),
+        )
+
+        MSGSPEC_COERCION = CoercionSpec(
+            compiler=SchemaCompiler(phases=(MSGSPEC_PHASE,)),
+            assemble=assemble_msgspec,
+            validate=lambda struct, raw: to_builtins(struct(**raw)),
+        )
+    """
+
+    # Which phases to compile the request type through
+    compiler: object  # SchemaCompiler — forward ref to avoid circular import
+    # Build the validation model from compiled fields: (type, EntityCompilation) → model class
+    assemble: Callable[[type, object], type]
+    # Validate raw dict against model: (model_class, raw_dict) → typed_dict
+    validate: Callable[[type, dict[str, object]], dict[str, object]]
+
+
 __all__ = (
     # Root
     "Capability",
@@ -945,8 +989,8 @@ __all__ = (
     "DeltaCompilable",
     "QuerySchemaCompilable",
     "ConstraintsCompilable",
-    "CoercionContext",
-    "CoercionCompilable",
+    "StorageFieldContext",
+    "StorageFieldCompilable",
     # Schema axis field-level protocols
     "PydanticCompilable",
     "OpenAPICompilable",
@@ -974,4 +1018,6 @@ __all__ = (
     "HandlerRuntimeCompilable",
     # Combinators
     "combine",
+    # Request pipeline
+    "CoercionSpec",
 )

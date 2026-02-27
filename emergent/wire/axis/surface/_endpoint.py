@@ -7,10 +7,10 @@ from emergent.wire.axis.surface._types import Codec, Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Endpoint:
     runner: Runner
-    exposures: list[Exposure] = field(default_factory=list[Exposure])
+    exposures: tuple[Exposure, ...] = ()
 
     @classmethod
     def from_runner(cls, runner: Runner) -> Endpoint:
@@ -24,7 +24,7 @@ class Endpoint:
     ) -> Endpoint:
         exposure = Exposure(trigger, codec, capabilities)
         return Endpoint(
-            runner=self.runner, exposures=[*self.exposures, exposure]
+            runner=self.runner, exposures=(*self.exposures, exposure)
         )
 
 

@@ -32,3 +32,10 @@ except (ImportError, RuntimeError):
 # Event (always available)
 from emergent.wire.compile.targets import event as event
 __all__.append("event")
+
+# SQLAlchemy
+try:
+    from emergent.wire.compile.targets import sqlalchemy as sqlalchemy
+    __all__.append("sqlalchemy")
+except ImportError:
+    pass

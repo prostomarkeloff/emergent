@@ -26,6 +26,7 @@ from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     SQLAlchemyStorage,
     StorageError,
     compile_model,
+    compile_sa,
 )
 
 
@@ -237,6 +238,9 @@ class TestSQLAlchemyStorageAllError:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+_user_compiled = compile_sa(User, "err_users", base=ErrorTestBase)
+
+
 def _make_bound_with_failing_session(
     error_msg: str = "DB connection lost",
 ) -> BoundSQLAlchemyStore[User]:
@@ -244,9 +248,7 @@ def _make_bound_with_failing_session(
     mock_session = _make_failing_session(error_msg)
     return BoundSQLAlchemyStore(
         session=mock_session,
-        entity=User,
-        model=UserModel,
-        identity_field="id",
+        compiled=_user_compiled,
     )
 
 
@@ -405,40 +407,21 @@ class TestBoundStoreAllError:
 
 @dataclass
 class NoIdentityEntity:
-    """Entity with PrimaryKey (for SQLAlchemy) but no Identity (for emergent).
-
-    This lets compile_model succeed (SQLAlchemy needs a PK column),
-    while _get_identity_field returns None (no Identity capability).
-    """
+    """Entity with PrimaryKey (for SQLAlchemy) but no Identity (for emergent)."""
     pk: Annotated[int, PrimaryKey()]
     name: str
     value: int = 0
 
 
-class NoIdentityBase(DeclarativeBase):
-    pass
+class TestCompileSaRejectsNoIdentity:
+    """compile_sa raises TypeError when entity has no Identity field."""
 
+    def test_no_identity_raises_type_error(self) -> None:
+        class NoIdBase(DeclarativeBase):
+            pass
 
-class TestSQLAlchemyStorageNoIdentityField:
-    """SQLAlchemyStorage.get returns Error when _identity_field is None."""
-
-    @pytest.mark.asyncio
-    async def test_get_no_identity_returns_error(self) -> None:
-        mock_session = AsyncMock(spec=AsyncSession)
-        storage = SQLAlchemyStorage(
-            session=mock_session,
-            entity=NoIdentityEntity,
-            tablename="no_identity_test",
-            base=NoIdentityBase,
-        )
-
-        result = await storage.get("key")
-
-        assert isinstance(result, Error)
-        err = result.error
-        assert isinstance(err, StorageError)
-        assert "No Identity field defined" in err.message
-        assert err.cause is None
+        with pytest.raises(TypeError, match="has no field annotated with Identity"):
+            compile_sa(NoIdentityEntity, "no_identity_test", base=NoIdBase)
 
 
 class TestCompileModelSchemaParameter:
@@ -471,9 +454,7 @@ class TestBoundSQLAlchemyStoreProperties:
         mock_session = AsyncMock(spec=AsyncSession)
         bound = BoundSQLAlchemyStore(
             session=mock_session,
-            entity=User,
-            model=UserModel,
-            identity_field="id",
+            compiled=_user_compiled,
         )
 
         assert bound.entity is User
@@ -482,23 +463,9 @@ class TestBoundSQLAlchemyStoreProperties:
         mock_session = AsyncMock(spec=AsyncSession)
         bound = BoundSQLAlchemyStore(
             session=mock_session,
-            entity=User,
-            model=UserModel,
-            identity_field="id",
+            compiled=_user_compiled,
         )
 
-        assert bound.model is UserModel
-
-    def test_entity_property_with_no_identity(self) -> None:
-        mock_session = AsyncMock(spec=AsyncSession)
-        bound = BoundSQLAlchemyStore(
-            session=mock_session,
-            entity=User,
-            model=UserModel,
-            identity_field=None,
-        )
-
-        assert bound.entity is User
         assert bound.model is UserModel
 
 

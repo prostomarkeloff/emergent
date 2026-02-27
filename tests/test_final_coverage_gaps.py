@@ -671,7 +671,7 @@ class TestStatefulDoneNoFromDomain:
 
         scope = Scope()
         async with scope:
-            with pytest.raises(TypeError, match="No from_domain"):
+            with pytest.raises(TypeError, match="FromDomain"):
                 await execute_stateful_done(handler, state, scope)
 
     @pytest.mark.asyncio
@@ -704,7 +704,7 @@ class TestStatefulDoneNoFromDomain:
 
         scope = Scope()
         async with scope:
-            with pytest.raises(TypeError, match="has no from_domain"):
+            with pytest.raises(TypeError, match="FromDomain"):
                 await execute_stateful_done(handler, state, scope)
 
 

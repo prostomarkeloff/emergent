@@ -780,7 +780,8 @@ class TestTypedCliCompiler:
             a for a in TYPED_CLI.adapters if a.codec_type is RequestResponseCodec
         ]
         assert len(rrc_adapters) == 1
-        assert rrc_adapters[0].wrap is wrap_rrc_cli_typed
+        from emergent.wire.compile.targets.cli import typed_rrc_from_codec_cli
+        assert rrc_adapters[0].from_codec is typed_rrc_from_codec_cli
 
     def test_typed_cli_trigger_type_is_cli_trigger(self) -> None:
         assert TYPED_CLI.trigger_type is CLITrigger

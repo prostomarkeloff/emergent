@@ -23,12 +23,12 @@ def _empty_caps() -> tuple[SurfaceCapability, ...]:
     return ()
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Application:
-    """Wire application — endpoints + global capabilities.
+    """Wire application — endpoints + global capabilities. Immutable.
 
     Attributes:
-        endpoints: List of mounted endpoints.
+        endpoints: Mounted endpoints.
         capabilities: Global capabilities applied to all endpoints (middleware).
 
     Example::
@@ -44,13 +44,13 @@ class Application:
         )
     """
 
-    endpoints: list[Endpoint] = field(default_factory=list[Endpoint])
+    endpoints: tuple[Endpoint, ...] = ()
     capabilities: tuple[SurfaceCapability, ...] = field(default_factory=_empty_caps)
 
     def mount(self, *endps: Endpoint) -> Application:
         """Mount endpoints to application."""
         return Application(
-            endpoints=[*self.endpoints, *endps],
+            endpoints=(*self.endpoints, *endps),
             capabilities=self.capabilities,
         )
 
@@ -64,20 +64,20 @@ class Application:
     def __add__(self, other: Application) -> Application:
         """Combine two applications — sum endpoints and capabilities."""
         return Application(
-            endpoints=[*self.endpoints, *other.endpoints],
+            endpoints=(*self.endpoints, *other.endpoints),
             capabilities=(*self.capabilities, *other.capabilities),
         )
 
     def merge(self, *others: Application) -> Application:
         """Merge multiple applications into one."""
-        all_endpoints = list(self.endpoints)
-        all_capabilities: list[SurfaceCapability] = list(self.capabilities)
+        all_endpoints = self.endpoints
+        all_capabilities = self.capabilities
         for other in others:
-            all_endpoints.extend(other.endpoints)
-            all_capabilities.extend(other.capabilities)
+            all_endpoints = (*all_endpoints, *other.endpoints)
+            all_capabilities = (*all_capabilities, *other.capabilities)
         return Application(
             endpoints=all_endpoints,
-            capabilities=tuple(all_capabilities),
+            capabilities=all_capabilities,
         )
 
 

@@ -39,15 +39,15 @@ from emergent.wire.axis._capability import (
 EnumValue = str | int | float | bool | None
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from emergent.wire.axis._capability import (
-        CoercionContext,
         # Field-level
         PydanticContext,
         OpenAPIContext,
         ArgparseContext,
         SQLAlchemyContext,
+        QuerySchemaContext,
         # Schema-level
         PydanticModelContext,
         OpenAPISchemaContext,
@@ -217,6 +217,9 @@ class Identity(UniversalCapability):
         return sqlalchemy_column(ctx, primary_key=True)
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
+        return replace(ctx, is_identity=True)
+
+    def compile_storage_field(self, ctx: "StorageFieldContext") -> "StorageFieldContext":
         return replace(ctx, is_identity=True)
 
 
@@ -396,6 +399,14 @@ class MaxLen(UniversalCapability):
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, max_length=self.value)
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        """Refine str column: Text → String(n)."""
+        if ctx.field_type is str:
+            from sqlalchemy import String
+
+            return replace(ctx, column_type=String(self.value))
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
@@ -774,6 +785,55 @@ def _resolve_coerce(
 
         return (_to, _from, None)  # storage_type resolved in __init__ from source args
 
+    from kungfu import Sum
+    if origin is Sum:
+        import json
+
+        def _sum_to(v: object) -> object:
+            if isinstance(v, Sum):
+                raw = v.v
+                return json.dumps({"_t": type(raw).__name__, "_v": raw})
+            return v
+
+        def _sum_from(v: object) -> object:
+            # Generic fallback — Coerce.__init__ overrides with Sum-aware version
+            data = json.loads(v) if isinstance(v, str) else v
+            return data["_v"] if isinstance(data, dict) and "_v" in data else data
+
+        return (_sum_to, _sum_from, str)  # stored as JSON text
+
+    # Result[T, E] = Ok[T] | Error[E] — type alias, not a class.
+    # Coerce(Result) → origin is the TypeAliasType.
+    # Coerce(Result[int, str]) → alias expands to Ok[int] | Error[str] (UnionType).
+    from kungfu import Result, Ok, Error
+
+    _is_result = origin is Result
+    if not _is_result:
+        import types
+        if isinstance(origin, types.UnionType):
+            _origins = {getattr(a, "__origin__", a) for a in origin.__args__}
+            _is_result = _origins == {Ok, Error}
+
+    if _is_result:
+        import json
+
+        def _result_to(v: object) -> object:
+            if isinstance(v, Ok):
+                return json.dumps({"ok": True, "v": v.value})
+            if isinstance(v, Error):
+                return json.dumps({"ok": False, "e": v.error})
+            return v
+
+        def _result_from(v: object) -> object:
+            data = json.loads(v) if isinstance(v, str) else v
+            if isinstance(data, dict):
+                if data.get("ok"):
+                    return Ok(data["v"])
+                return Error(data["e"])
+            return v
+
+        return (_result_to, _result_from, str)  # stored as JSON text
+
     return (None, None, None)
 
 
@@ -782,7 +842,7 @@ class Coerce(UniversalCapability):
     """Storage coercion — self-contained fold participant.
 
     Resolves to/from functions + storage base type at construction.
-    Backend reads folded CoercionContext — never touches Coerce directly.
+    Backend reads folded StorageFieldContext — never touches Coerce directly.
 
     Usage:
         email: Annotated[Option[str], Nullable, Coerce(Option[str])]
@@ -792,7 +852,7 @@ class Coerce(UniversalCapability):
     Extension (open-world via fold):
         @dataclass(frozen=True, slots=True)
         class MyCoerce(UniversalCapability):
-            def compile_coercion(self, ctx: CoercionContext) -> CoercionContext:
+            def compile_storage_field(self, ctx: StorageFieldContext) -> StorageFieldContext:
                 return replace(ctx, to_storage=..., from_storage=..., storage_type=...)
     """
 
@@ -817,7 +877,7 @@ class Coerce(UniversalCapability):
             raise TypeError(
                 f"No built-in coercion for {source!r}. "
                 "Provide to_storage= and from_storage= overrides, "
-                "or create a custom capability implementing compile_coercion."
+                "or create a custom capability implementing compile_storage_field."
             )
 
         # Resolve storage_type: for Option[str] → str (from __args__)
@@ -827,17 +887,45 @@ class Coerce(UniversalCapability):
             if origin is Option:
                 storage = source.__args__[0]
 
+        # Sum-aware from_storage: reconstruct Sum[*Ts] with type discrimination
+        from kungfu import Sum
+        if origin is Sum:
+            sum_args: tuple[type, ...] = getattr(source, "__args__", ())
+            type_lookup: dict[str, type] = {t.__name__: t for t in sum_args}
+            sum_source = source
+
+            def _sum_from_typed(v: object) -> object:
+                import json
+                data = json.loads(v) if isinstance(v, str) else v
+                if isinstance(data, dict) and "_t" in data:
+                    raw = data["_v"]
+                    t = type_lookup.get(data["_t"])
+                    if t is not None:
+                        raw = t(raw)
+                    return sum_source(raw)
+                return v
+
+            resolved_from = _sum_from_typed
+            storage = str
+
         object.__setattr__(self, "to_storage", resolved_to)
         object.__setattr__(self, "from_storage", resolved_from)
         object.__setattr__(self, "storage_type", storage)
 
-    def compile_coercion(self, ctx: "CoercionContext") -> "CoercionContext":
+    def compile_storage_field(self, ctx: "StorageFieldContext") -> "StorageFieldContext":
         return replace(
             ctx,
             to_storage=self.to_storage,
             from_storage=self.from_storage,
             storage_type=self.storage_type,
         )
+
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        """Remap column_type using type_map from context."""
+        if self.storage_type is not None:
+            col_type = ctx.type_map.get(self.storage_type, ctx.column_type)
+            return replace(ctx, column_type=col_type)
+        return ctx
 
 
 __all__ = (

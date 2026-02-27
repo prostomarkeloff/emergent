@@ -1,6 +1,9 @@
-"""SQLAlchemy storage backend — unified storage with model generation.
+"""SQLAlchemy storage backend — runtime store operations.
 
 IMPORTANT: Backend does NOT own transactions. Caller provides session, caller commits.
+
+Compilation (compile_sa, compile_expr, entity_to_model, model_to_entity)
+lives in emergent.wire.compile.targets.sqlalchemy.
 
 Usage:
     from emergent.wire.axis.storage.contrib import sqlalchemy
@@ -27,21 +30,11 @@ Requires: sqlalchemy[asyncio]
 
 from __future__ import annotations
 
-import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
     delete,
     func,
     select,
@@ -51,378 +44,24 @@ from sqlalchemy.orm import DeclarativeBase
 
 from kungfu import Result, Ok, Error, Option, Some, Nothing
 
-from emergent.wire.axis.schema._inspect import inspect_dataclass, FieldInfo
-from emergent.wire.axis._capability import (
-    SQLAlchemyContext, SQLAlchemyCompilable,
-    ConstraintsContext, ConstraintsCompilable,
-    CoercionContext, CoercionCompilable,
-)
-from emergent.wire.axis.query._expr import (
-    Expr,
-    Field,
-    Const,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    And,
-    Or,
-    Not,
-    In,
-    Contains,
-    StartsWith,
-    EndsWith,
-    IsNull,
-    IsNotNull,
-    Between,
-    Like,
-    ILike,
-    Regex,
-    JsonExtract,
-    JsonContains,
-    JsonHasKey,
-    ArrayContains,
-    ArrayAny,
-    ArrayAll,
-    ArrayOverlap,
-)
 from emergent.wire.axis.query._proxy import EntityProxy, build_expr
+
+# Compilation — lives in compile/_phase.py
+from emergent.wire.compile._phase import Compilation
+from emergent.wire.compile.targets.sqlalchemy import (
+    SA_TYPE_MAP as SA_TYPE_MAP,
+    SA_PHASE as SA_PHASE,
+    SA_PHASES as SA_PHASES,
+    compile_sa as compile_sa,
+    compile_model as compile_model,
+    compile_expr as compile_expr,
+    entity_to_model as entity_to_model,
+    model_to_entity as model_to_entity,
+)
+from emergent.wire.axis.query._expr import Expr
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import CursorResult
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Type Mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _default_column_type(
-    py_type: type,
-    max_length: int | None = None,
-) -> type:
-    """Map Python type to SQLAlchemy column type.
-
-    Pure function — no post-fold fallback. Used to set initial SA context
-    from coercion-aware base type.
-    """
-    if py_type is int:
-        return Integer
-    if py_type is float:
-        return Float
-    if py_type is bool:
-        return Boolean
-    if py_type is str:
-        if max_length:
-            return String(max_length)  # type: ignore[return-value]
-        return Text
-    if py_type is datetime:
-        return DateTime
-    return Text
-
-
-def _get_identity_field(fields: Mapping[str, FieldInfo]) -> str | None:
-    """Find field marked with Identity capability via fold."""
-    from emergent.wire.compile._core import fold_field
-
-    for name, info in fields.items():
-        ctx = fold_field(
-            info,
-            ConstraintsContext(field_name=name, field_type=info.base_type),
-            ConstraintsCompilable,
-            "compile_constraints",
-        )
-        if ctx.is_identity:
-            return name
-    return None
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Model Compiler
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-class _GeneratedBase(DeclarativeBase):
-    """Base class for generated models."""
-    pass
-
-
-# Type alias for the coercion map stored on compiled models
-type _CoercionMap = dict[str, tuple[Callable[[object], object], Callable[[object], object]]]
-
-
-def compile_model[T](
-    entity: type[T],
-    tablename: str,
-    base: type[DeclarativeBase] | None = None,
-    schema: str | None = None,
-) -> type[DeclarativeBase]:
-    """Compile dataclass with schema annotations to SQLAlchemy model.
-
-    Three-fold compilation per field:
-    1. Constraints fold — max_length, identity, unique, etc.
-    2. Coercion fold — storage_type + to/from callables (Coerce, custom CoercionCompilable)
-    3. SA fold — column_type (initial from coercion-aware base), column_kwargs (PK, FK, nullable, etc.)
-
-    Returns:
-        SQLAlchemy model class with _field_coercion and _identity_field attrs.
-    """
-    from emergent.wire.compile._core import fold_field
-
-    if not dataclasses.is_dataclass(entity):
-        raise TypeError(f"{entity} must be a dataclass")
-
-    model_base = base or _GeneratedBase
-
-    # Reuse existing model if table already compiled
-    if tablename in model_base.metadata.tables:
-        for mapper in model_base.registry.mappers:
-            if hasattr(mapper.class_, '__tablename__') and mapper.class_.__tablename__ == tablename:
-                return mapper.class_
-
-    fields = inspect_dataclass(entity)
-    identity_field = _get_identity_field(fields)
-
-    # Build column definitions + coercion map
-    attrs: dict[str, Column[object] | str | dict[str, str]] = {
-        "__tablename__": tablename,  # type: ignore[dict-item]
-    }
-
-    if schema:
-        attrs["__table_args__"] = {"schema": schema}  # type: ignore[assignment]
-
-    field_coercion: _CoercionMap = {}
-
-    for name, info in fields.items():
-        # FOLD 1: Constraints (max_length, identity, etc.)
-        constraints_ctx = fold_field(
-            info,
-            ConstraintsContext(field_name=name, field_type=info.base_type),
-            ConstraintsCompilable,
-            "compile_constraints",
-        )
-
-        # FOLD 2: Coercion (BEFORE SA — provides storage_type)
-        coercion_ctx = fold_field(
-            info,
-            CoercionContext(field_name=name, field_type=info.base_type),
-            CoercionCompilable,
-            "compile_coercion",
-        )
-        if coercion_ctx.to_storage is not None and coercion_ctx.from_storage is not None:
-            field_coercion[name] = (coercion_ctx.to_storage, coercion_ctx.from_storage)
-
-        # Use storage_type from coercion (if Coerce present) → correct base for column type
-        base_type = coercion_ctx.storage_type if coercion_ctx.storage_type is not None else info.base_type
-
-        # FOLD 3: SA context — initial column_type derived from coercion-aware base_type
-        sa_ctx = fold_field(
-            info,
-            SQLAlchemyContext(
-                field_name=name,
-                field_type=info.base_type,
-                column_type=_default_column_type(base_type, max_length=constraints_ctx.max_length),
-            ),
-            SQLAlchemyCompilable,
-            "compile_sqlalchemy",
-        )
-
-        # column_type is now fully resolved — either from default, Coerce's storage_type, or SA capabilities
-        col_type = sa_ctx.column_type
-
-        # Column kwargs
-        col_kwargs: dict[str, str | int | bool | None] = dict(sa_ctx.column_kwargs)
-
-        col_kwargs.setdefault("nullable", info.is_optional)
-
-        # Extract FK config
-        fk_target = col_kwargs.pop("fk_target", None)
-        fk_ondelete = col_kwargs.pop("fk_ondelete", None)
-        fk_onupdate = col_kwargs.pop("fk_onupdate", None)
-
-        fk_instance: ForeignKey | None = None
-        if fk_target is not None:
-            fk_instance = ForeignKey(
-                fk_target,
-                ondelete=str(fk_ondelete or "CASCADE"),
-                onupdate=str(fk_onupdate or "CASCADE"),
-            )
-
-        if fk_instance is not None:
-            attrs[name] = Column(col_type, fk_instance, **col_kwargs)  # type: ignore[arg-type]
-        else:
-            attrs[name] = Column(col_type, **col_kwargs)  # type: ignore[arg-type]
-
-    # Create model class
-    model_name = f"{entity.__name__}Model"
-    model_class = type(model_name, (model_base,), attrs)
-
-    # Attach metadata used by entity<->model mapping
-    model_class._entity_class = entity  # type: ignore[attr-defined]
-    model_class._identity_field = identity_field  # type: ignore[attr-defined]
-    model_class._field_coercion = field_coercion  # type: ignore[attr-defined]
-
-    return model_class  # type: ignore[return-value]
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Expression Compiler
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def compile_expr(expr: Expr, model: type[DeclarativeBase], *extra_models: type[DeclarativeBase]) -> object:
-    """Compile query Expr to SQLAlchemy column expression."""
-    match expr:
-        case Field(name=name):
-            if hasattr(model, name):
-                return getattr(model, name)
-            for m in extra_models:
-                if hasattr(m, name):
-                    return getattr(m, name)
-            return getattr(model, name)  # raises AttributeError
-
-        case Const(value=value):
-            return value
-
-        case Eq(left=left, right=right):
-            return compile_expr(left, model, *extra_models) == compile_expr(right, model, *extra_models)
-
-        case Ne(left=left, right=right):
-            return compile_expr(left, model, *extra_models) != compile_expr(right, model, *extra_models)
-
-        case Lt(left=left, right=right):
-            return compile_expr(left, model, *extra_models) < compile_expr(right, model, *extra_models)
-
-        case Le(left=left, right=right):
-            return compile_expr(left, model, *extra_models) <= compile_expr(right, model, *extra_models)
-
-        case Gt(left=left, right=right):
-            return compile_expr(left, model, *extra_models) > compile_expr(right, model, *extra_models)
-
-        case Ge(left=left, right=right):
-            return compile_expr(left, model, *extra_models) >= compile_expr(right, model, *extra_models)
-
-        case And(left=left, right=right):
-            from sqlalchemy import and_
-            return and_(compile_expr(left, model, *extra_models), compile_expr(right, model, *extra_models))
-
-        case Or(left=left, right=right):
-            from sqlalchemy import or_
-            return or_(compile_expr(left, model, *extra_models), compile_expr(right, model, *extra_models))
-
-        case Not(operand=operand):
-            from sqlalchemy import not_
-            return not_(compile_expr(operand, model, *extra_models))
-
-        case In(field=field, values=values):
-            return compile_expr(field, model, *extra_models).in_(values)  # type: ignore[union-attr]
-
-        case Contains(field=field, substring=substring):
-            return compile_expr(field, model, *extra_models).contains(substring)  # type: ignore[union-attr]
-
-        case StartsWith(field=field, prefix=prefix):
-            return compile_expr(field, model, *extra_models).startswith(prefix)  # type: ignore[union-attr]
-
-        case EndsWith(field=field, suffix=suffix):
-            return compile_expr(field, model, *extra_models).endswith(suffix)  # type: ignore[union-attr]
-
-        case IsNull(field=field):
-            return compile_expr(field, model, *extra_models).is_(None)  # type: ignore[union-attr]
-
-        case IsNotNull(field=field):
-            return compile_expr(field, model, *extra_models).isnot(None)  # type: ignore[union-attr]
-
-        case Between(field=field, low=low, high=high):
-            return compile_expr(field, model, *extra_models).between(  # type: ignore[union-attr]
-                compile_expr(low, model, *extra_models), compile_expr(high, model, *extra_models)
-            )
-
-        case Like(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).like(pattern)  # type: ignore[union-attr]
-
-        case ILike(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).ilike(pattern)  # type: ignore[union-attr]
-
-        case Regex(field=field, pattern=pattern):
-            return compile_expr(field, model, *extra_models).regexp_match(pattern)  # type: ignore[union-attr]
-
-        case JsonExtract(field=field, path=path):
-            col = compile_expr(field, model, *extra_models)
-            for key in path.split("."):
-                col = col[key]  # type: ignore[index]
-            return col
-
-        case JsonContains(field=field, value=value):
-            return compile_expr(field, model, *extra_models).contains(value)  # type: ignore[union-attr]
-
-        case JsonHasKey(field=field, key=key):
-            return compile_expr(field, model, *extra_models).has_key(key)  # type: ignore[union-attr]
-
-        case ArrayContains(field=field, value=value):
-            return compile_expr(field, model, *extra_models).contains([value])  # type: ignore[union-attr]
-
-        case ArrayAny(field=field, values=values):
-            return compile_expr(field, model, *extra_models).overlap(list(values))  # type: ignore[union-attr]
-
-        case ArrayAll(field=field, values=values):
-            return compile_expr(field, model, *extra_models).contains(list(values))  # type: ignore[union-attr]
-
-        case ArrayOverlap(field=field, values=values):
-            return compile_expr(field, model, *extra_models).overlap(list(values))  # type: ignore[union-attr]
-
-        case _:
-            raise TypeError(f"Unsupported expression type: {type(expr)}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Entity <-> Model Mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def entity_to_model[T](entity: T, model_class: type[DeclarativeBase]) -> DeclarativeBase:
-    """Convert dataclass entity to SQLAlchemy model instance.
-
-    Applies to_storage coercion from _field_coercion map.
-    """
-    if not dataclasses.is_dataclass(entity):
-        raise TypeError(f"{entity} must be a dataclass instance")
-
-    coercion: _CoercionMap = getattr(model_class, "_field_coercion", {})
-    data: dict[str, object] = {}
-
-    for f in dataclasses.fields(entity):  # type: ignore[arg-type]
-        value = getattr(entity, f.name)
-        to_storage_fn = coercion.get(f.name)
-        if to_storage_fn is not None:
-            value = to_storage_fn[0](value)
-        data[f.name] = value
-
-    return model_class(**data)
-
-
-def model_to_entity[T](model: DeclarativeBase, entity_class: type[T]) -> T:
-    """Convert SQLAlchemy model instance to dataclass entity.
-
-    Applies from_storage coercion from _field_coercion map.
-    """
-    if not dataclasses.is_dataclass(entity_class):
-        raise TypeError(f"{entity_class} must be a dataclass")
-
-    model_class = type(model)
-    coercion: _CoercionMap = getattr(model_class, "_field_coercion", {})
-    fields = inspect_dataclass(entity_class)
-    data: dict[str, object] = {}
-
-    for name in fields:
-        value = getattr(model, name)
-        from_storage_fn = coercion.get(name)
-        if from_storage_fn is not None:
-            value = from_storage_fn[1](value)
-        data[name] = value
-
-    return entity_class(**data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -446,7 +85,7 @@ class SQLAlchemyStore[T]:
     """Store factory — configure once, use with any session.
 
     Separates storage configuration from session lifecycle.
-    Model is compiled once at store creation.
+    Model is compiled once at store creation via compile_sa.
 
     Usage:
         # Configure once (at app startup)
@@ -459,14 +98,10 @@ class SQLAlchemyStore[T]:
             await session.commit()
     """
 
-    __slots__ = ("_entity", "_tablename", "_base", "_schema", "_model", "_identity_field")
+    __slots__ = ("_tablename", "_compiled")
 
-    _entity: type[T]
     _tablename: str
-    _base: type[DeclarativeBase] | None
-    _schema: str | None
-    _model: type[DeclarativeBase]
-    _identity_field: str | None
+    _compiled: Compilation[T, DeclarativeBase]
 
     def __init__(
         self,
@@ -475,20 +110,16 @@ class SQLAlchemyStore[T]:
         base: type[DeclarativeBase] | None = None,
         schema: str | None = None,
     ) -> None:
-        self._entity = entity
         self._tablename = tablename
-        self._base = base
-        self._schema = schema
-        self._model = compile_model(entity, tablename, base, schema)
-        self._identity_field = self._model._identity_field  # type: ignore[attr-defined]
+        self._compiled = compile_sa(entity, tablename, base, schema)
 
     @property
     def entity(self) -> type[T]:
-        return self._entity
+        return self._compiled.entity
 
     @property
     def model(self) -> type[DeclarativeBase]:
-        return self._model
+        return self._compiled.model
 
     @property
     def tablename(self) -> str:
@@ -498,9 +129,7 @@ class SQLAlchemyStore[T]:
         """Bind store to session — returns object with all storage operations."""
         return BoundSQLAlchemyStore(
             session=session,
-            entity=self._entity,
-            model=self._model,
-            identity_field=self._identity_field,
+            compiled=self._compiled,
         )
 
     def __call__(self, session: AsyncSession) -> BoundSQLAlchemyStore[T]:
@@ -516,43 +145,34 @@ class BoundSQLAlchemyStore[T]:
     IMPORTANT: Does NOT own transactions. Caller commits.
     """
 
-    __slots__ = ("_session", "_entity", "_model", "_identity_field")
+    __slots__ = ("_session", "_compiled")
 
     _session: AsyncSession
-    _entity: type[T]
-    _model: type[DeclarativeBase]
-    _identity_field: str | None
+    _compiled: Compilation[T, DeclarativeBase]
 
     def __init__(
         self,
         session: AsyncSession,
-        entity: type[T],
-        model: type[DeclarativeBase],
-        identity_field: str | None,
+        compiled: Compilation[T, DeclarativeBase],
     ) -> None:
         self._session = session
-        self._entity = entity
-        self._model = model
-        self._identity_field = identity_field
+        self._compiled = compiled
 
     @property
     def entity(self) -> type[T]:
-        return self._entity
+        return self._compiled.entity
 
     @property
     def model(self) -> type[DeclarativeBase]:
-        return self._model
+        return self._compiled.model
 
     # ─── KV Operations ────────────────────────────────────────────────────────
 
     async def get(self, key: object) -> Result[Option[T], StorageError]:
         """Get entity by primary key."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
         try:
-            stmt = select(self._model).where(
-                getattr(self._model, self._identity_field) == key
+            stmt = select(self._compiled.model).where(
+                getattr(self._compiled.model, self._compiled.identity_field) == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -560,7 +180,7 @@ class BoundSQLAlchemyStore[T]:
             if row is None:
                 return Ok(Nothing())
 
-            return Ok(Some(model_to_entity(row, self._entity)))
+            return Ok(Some(model_to_entity(row, self._compiled)))
 
         except Exception as e:
             return Error(StorageError(f"Failed to get: {e}", e))
@@ -568,22 +188,19 @@ class BoundSQLAlchemyStore[T]:
     async def set(self, entity: T) -> Result[T, StorageError]:
         """Insert or update entity (upsert by primary key)."""
         try:
-            model_instance = entity_to_model(entity, self._model)
+            model_instance = entity_to_model(entity, self._compiled)
             merged = await self._session.merge(model_instance)
             await self._session.flush()
-            return Ok(model_to_entity(merged, self._entity))
+            return Ok(model_to_entity(merged, self._compiled))
 
         except Exception as e:
             return Error(StorageError(f"Failed to set: {e}", e))
 
     async def delete(self, key: object) -> Result[bool, StorageError]:
         """Delete entity by primary key. Returns True if existed."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
         try:
-            stmt = select(self._model).where(
-                getattr(self._model, self._identity_field) == key
+            stmt = select(self._compiled.model).where(
+                getattr(self._compiled.model, self._compiled.identity_field) == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -599,12 +216,9 @@ class BoundSQLAlchemyStore[T]:
 
     async def exists(self, key: object) -> Result[bool, StorageError]:
         """Check if entity exists by primary key."""
-        if self._identity_field is None:
-            return Error(StorageError("No Identity field defined"))
-
         try:
-            stmt = select(func.count()).select_from(self._model).where(
-                getattr(self._model, self._identity_field) == key
+            stmt = select(func.count()).select_from(self._compiled.model).where(
+                getattr(self._compiled.model, self._compiled.identity_field) == key
             )
             result = await self._session.execute(stmt)
             count_val: int = result.scalar_one()
@@ -621,14 +235,14 @@ class BoundSQLAlchemyStore[T]:
     ) -> Result[list[T], StorageError]:
         """Find all entities matching predicate."""
         try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
+            expr = build_expr(self._compiled.entity, predicate)
+            where_clause = compile_expr(expr, self._compiled)
 
-            stmt = select(self._model).where(where_clause)
+            stmt = select(self._compiled.model).where(where_clause)
             result = await self._session.execute(stmt)
             rows = result.scalars().all()
 
-            entities = [model_to_entity(row, self._entity) for row in rows]
+            entities = [model_to_entity(row, self._compiled) for row in rows]
             return Ok(entities)
 
         except Exception as e:
@@ -640,17 +254,17 @@ class BoundSQLAlchemyStore[T]:
     ) -> Result[Option[T], StorageError]:
         """Find single entity matching predicate."""
         try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
+            expr = build_expr(self._compiled.entity, predicate)
+            where_clause = compile_expr(expr, self._compiled)
 
-            stmt = select(self._model).where(where_clause).limit(1)
+            stmt = select(self._compiled.model).where(where_clause).limit(1)
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
 
             if row is None:
                 return Ok(Nothing())
 
-            return Ok(Some(model_to_entity(row, self._entity)))
+            return Ok(Some(model_to_entity(row, self._compiled)))
 
         except Exception as e:
             return Error(StorageError(f"Failed to find_one: {e}", e))
@@ -661,11 +275,11 @@ class BoundSQLAlchemyStore[T]:
     ) -> Result[int, StorageError]:
         """Count entities, optionally filtered."""
         try:
-            stmt = select(func.count()).select_from(self._model)
+            stmt = select(func.count()).select_from(self._compiled.model)
 
             if predicate is not None:
-                expr = build_expr(self._entity, predicate)
-                where_clause = compile_expr(expr, self._model)
+                expr = build_expr(self._compiled.entity, predicate)
+                where_clause = compile_expr(expr, self._compiled)
                 stmt = stmt.where(where_clause)
 
             result = await self._session.execute(stmt)
@@ -681,10 +295,10 @@ class BoundSQLAlchemyStore[T]:
     ) -> Result[int, StorageError]:
         """Delete all entities matching predicate. Returns count."""
         try:
-            expr = build_expr(self._entity, predicate)
-            where_clause = compile_expr(expr, self._model)
+            expr = build_expr(self._compiled.entity, predicate)
+            where_clause = compile_expr(expr, self._compiled)
 
-            stmt = delete(self._model).where(where_clause)
+            stmt = delete(self._compiled.model).where(where_clause)
             cursor: CursorResult[tuple[object, ...]] = await self._session.execute(stmt)  # type: ignore[assignment]
             return Ok(cursor.rowcount)
 
@@ -698,9 +312,9 @@ class BoundSQLAlchemyStore[T]:
         try:
             results: list[T] = []
             for ent in entities:
-                model_instance = entity_to_model(ent, self._model)
+                model_instance = entity_to_model(ent, self._compiled)
                 merged = await self._session.merge(model_instance)
-                results.append(model_to_entity(merged, self._entity))
+                results.append(model_to_entity(merged, self._compiled))
             await self._session.flush()
             return Ok(results)
 
@@ -710,10 +324,10 @@ class BoundSQLAlchemyStore[T]:
     async def all(self) -> Result[list[T], StorageError]:
         """Get all entities."""
         try:
-            stmt = select(self._model)
+            stmt = select(self._compiled.model)
             result = await self._session.execute(stmt)
             rows = result.scalars().all()
-            entities = [model_to_entity(row, self._entity) for row in rows]
+            entities = [model_to_entity(row, self._compiled) for row in rows]
             return Ok(entities)
 
         except Exception as e:
@@ -739,13 +353,10 @@ class SQLAlchemyStorage[T](BoundSQLAlchemyStore[T]):
         base: type[DeclarativeBase] | None = None,
         schema: str | None = None,
     ) -> None:
-        model = compile_model(entity, tablename, base, schema)
-        identity_field: str | None = model._identity_field  # type: ignore[attr-defined]
+        compiled = compile_sa(entity, tablename, base, schema)
         super().__init__(
             session=session,
-            entity=entity,
-            model=model,
-            identity_field=identity_field,
+            compiled=compiled,
         )
 
 
@@ -811,7 +422,8 @@ def sqlalchemy[T](
 
 
 __all__ = (
-    # Model compiler
+    # Compilation
+    "compile_sa",
     "compile_model",
     # Expression compiler
     "compile_expr",

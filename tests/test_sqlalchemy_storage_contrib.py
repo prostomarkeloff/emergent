@@ -25,6 +25,7 @@ from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     SQLAlchemyStorage,
     SQLAlchemyStore,
     StorageError,
+    compile_sa,
     compile_model,
     entity_to_model,
     model_to_entity,
@@ -118,9 +119,9 @@ class TestCompileModel:
         pk_cols: set[str] = {col.key for col in mapper.columns if col.primary_key}
         assert "id" in pk_cols
 
-    def test_identity_field_stored_on_model(self) -> None:
-        model = compile_model(User, "cm_ident_users", base=StorageTestBase)
-        assert model._identity_field == "id"
+    def test_identity_field_on_compilation(self) -> None:
+        compiled = compile_sa(User, "cm_ident_users", base=StorageTestBase)
+        assert compiled.identity_field == "id"
 
     def test_non_dataclass_raises(self) -> None:
         class NotADataclass:
@@ -143,44 +144,51 @@ class TestCompileModel:
 
 class TestEntityMapping:
     def test_entity_to_model_creates_model_instance(self) -> None:
-        model_cls = compile_model(User, "em_users", base=StorageTestBase)
+        compiled = compile_sa(User, "em_users", base=StorageTestBase)
         user = User(id=1, name="Alice", email="alice@example.com", score=10)
-        model_inst = entity_to_model(user, model_cls)
+        model_inst = entity_to_model(user, compiled)
         assert model_inst.id == 1
         assert model_inst.name == "Alice"
         assert model_inst.email == "alice@example.com"
         assert model_inst.score == 10
 
     def test_model_to_entity_restores_original(self) -> None:
-        model_cls = compile_model(User, "me_users", base=StorageTestBase)
+        compiled = compile_sa(User, "me_users", base=StorageTestBase)
         user = User(id=2, name="Bob", email="bob@example.com", score=42)
-        model_inst = entity_to_model(user, model_cls)
-        restored = model_to_entity(model_inst, User)
+        model_inst = entity_to_model(user, compiled)
+        restored = model_to_entity(model_inst, compiled)
         assert restored == user
 
     def test_round_trip_preserves_all_fields(self) -> None:
-        model_cls = compile_model(User, "rt_users", base=StorageTestBase)
+        compiled = compile_sa(User, "rt_users", base=StorageTestBase)
         original = User(id=99, name="Carol", email="carol@example.com", score=7)
-        model_inst = entity_to_model(original, model_cls)
-        result = model_to_entity(model_inst, User)
+        model_inst = entity_to_model(original, compiled)
+        result = model_to_entity(model_inst, compiled)
         assert result.id == original.id
         assert result.name == original.name
         assert result.email == original.email
         assert result.score == original.score
 
     def test_entity_to_model_raises_for_non_dataclass(self) -> None:
-        model_cls = compile_model(User, "err_users", base=StorageTestBase)
+        compiled = compile_sa(User, "err_users", base=StorageTestBase)
 
         with pytest.raises(TypeError):
-            entity_to_model("not-a-dataclass", model_cls)
+            entity_to_model("not-a-dataclass", compiled)
 
     def test_model_to_entity_raises_for_non_dataclass_class(self) -> None:
-        model_cls = compile_model(User, "err2_users", base=StorageTestBase)
+        compiled = compile_sa(User, "err2_users", base=StorageTestBase)
         user = User(id=1, name="Alice", email="a@b.com")
-        model_inst = entity_to_model(user, model_cls)
+        model_inst = entity_to_model(user, compiled)
 
+        # Create a fake compilation with a non-dataclass entity
+        from emergent.wire.compile._phase import Compilation
+        bad_compiled = Compilation(
+            model=compiled.model,
+            entity=str,
+            fields=(),
+        )
         with pytest.raises(TypeError):
-            model_to_entity(model_inst, str)  # type: ignore[arg-type]
+            model_to_entity(model_inst, bad_compiled)
 
 
 # ─── StorageError ─────────────────────────────────────────────────────────────

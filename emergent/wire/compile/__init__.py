@@ -77,20 +77,45 @@ from emergent.wire.compile._phase import (
     CompilationPhase,
     FieldCompilation,
     compile_fields,
+    Compilation,
+    # Composable schema compiler
+    SchemaCompiler,
+    # Universal storage operations
+    to_storage_dict,
+    from_storage,
+    coerce_expr,
+    # Pre-built phases
     PYDANTIC_PHASE,
     OPENAPI_PHASE,
     ARGPARSE_PHASE,
     REQUEST_BUILD_PHASE,
     TG_INPUT_PHASE,
     TG_RENDER_PHASE,
+    CONSTRAINTS_PHASE,
+    QUERY_SCHEMA_PHASE,
+    STORAGE_FIELD_PHASE,
     FASTAPI_PHASES,
     CLI_PHASES,
     TG_PHASES,
+    # Pre-built schema compilers
+    FASTAPI_SCHEMA,
+    CLI_SCHEMA,
+    TG_SCHEMA,
+    CONSTRAINTS_SCHEMA,
+    STORAGE_SCHEMA,
 )
 
 from emergent.wire.compile._target import (
     CodecAdapter,
+    CodecBinding,
     TargetCompiler,
+)
+
+# Pipeline helpers
+from emergent.wire.compile._pipeline import (
+    CompiledPipeline,
+    compile_pipeline,
+    execute_with_pipeline,
 )
 
 # Capabilities
@@ -103,6 +128,10 @@ from emergent.wire.compile._capabilities import (
 
 # Type generation
 from emergent.wire.compile._generate import (
+    # Assemblers (composable — use with SchemaCompiler)
+    assemble_pydantic,
+    assemble_argparse,
+    # Thin wrappers (backwards-compat)
     to_pydantic,
     to_argparse_args,
     ArgSpec,
@@ -116,6 +145,7 @@ from emergent.wire.compile._generate import (
 
 # Schema generation (OpenAPI, JSON Schema)
 from emergent.wire.compile._schema import (
+    assemble_openapi,
     to_openapi_schema,
     to_json_schema,
 )
@@ -181,6 +211,11 @@ __all__ = (
     "FieldConstraints",
     "extract_constraints",
     "extract_all_constraints",
+    "Compilation",
+    # Universal storage operations
+    "to_storage_dict",
+    "from_storage",
+    "coerce_expr",
     # Trace
     "TraceCollector",
     "ListCollector",
@@ -209,23 +244,42 @@ __all__ = (
     "CompilationPhase",
     "FieldCompilation",
     "compile_fields",
+    "SchemaCompiler",
     "PYDANTIC_PHASE",
     "OPENAPI_PHASE",
     "ARGPARSE_PHASE",
     "REQUEST_BUILD_PHASE",
     "TG_INPUT_PHASE",
     "TG_RENDER_PHASE",
+    "CONSTRAINTS_PHASE",
+    "QUERY_SCHEMA_PHASE",
+    "STORAGE_FIELD_PHASE",
     "FASTAPI_PHASES",
     "CLI_PHASES",
     "TG_PHASES",
+    # Pre-built schema compilers
+    "FASTAPI_SCHEMA",
+    "CLI_SCHEMA",
+    "TG_SCHEMA",
+    "CONSTRAINTS_SCHEMA",
+    "STORAGE_SCHEMA",
     "CodecAdapter",
+    "CodecBinding",
     "TargetCompiler",
+    # Pipeline helpers
+    "CompiledPipeline",
+    "compile_pipeline",
+    "execute_with_pipeline",
     # Capabilities
     "apply_response_capabilities",
     "find_capability",
     "find_all_capabilities",
     "has_capability",
-    # Type generation
+    # Assemblers (composable — use with SchemaCompiler)
+    "assemble_pydantic",
+    "assemble_argparse",
+    "assemble_openapi",
+    # Type generation (backwards-compat thin wrappers)
     "to_pydantic",
     "to_argparse_args",
     "ArgSpec",

@@ -103,7 +103,7 @@ class TestEndpoint:
     def test_endpoint_factory_creates_empty_endpoint(self):
         ep = endpoint(_runner())
         assert isinstance(ep, Endpoint)
-        assert ep.exposures == []
+        assert ep.exposures == ()
 
     def test_expose_returns_new_endpoint_with_exposure(self):
         runner = _runner()
@@ -165,7 +165,7 @@ class TestEndpoint:
         runner = _runner()
         ep = Endpoint.from_runner(runner)
         assert ep.runner is runner
-        assert ep.exposures == []
+        assert ep.exposures == ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -177,7 +177,7 @@ class TestApplication:
     def test_application_factory_creates_empty(self):
         app = application()
         assert isinstance(app, Application)
-        assert app.endpoints == []
+        assert app.endpoints == ()
         assert app.capabilities == ()
 
     def test_application_with_global_capabilities(self):
@@ -276,7 +276,7 @@ class TestAppStack:
     def test_app_stack_factory_creates_empty(self):
         stack = app_stack()
         assert isinstance(stack, AppStack)
-        assert stack.root_app.endpoints == []
+        assert stack.root_app.endpoints == ()
         assert stack.mounts == {}
 
     def test_root_sets_root_application(self):

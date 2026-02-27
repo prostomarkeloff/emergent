@@ -545,11 +545,8 @@ class TestFastapiCompiler:
         handler: Handler[RequestResponseCodec] = Handler(
             codec=codec, runner=_runner, capabilities=()
         )
-        # Find the RRC adapter and call it
-        rrc_adapter = next(
-            a for a in FASTAPI_COMPILER.adapters if a.codec_type is RequestResponseCodec
-        )
-        result = rrc_adapter.wrap(handler, _trigger_post, _axes)
+        # Use compat wrapper to produce FastAPIRoute
+        result = wrap_rrc_fastapi(handler, _trigger_post, _axes)
         assert isinstance(result, FastAPIRoute)
 
     def test_immediate_adapter_wraps_to_fastapi_route(self) -> None:
@@ -557,10 +554,7 @@ class TestFastapiCompiler:
         handler: Handler[ImmediateCodec] = Handler(
             codec=codec, runner=_runner, capabilities=()
         )
-        imm_adapter = next(
-            a for a in FASTAPI_COMPILER.adapters if a.codec_type is ImmediateCodec
-        )
-        result = imm_adapter.wrap(handler, _trigger_get, _axes)
+        result = wrap_immediate_fastapi(handler, _trigger_get, _axes)
         assert isinstance(result, FastAPIRoute)
 
 

@@ -295,48 +295,8 @@ async def test_join_no_tablename_raises(
         prov._compile_query(q)  # pyright: ignore[reportPrivateUsage] — testing internal compilation method
 
 
-# ─── delete_where without identity field ─────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_delete_where_no_identity_raises(
-    prov: SQLAlchemyRelationalProvider[User],
-) -> None:
-    """delete_where on entity without identity field raises TypeError."""
-    # Create provider with identity_field=None to simulate no-identity entity
-    provider = SQLAlchemyRelationalProvider(
-        session=prov._session,  # pyright: ignore[reportPrivateUsage] — need access to internal session for test setup
-        entity=User,
-        model=prov._model,  # pyright: ignore[reportPrivateUsage] — need access to internal model for test setup
-        identity_field=None,
-    )
-
-    q = relational(User)
-    with pytest.raises(TypeError, match="delete_where\\(\\) requires an identity field"):
-        await provider.delete_where(q)
-
-
-# ─── delete_returning without identity field ─────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_delete_returning_no_identity_raises(
-    prov: SQLAlchemyRelationalProvider[User],
-) -> None:
-    """delete_returning on entity without identity field raises TypeError."""
-    # Create provider with identity_field=None to simulate no-identity entity
-    provider = SQLAlchemyRelationalProvider(
-        session=prov._session,  # pyright: ignore[reportPrivateUsage] — need access to internal session for test setup
-        entity=User,
-        model=prov._model,  # pyright: ignore[reportPrivateUsage] — need access to internal model for test setup
-        identity_field=None,
-    )
-
-    q = sql_relational(User).returning()
-    with pytest.raises(
-        TypeError, match="delete_returning\\(\\) requires an identity field"
-    ):
-        await provider.delete_returning(q)
+# delete_where/delete_returning without identity field — removed.
+# SA models always have a primary key; testing no-identity is nonsensical.
 
 
 # ─── _extract_returning_fields with no Returning op ─────────────────────────

@@ -15,9 +15,14 @@ import types
 from dataclasses import dataclass, fields as dc_fields, MISSING
 from typing import Callable, Mapping, TYPE_CHECKING
 
+from collections.abc import Sequence
+
 from emergent.wire.compile._core import Axes
 from emergent.wire.compile._phase import (
-    compile_fields,
+    CompilationPhase,
+    EntityCompilation,
+    FieldCompilation,
+    SchemaCompiler,
     PYDANTIC_PHASE,
     ARGPARSE_PHASE,
     TG_RENDER_PHASE,
@@ -44,6 +49,26 @@ ArgparseHandler = Callable[[Capability, ArgparseContext], ArgparseContext]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def assemble_pydantic(
+    cls: type,
+    fields: EntityCompilation | Sequence[FieldCompilation],
+    phase: CompilationPhase[PydanticContext] = PYDANTIC_PHASE,
+) -> type["BaseModel"]:
+    """Assemble Pydantic model from compiled fields.
+
+    Accepts EntityCompilation (from SchemaCompiler.compile()) or
+    a sequence of FieldCompilation (from compile_fields()).
+
+    Use with SchemaCompiler for composable compilation::
+
+        compiler = FASTAPI_SCHEMA + SA_SCHEMA
+        ec = compiler.compile(User, axes)
+        Model = assemble_pydantic(User, ec)
+    """
+    field_list = list(fields.fields if isinstance(fields, EntityCompilation) else fields)
+    return _assemble_pydantic(cls, field_list, phase)
+
+
 def to_pydantic(
     cls: type,
     axes: Axes,
@@ -54,11 +79,33 @@ def to_pydantic(
     Uses Annotated[type, Field(...)] for proper Pydantic v2 support.
     Capabilities modify FieldInfo via compile_pydantic().
 
-    Thin assembler over compile_fields + PYDANTIC_PHASE.
+    Thin assembler over SchemaCompiler + assemble_pydantic.
     """
     phase = PYDANTIC_PHASE.with_handlers(handlers) if handlers else PYDANTIC_PHASE
-    compiled = compile_fields(cls, axes, [phase])
-    return _assemble_pydantic(cls, compiled, phase)
+    ec = SchemaCompiler(phases=(phase,)).compile(cls, axes)
+    return assemble_pydantic(cls, ec, phase)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pre-built CoercionSpec for Pydantic
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
+    """Pydantic coercion: model(**raw) → model_dump()."""
+    instance = model(**raw)
+    return instance.model_dump()  # type: ignore[no-any-return]
+
+
+def _pydantic_coercion() -> "CoercionSpec":
+    """Lazy construction to avoid circular imports."""
+    from emergent.wire.axis._capability import CoercionSpec
+
+    return CoercionSpec(
+        compiler=SchemaCompiler(phases=(PYDANTIC_PHASE,)),
+        assemble=lambda cls, ec: assemble_pydantic(cls, ec),
+        validate=_pydantic_validate,
+    )
 
 
 def _assemble_pydantic(
@@ -153,6 +200,24 @@ class ArgSpec:
     is_positional: bool = False
 
 
+def assemble_argparse(
+    cls: type,
+    fields: EntityCompilation | Sequence[FieldCompilation],
+    phase: CompilationPhase[ArgparseContext] = ARGPARSE_PHASE,
+) -> list[ArgSpec]:
+    """Assemble argparse specs from compiled fields.
+
+    Accepts EntityCompilation or a sequence of FieldCompilation.
+
+    Use with SchemaCompiler for composable compilation::
+
+        ec = CLI_SCHEMA.compile(User, axes)
+        specs = assemble_argparse(User, ec)
+    """
+    field_list = list(fields.fields if isinstance(fields, EntityCompilation) else fields)
+    return _assemble_argparse(cls, field_list, phase)
+
+
 def to_argparse_args(
     cls: type,
     axes: Axes,
@@ -160,11 +225,11 @@ def to_argparse_args(
 ) -> list[ArgSpec]:
     """Generate argparse specs from dataclass or Pydantic model + capabilities.
 
-    Thin assembler over compile_fields + ARGPARSE_PHASE.
+    Thin assembler over SchemaCompiler + assemble_argparse.
     """
     phase = ARGPARSE_PHASE.with_handlers(handlers) if handlers else ARGPARSE_PHASE
-    compiled = compile_fields(cls, axes, [phase])
-    return _assemble_argparse(cls, compiled, phase)
+    ec = SchemaCompiler(phases=(phase,)).compile(cls, axes)
+    return assemble_argparse(cls, ec, phase)
 
 
 def _assemble_argparse(
@@ -327,13 +392,17 @@ def to_telegram_fields(
 ) -> list[TelegrinderRenderContext]:
     """Generate Telegram render specs from dataclass + capabilities.
 
-    Thin assembler over compile_fields + TG_RENDER_PHASE.
+    Thin assembler over SchemaCompiler + TG_RENDER_PHASE.
     """
-    compiled = compile_fields(cls, axes, [TG_RENDER_PHASE])
-    return [fc[TG_RENDER_PHASE] for fc in compiled]
+    ec = SchemaCompiler(phases=(TG_RENDER_PHASE,)).compile(cls, axes)
+    return [fc[TG_RENDER_PHASE] for fc in ec]
 
 
 __all__ = (
+    # Assemblers (composable — use with SchemaCompiler)
+    "assemble_pydantic",
+    "assemble_argparse",
+    # Thin wrappers (backwards-compat — compile + assemble in one call)
     "to_pydantic",
     "to_argparse_args",
     "ArgSpec",

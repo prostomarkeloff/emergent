@@ -45,7 +45,7 @@ class TestSQLDialect:
         cap = Type("TEXT")
         ctx = SQLAlchemyContext(field_name="bio", field_type=str)
         result = cap.compile_sqlalchemy(ctx)
-        assert result.column_kwargs["type_"] == "TEXT"
+        assert result.column_type == "TEXT"
 
     def test_server_default(self):
         from emergent.wire.axis.schema.dialects.sql import ServerDefault
@@ -1911,7 +1911,7 @@ class TestIntegrationCrossDialectCompilation:
             "compile_sqlalchemy",
         )
         assert created_sql.column_kwargs.get("server_default") == "CURRENT_TIMESTAMP"
-        assert created_sql.column_kwargs.get("type_") == "TIMESTAMP"
+        assert created_sql.column_type == "TIMESTAMP"
 
     def test_pydantic_dialect_compilation(self):
         """Pydantic dialect capabilities compile to field metadata."""

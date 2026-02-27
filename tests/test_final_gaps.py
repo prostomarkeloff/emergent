@@ -1555,7 +1555,7 @@ class TestSurfaceExplain:
         from emergent.wire.axis.surface._explain import explain_application
         from emergent.wire.axis.surface._app import Application
 
-        app = Application(endpoints=[], capabilities=())
+        app = Application(endpoints=(), capabilities=())
         text = explain_application(app)
         assert "Application" in text
 

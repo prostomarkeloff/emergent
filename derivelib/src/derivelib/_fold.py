@@ -179,7 +179,7 @@ def materialize[EntityT](ctx: DerivationCtx[EntityT]) -> Endpoint:
     """
     if not ctx.surface.specs and not ctx.surface.operations:
         from emergent.wire.axis.surface import empty_runner
-        return Endpoint(runner=empty_runner(), exposures=[])
+        return Endpoint(runner=empty_runner(), exposures=())
 
     from derivelib._opspec import build_from_spec
 
@@ -211,7 +211,7 @@ def materialize[EntityT](ctx: DerivationCtx[EntityT]) -> Endpoint:
         exposures.append(exposure_obj)
 
     runner = builder.compile()
-    return Endpoint(runner=runner, exposures=exposures)
+    return Endpoint(runner=runner, exposures=tuple(exposures))
 
 
 __all__ = (

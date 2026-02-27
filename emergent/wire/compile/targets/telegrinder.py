@@ -58,7 +58,7 @@ from emergent.wire.axis.surface.codecs.resolve import get_method_params, wrap, T
 from emergent.wire.axis.surface.triggers.telegrinder import TelegrindTrigger
 
 from emergent.wire.compile._core import Axes, fold_field, fold
-from emergent.wire.compile._target import CodecAdapter, TargetCompiler
+from emergent.wire.compile._target import CodecBinding, TargetCompiler
 from emergent.wire.compile._execute import (
     execute_rrc_unified,
     execute_immediate_unified,
@@ -97,6 +97,34 @@ from emergent.wire.axis._capability import (
     TelegrinderInputCompilable, TelegrinderInputContext,
     TelegrinderHandlerContext, TelegrinderCompilable,
 )
+
+from typing import Protocol as TypingProtocol
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TelegrindWrapContext — seeded by from_codec, refined by capabilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class TelegrindWrapContext:
+    """Wrap context for Telegrinder — seeded by from_codec, refined by capabilities."""
+
+    execute: Callable[..., Any] | None = None
+    rules: tuple[ABCRule, ...] = ()
+    trigger: TelegrindTrigger | None = None
+
+
+from typing import runtime_checkable as _runtime_checkable
+
+
+@_runtime_checkable
+class TelegrindPipelineCompilable(TypingProtocol):
+    """Capability that configures Telegrinder pipeline."""
+
+    def compile_telegram_pipeline(
+        self, ctx: TelegrindWrapContext,
+    ) -> TelegrindWrapContext: ...
 
 
 def fold_tg_handler_ctx(
@@ -620,15 +648,111 @@ def register_handler(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# from_codec functions — read codec data into TelegrindWrapContext
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def rrc_from_codec_tg(
+    codec: RequestResponseCodec,
+    trigger: TelegrindTrigger,
+) -> TelegrindWrapContext:
+    """Seed TelegrindWrapContext from RRC codec."""
+    enhanced = enhance_command_with_args(trigger, codec.request)
+    return TelegrindWrapContext(
+        execute=_rrc_execute_tg,
+        rules=tuple(enhanced.rules),
+        trigger=trigger,
+    )
+
+
+def stateful_from_codec_tg(
+    codec: StatefulCodec,
+    trigger: TelegrindTrigger,
+) -> TelegrindWrapContext:
+    """Seed TelegrindWrapContext from StatefulCodec."""
+    rule = create_stateful_rule(trigger, codec)
+    return TelegrindWrapContext(
+        execute=_stateful_execute_tg,
+        rules=(rule,),
+        trigger=trigger,
+    )
+
+
+def immediate_from_codec_tg(
+    codec: ImmediateCodec | ImmediateFactoryCodec,
+    trigger: TelegrindTrigger,
+) -> TelegrindWrapContext:
+    """Seed TelegrindWrapContext from ImmediateCodec."""
+    return TelegrindWrapContext(
+        execute=_immediate_execute_tg,
+        rules=tuple(trigger.rules),
+        trigger=trigger,
+    )
+
+
+def delegate_from_codec_tg(
+    codec: DelegateCodec,
+    trigger: TelegrindTrigger,
+) -> TelegrindWrapContext:
+    """Seed TelegrindWrapContext from DelegateCodec."""
+    return TelegrindWrapContext(
+        execute=_delegate_execute_tg,
+        rules=tuple(trigger.rules),
+        trigger=trigger,
+    )
+
+
+# Execute wrappers that match the (handler, trigger, axes) → TelegrindRoute signature
+# but call the original wrap functions
+
+def _rrc_execute_tg(handler: Handler[RequestResponseCodec], trigger: TelegrindTrigger, axes: Axes) -> TelegrindRoute:
+    return wrap_rrc_telegrinder(handler, trigger, axes)
+
+
+def _stateful_execute_tg(handler: Handler[StatefulCodec], trigger: TelegrindTrigger, axes: Axes) -> TelegrindRoute:
+    return wrap_stateful_telegrinder(handler, trigger, axes)
+
+
+def _immediate_execute_tg(handler: Handler[Any], trigger: TelegrindTrigger, axes: Axes) -> TelegrindRoute:
+    return wrap_immediate_telegrinder(handler, trigger, axes)
+
+
+def _delegate_execute_tg(handler: Handler[DelegateCodec], trigger: TelegrindTrigger, axes: Axes) -> TelegrindRoute:
+    return wrap_delegate_telegrinder(handler, trigger, axes)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Assembler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def assemble_telegrind_route(
+    ctx: TelegrindWrapContext,
+    handler: Handler[Any],
+    axes: Axes,
+) -> TelegrindRoute:
+    """Assemble TelegrindRoute from WrapContext.
+
+    Delegates to the codec-specific wrap function stored in ctx.execute.
+    The wrap function produces the final TelegrindRoute with handler + rules.
+    """
+    route = ctx.execute(handler, ctx.trigger, axes)
+    return route
+
+
 TELEGRINDER_COMPILER: TargetCompiler[TelegrindTrigger] = TargetCompiler(
     trigger_type=TelegrindTrigger,
     adapters=(
-        CodecAdapter(RequestResponseCodec, wrap_rrc_telegrinder),
-        CodecAdapter(StatefulCodec, wrap_stateful_telegrinder),
-        CodecAdapter(ImmediateCodec, wrap_immediate_telegrinder),
-        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_telegrinder),
-        CodecAdapter(DelegateCodec, wrap_delegate_telegrinder),
+        CodecBinding(RequestResponseCodec, rrc_from_codec_tg),
+        CodecBinding(StatefulCodec, stateful_from_codec_tg),
+        CodecBinding(ImmediateCodec, immediate_from_codec_tg),
+        CodecBinding(ImmediateFactoryCodec, immediate_from_codec_tg),
+        CodecBinding(DelegateCodec, delegate_from_codec_tg),
     ),
+    pipeline_protocol=TelegrindPipelineCompilable,
+    pipeline_method="compile_telegram_pipeline",
+    assemble=assemble_telegrind_route,
 )
 
 

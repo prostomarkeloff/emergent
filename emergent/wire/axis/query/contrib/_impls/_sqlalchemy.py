@@ -74,9 +74,10 @@ from emergent.wire.axis.query._window import (
 )
 from emergent.wire.axis.query._provider import NextId
 
-# Reuse from storage contrib
-from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-    compile_model,
+# Reuse from compile target
+from emergent.wire.compile._phase import Compilation
+from emergent.wire.compile.targets.sqlalchemy import (
+    compile_sa,
     compile_expr,
     entity_to_model,
     model_to_entity,
@@ -136,20 +137,16 @@ class SQLAlchemyRelationalProvider(Generic[T]):
     Caller owns session — provider does NOT commit.
     """
 
-    __slots__ = ("_session", "_entity", "_model", "_identity_field", "_next_id")
+    __slots__ = ("_session", "_compiled", "_next_id")
 
     def __init__(
         self,
         session: AsyncSession,
-        entity: type[T],
-        model: type[Any],
-        identity_field: str | None,
+        compiled: Compilation[T, DeclarativeBase],
         next_id: NextId[Any] | None = None,
     ) -> None:
         self._session = session
-        self._entity = entity
-        self._model = model
-        self._identity_field = identity_field
+        self._compiled = compiled
         self._next_id: Any = next_id if next_id is not None else AutoIncrementNextId()
 
     # ─── NextId ────────────────────────────────────────────────────────────
@@ -164,13 +161,13 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         stmt = self._compile_query(query).limit(1)
         result = await self._session.execute(stmt)
         row = result.scalars().first()
-        return model_to_entity(row, self._entity) if row is not None else None
+        return model_to_entity(row, self._compiled) if row is not None else None
 
     async def fetch_many(self, query: RelationalQuerySet[T]) -> list[T]:
         stmt = self._compile_query(query)
         result = await self._session.execute(stmt)
         rows = result.scalars().all()
-        return [model_to_entity(row, self._entity) for row in rows]
+        return [model_to_entity(row, self._compiled) for row in rows]
 
     async def count(self, query: RelationalQuerySet[T]) -> int:
         subq = self._compile_query(query).subquery()
@@ -208,47 +205,50 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
         # If identity field has autoincrement placeholder (0 or None),
         # exclude it so the database assigns the real ID.
-        if self._identity_field and data.get(self._identity_field) in (0, None, ""):
-            data.pop(self._identity_field, None)
+        identity = self._compiled.identity_field
+        if identity and data.get(identity) in (0, None, ""):
+            data.pop(identity, None)
 
-        model_instance = self._model(**data)
+        model_instance = self._compiled.model(**data)
         self._session.add(model_instance)
         await self._session.flush()
 
-        return model_to_entity(model_instance, self._entity)
+        return model_to_entity(model_instance, self._compiled)
 
     async def update(self, entity: T) -> T:
-        model_instance = entity_to_model(entity, self._model)
+        model_instance = entity_to_model(entity, self._compiled)
         merged = await self._session.merge(model_instance)
         await self._session.flush()
-        return model_to_entity(merged, self._entity)
+        return model_to_entity(merged, self._compiled)
 
     async def delete(self, entity: T) -> None:
-        if self._identity_field:
-            key = getattr(entity, self._identity_field)
-            existing = await self._session.get(self._model, key)
+        identity = self._compiled.identity_field
+        if identity:
+            key = getattr(entity, identity)
+            existing = await self._session.get(self._compiled.model, key)
             if existing is not None:
                 await self._session.delete(existing)
                 await self._session.flush()
         else:
-            model_instance = entity_to_model(entity, self._model)
+            model_instance = entity_to_model(entity, self._compiled)
             merged = await self._session.merge(model_instance)
             await self._session.delete(merged)
             await self._session.flush()
 
     async def delete_where(self, query: RelationalQuerySet[T]) -> int:
-        if self._identity_field is None:
+        identity = self._compiled.identity_field
+        if identity is None:
             raise TypeError(
                 "delete_where() requires an identity field on the entity "
                 "(annotate a field with Identity)"
             )
-        pk = getattr(self._model, self._identity_field)
+        pk = getattr(self._compiled.model, identity)
         subq = (
             self._compile_query(query)
             .with_only_columns(pk)
             .subquery()
         )
-        stmt = delete(self._model).where(pk.in_(select(subq)))
+        stmt = delete(self._compiled.model).where(pk.in_(select(subq)))
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.rowcount  # type: ignore[return-value]
@@ -265,29 +265,30 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                     .returning()
             )
         """
-        if self._identity_field is None:
+        identity = self._compiled.identity_field
+        if identity is None:
             raise TypeError(
                 "delete_returning() requires an identity field on the entity "
                 "(annotate a field with Identity)"
             )
 
         # Build WHERE clause from query filters
-        pk = getattr(self._model, self._identity_field)
+        pk = getattr(self._compiled.model, identity)
         subq = (
             self._compile_query(query)
             .with_only_columns(pk)
             .subquery()
         )
-        stmt = delete(self._model).where(pk.in_(select(subq)))
+        stmt = delete(self._compiled.model).where(pk.in_(select(subq)))
 
         # Add RETURNING columns
         returning_fields = self._extract_returning_fields(query)
         if returning_fields:
-            cols = [getattr(self._model, f) for f in returning_fields]
+            cols = [getattr(self._compiled.model, f) for f in returning_fields]
             stmt = stmt.returning(*cols)
         else:
             # RETURNING * — return all columns
-            stmt = stmt.returning(self._model)
+            stmt = stmt.returning(self._compiled.model)
 
         result = await self._session.execute(stmt)
         rows = result.fetchall()
@@ -300,22 +301,22 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                 for row in rows
             ]
         # Full RETURNING — reconstruct entities
-        return [model_to_entity(row[0], self._entity) for row in rows]
+        return [model_to_entity(row[0], self._compiled) for row in rows]
 
     # ─── Query Compilation ─────────────────────────────────────────────────
 
     def _compile_query(self, query: RelationalQuerySet[T] | SQLRelationalQuerySet[T]) -> Any:
         """Compile RelationalQuerySet or SQLRelationalQuerySet ops to SQLAlchemy Select."""
-        stmt = select(self._model)
+        stmt = select(self._compiled.model)
 
         for op in query.ops:
             match op:
                 case Filter(expr=expr):
-                    stmt = stmt.where(compile_expr(expr, self._model))
+                    stmt = stmt.where(compile_expr(expr, self._compiled))
 
                 case OrderBy(specs=specs):
                     for spec in specs:
-                        col = getattr(self._model, spec.field)
+                        col = getattr(self._compiled.model, spec.field)
                         stmt = stmt.order_by(
                             col.asc() if spec.ascending else col.desc()
                         )
@@ -330,15 +331,15 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                     stmt = stmt.distinct()
 
                 case Select(fields=fields):
-                    cols = [getattr(self._model, f) for f in fields]
-                    stmt = select(*cols).select_from(self._model)
+                    cols = [getattr(self._compiled.model, f) for f in fields]
+                    stmt = select(*cols).select_from(self._compiled.model)
 
                 case GroupBy(fields=fields):
-                    cols = [getattr(self._model, f) for f in fields]
+                    cols = [getattr(self._compiled.model, f) for f in fields]
                     stmt = stmt.group_by(*cols)
 
                 case Having(expr=expr):
-                    stmt = stmt.having(compile_expr(expr, self._model))
+                    stmt = stmt.having(compile_expr(expr, self._compiled))
 
                 case Join(target=target, on=on_expr, kind=kind, tablename=tbl):
                     if tbl is None:
@@ -348,14 +349,14 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                         )
                     # Use the same DeclarativeBase as the main model
                     base = next(
-                        (cls for cls in self._model.__mro__
-                         if issubclass(cls, DeclarativeBase) and cls is not self._model and cls is not DeclarativeBase),
+                        (cls for cls in self._compiled.model.__mro__
+                         if issubclass(cls, DeclarativeBase) and cls is not self._compiled.model and cls is not DeclarativeBase),
                         None,
                     )
-                    join_model = compile_model(target, tbl, base=base)
-                    on_clause = compile_expr(on_expr, self._model, join_model)
+                    join_compiled = compile_sa(target, tbl, base=base)
+                    on_clause = compile_expr(on_expr, self._compiled, join_compiled)
                     stmt = stmt.join(
-                        join_model,
+                        join_compiled.model,
                         on_clause,
                         isouter=(kind in ("left", "outer")),
                         full=(kind == "outer"),
@@ -397,12 +398,12 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         over_kw: dict[str, Any] = {}
         if spec.partition_by:
             over_kw["partition_by"] = [
-                getattr(self._model, f) for f in spec.partition_by
+                getattr(self._compiled.model, f) for f in spec.partition_by
             ]
         if spec.order_by:
             order_cols = []
             for o in spec.order_by:
-                col = getattr(self._model, o.field)
+                col = getattr(self._compiled.model, o.field)
                 order_cols.append(col.asc() if o.ascending else col.desc())
             over_kw["order_by"] = order_cols
 
@@ -420,13 +421,13 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             case Ntile(num_buckets=n):
                 return func.ntile(n)
             case Lag(offset=offset, default=default):
-                col = getattr(self._model, spec.field) if spec.field else None
+                col = getattr(self._compiled.model, spec.field) if spec.field else None
                 args = [col, offset] if col is not None else [offset]
                 if default is not None:
                     args.append(default)
                 return func.lag(*args)
             case Lead(offset=offset, default=default):
-                col = getattr(self._model, spec.field) if spec.field else None
+                col = getattr(self._compiled.model, spec.field) if spec.field else None
                 args = [col, offset] if col is not None else [offset]
                 if default is not None:
                     args.append(default)
@@ -434,12 +435,12 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             # Aggregate functions used as window functions
             case Count():
                 if spec.field:
-                    return func.count(getattr(self._model, spec.field))
+                    return func.count(getattr(self._compiled.model, spec.field))
                 return func.count()
             case Sum() | Avg() | Min() | Max():
                 if spec.field is None:
                     raise TypeError(f"{type(spec.func).__name__} window requires a field")
-                col = getattr(self._model, spec.field)
+                col = getattr(self._compiled.model, spec.field)
                 fn_map = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
                 return fn_map[type(spec.func)](col)
             case _:
@@ -447,7 +448,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
     def _resolve_agg_col(self, spec: AggregateSpec, source: Any = None) -> Any:
         """Resolve column reference for aggregate — from model or subquery."""
-        target = source if source is not None else self._model
+        target = source if source is not None else self._compiled.model
         if spec.field is None:
             return None
         return target.c[spec.field] if source is not None else getattr(target, spec.field)
@@ -494,34 +495,28 @@ class SQLAlchemyRelationalStore(Generic[T]):
             await session.commit()
     """
 
-    __slots__ = ("_entity", "_model", "_identity_field", "_next_id_factory")
+    __slots__ = ("_compiled", "_next_id_factory")
 
     def __init__(
         self,
         entity: type[T],
         tablename: str,
-        base: Any = None,
+        base: type[DeclarativeBase] | None = None,
         next_id: NextId[Any] | None = None,
     ) -> None:
-        self._entity = entity
-        self._model = compile_model(entity, tablename, base)
-        self._identity_field: str | None = getattr(
-            self._model, "_identity_field", None
-        )
+        self._compiled = compile_sa(entity, tablename, base)
         self._next_id_factory = next_id
 
     @property
-    def model(self) -> type[Any]:
+    def model(self) -> type[DeclarativeBase]:
         """The compiled SQLAlchemy model class."""
-        return self._model
+        return self._compiled.model
 
     def bind(self, session: AsyncSession) -> SQLAlchemyRelationalProvider[T]:
         """Bind to a session, returning a provider."""
         return SQLAlchemyRelationalProvider(
             session=session,
-            entity=self._entity,
-            model=self._model,
-            identity_field=self._identity_field,
+            compiled=self._compiled,
             next_id=self._next_id_factory,
         )
 
@@ -539,20 +534,17 @@ def provider(
     session: AsyncSession,
     entity: type[T],
     tablename: str,
-    base: Any = None,
+    base: type[DeclarativeBase] | None = None,
     next_id: NextId[Any] | None = None,
 ) -> SQLAlchemyRelationalProvider[T]:
     """Create inline provider (model compiled per call).
 
     For repeated use, prefer store() which compiles the model once.
     """
-    model = compile_model(entity, tablename, base)
-    identity_field: str | None = getattr(model, "_identity_field", None)
+    compiled = compile_sa(entity, tablename, base)
     return SQLAlchemyRelationalProvider(
         session=session,
-        entity=entity,
-        model=model,
-        identity_field=identity_field,
+        compiled=compiled,
         next_id=next_id,
     )
 
@@ -560,7 +552,7 @@ def provider(
 def store(
     entity: type[T],
     tablename: str,
-    base: Any = None,
+    base: type[DeclarativeBase] | None = None,
     next_id: NextId[Any] | None = None,
 ) -> SQLAlchemyRelationalStore[T]:
     """Create store factory (compile model once, bind session later)."""

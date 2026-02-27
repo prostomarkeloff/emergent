@@ -117,7 +117,7 @@ async def test_fastapi_compile_websocket_routes() -> None:
     ws_trigger = WebSocketTrigger(path="/ws/test", name="test_ws")
     ws_route = WebSocketRoute(handler=mock_ws_handler)
 
-    app = Application(endpoints=[], capabilities=())
+    app = Application(endpoints=(), capabilities=())
 
     # Capture what gets registered
     registered_handlers: list[tuple[str, Callable[..., Coroutine[None, None, None]], str | None]] = []
@@ -165,21 +165,22 @@ async def test_fastapi_compile_websocket_routes() -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def test_sqlalchemy_get_identity_field_returns_none() -> None:
-    """Line 151: _get_identity_field returns None when no Identity field."""
-    from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-        _get_identity_field,  # pyright: ignore[reportPrivateUsage] - testing private function
-    )
-    from emergent.wire.axis.schema._inspect import inspect_type
+def test_sqlalchemy_no_identity_via_constraints_phase() -> None:
+    """CONSTRAINTS_PHASE: is_identity=False when no Identity capability."""
+    from emergent.wire.compile._phase import compile_fields, CONSTRAINTS_PHASE
+    from emergent.wire.compile._core import Axes
+    from emergent.wire.axis.schema._inspect import inspect_dataclass
 
     @dataclass
     class NoIdentity:
         name: str
         value: int
 
-    fields = inspect_type(NoIdentity)
-    result = _get_identity_field(fields)
-    assert result is None
+    axes = Axes(schema=inspect_dataclass)
+    compiled = compile_fields(NoIdentity, axes, [CONSTRAINTS_PHASE])
+    for fc in compiled:
+        constraints = fc[CONSTRAINTS_PHASE]
+        assert constraints.is_identity is False
 
 
 def test_sqlalchemy_compile_model_with_fk() -> None:
@@ -221,10 +222,7 @@ def test_sqlalchemy_compile_model_with_fk() -> None:
 
 def test_sqlalchemy_compile_expr_ne_lt_le() -> None:
     """Lines 303, 305, 309: compile_expr for Ne, Lt, Le expressions."""
-    from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-        compile_expr,
-        compile_model,
-    )
+    from emergent.wire.compile.targets.sqlalchemy import compile_sa, compile_expr
     from emergent.wire.axis.schema._universal import Identity
     from emergent.wire.axis.query._expr import (
         Field,
@@ -244,21 +242,21 @@ def test_sqlalchemy_compile_expr_ne_lt_le() -> None:
         price: int
         name: str
 
-    model = compile_model(Item, "test_expr_items", base=ExprBase)
+    compiled = compile_sa(Item, "test_expr_items", base=ExprBase)
 
     # Test Ne
     ne_expr = Ne(left=Field("price"), right=Const(100))
-    ne_result = compile_expr(ne_expr, model)
+    ne_result = compile_expr(ne_expr, compiled)
     assert ne_result is not None
 
     # Test Lt
     lt_expr = Lt(left=Field("price"), right=Const(50))
-    lt_result = compile_expr(lt_expr, model)
+    lt_result = compile_expr(lt_expr, compiled)
     assert lt_result is not None
 
     # Test Le
     le_expr = Le(left=Field("price"), right=Const(75))
-    le_result = compile_expr(le_expr, model)
+    le_result = compile_expr(le_expr, compiled)
     assert le_result is not None
 
 
@@ -287,8 +285,9 @@ def test_sqlalchemy_store_model_property() -> None:
 @pytest.mark.asyncio
 async def test_sqlalchemy_bound_store_get_returns_nothing() -> None:
     """Line 877: BoundSQLAlchemyStore.get returns Ok(Nothing()) for missing key."""
+    from emergent.wire.compile.targets.sqlalchemy import compile_sa
     from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-        compile_model,
+        BoundSQLAlchemyStore,
     )
     from emergent.wire.axis.schema._universal import Identity
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -302,21 +301,16 @@ async def test_sqlalchemy_bound_store_get_returns_nothing() -> None:
         id: Annotated[int, Identity]
         name: str
 
-    model = compile_model(GetEntity, "get_test_entity", base=GetTestBase)
+    compiled = compile_sa(GetEntity, "get_test_entity", base=GetTestBase)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(GetTestBase.metadata.create_all)
 
     async with AsyncSession(engine) as session:
-        from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-            BoundSQLAlchemyStore,
-        )
         store = BoundSQLAlchemyStore(
             session=session,
-            entity=GetEntity,
-            model=model,
-            identity_field="id",
+            compiled=compiled,
         )
 
         result = await store.get(999)
@@ -332,8 +326,8 @@ async def test_sqlalchemy_bound_store_get_returns_nothing() -> None:
 @pytest.mark.asyncio
 async def test_sqlalchemy_bound_store_delete_returns_false() -> None:
     """Lines 905-911: BoundSQLAlchemyStore.delete returns Ok(False) for missing."""
+    from emergent.wire.compile.targets.sqlalchemy import compile_sa
     from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
-        compile_model,
         BoundSQLAlchemyStore,
     )
     from emergent.wire.axis.schema._universal import Identity
@@ -348,7 +342,7 @@ async def test_sqlalchemy_bound_store_delete_returns_false() -> None:
         id: Annotated[int, Identity]
         name: str
 
-    model = compile_model(DelEntity, "del_test_entity", base=DelTestBase)
+    compiled = compile_sa(DelEntity, "del_test_entity", base=DelTestBase)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -357,9 +351,7 @@ async def test_sqlalchemy_bound_store_delete_returns_false() -> None:
     async with AsyncSession(engine) as session:
         store = BoundSQLAlchemyStore(
             session=session,
-            entity=DelEntity,
-            model=model,
-            identity_field="id",
+            compiled=compiled,
         )
 
         result = await store.delete(999)

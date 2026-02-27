@@ -8,41 +8,64 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TYPE_CHECKING, cast
 
 from emergent.wire.compile._core import Axes
-from emergent.wire.compile._phase import compile_fields, OPENAPI_PHASE
+from emergent.wire.compile._phase import (
+    CompilationPhase,
+    EntityCompilation,
+    FieldCompilation,
+    SchemaCompiler,
+    OPENAPI_PHASE,
+)
 
 if TYPE_CHECKING:
-    from emergent.wire.axis.schema._inspect import FieldInfo
+    from emergent.wire.axis._capability import OpenAPIContext
+
+
+# Type alias for JSON Schema dict
+JsonSchemaDict = dict[str, Any]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Type to JSON Schema Type Mapping
+# Open-World Type → JSON Schema Mapping
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Type maps are DATA, not behavior. Users extend by adding entries.
+# The mapping function interprets the data. Zero code changes needed
+# to support custom types.
 
 
-def _python_type_to_json_schema(py_type: type | Any) -> dict[str, Any]:
-    """Map Python type to JSON Schema type."""
-    # Handle None
-    if py_type is type(None):
-        return {"type": "null"}
+DEFAULT_JSON_TYPE_MAP: Mapping[type, JsonSchemaDict] = {
+    type(None): {"type": "null"},
+    str: {"type": "string"},
+    int: {"type": "integer"},
+    float: {"type": "number"},
+    bool: {"type": "boolean"},
+    bytes: {"type": "string", "format": "byte"},
+}
 
-    # Basic types
-    if py_type is str:
-        return {"type": "string"}
-    if py_type is int:
-        return {"type": "integer"}
-    if py_type is float:
-        return {"type": "number"}
-    if py_type is bool:
-        return {"type": "boolean"}
 
-    # bytes
-    if py_type is bytes:
-        return {"type": "string", "format": "byte"}
+def type_to_json_schema(
+    py_type: type | Any,
+    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+) -> JsonSchemaDict:
+    """Map Python type to JSON Schema. Open-world via type_map parameter.
 
-    # Check for list/dict/etc via origin
+    Basic types looked up in type_map. Generic types (list[X], dict[K,V],
+    Optional[X], tuple[X,...]) handled structurally with recursive calls.
+
+    Extend by passing a custom type_map::
+
+        my_map = {**DEFAULT_JSON_TYPE_MAP, MyType: {"type": "string", "format": "custom"}}
+        schema = type_to_json_schema(MyType, my_map)
+    """
+    # Exact match in type map
+    if py_type in type_map:
+        return dict(type_map[py_type])
+
+    # Structural dispatch on generic origins
     origin = getattr(py_type, "__origin__", None)
 
     if origin is list:
@@ -50,7 +73,7 @@ def _python_type_to_json_schema(py_type: type | Any) -> dict[str, Any]:
         item_type = args[0] if args else Any
         return {
             "type": "array",
-            "items": _python_type_to_json_schema(item_type) if item_type is not Any else {},
+            "items": type_to_json_schema(item_type, type_map) if item_type is not Any else {},
         }
 
     if origin is dict:
@@ -58,7 +81,7 @@ def _python_type_to_json_schema(py_type: type | Any) -> dict[str, Any]:
         value_type = args[1] if len(args) > 1 else Any
         return {
             "type": "object",
-            "additionalProperties": _python_type_to_json_schema(value_type)
+            "additionalProperties": type_to_json_schema(value_type, type_map)
             if value_type is not Any
             else True,
         }
@@ -68,54 +91,52 @@ def _python_type_to_json_schema(py_type: type | Any) -> dict[str, Any]:
         item_type = args[0] if args else Any
         return {
             "type": "array",
-            "items": _python_type_to_json_schema(item_type) if item_type is not Any else {},
+            "items": type_to_json_schema(item_type, type_map) if item_type is not Any else {},
             "uniqueItems": True,
         }
 
     if origin is tuple:
         args = getattr(py_type, "__args__", ())
         if args and args[-1] is not ...:
-            # Fixed-length tuple
             return {
                 "type": "array",
-                "items": [_python_type_to_json_schema(t) for t in args],
+                "items": [type_to_json_schema(t, type_map) for t in args],
                 "minItems": len(args),
                 "maxItems": len(args),
             }
         else:
-            # Variable-length tuple
             item_type = args[0] if args else Any
             return {
                 "type": "array",
-                "items": _python_type_to_json_schema(item_type) if item_type is not Any else {},
+                "items": type_to_json_schema(item_type, type_map) if item_type is not Any else {},
             }
 
     # Union types
     if origin is type(int | str):  # UnionType
         args = getattr(py_type, "__args__", ())
-        schemas = [_python_type_to_json_schema(t) for t in args]
-        # Check if it's Optional (has null)
+        schemas = [type_to_json_schema(t, type_map) for t in args]
         null_schemas = [s for s in schemas if s.get("type") == "null"]
         non_null = [s for s in schemas if s.get("type") != "null"]
 
         if len(non_null) == 1 and null_schemas:
-            # Optional[X] → add nullable
             result = non_null[0].copy()
             result["nullable"] = True
             return result
         return {"anyOf": schemas}
 
-    # Check for structured types (dataclass, Pydantic, etc.)
+    # Structured types (dataclass, Pydantic, etc.)
     from emergent.wire.axis.schema import is_structured_type, inspect_type
     if isinstance(py_type, type) and is_structured_type(py_type):
-        # Recursively generate schema for nested structured type
-        return _structured_type_to_json_schema(py_type)
+        return _structured_type_to_json_schema(py_type, type_map)
 
     # Default: object
     return {"type": "object"}
 
 
-def _structured_type_to_json_schema(cls: type) -> dict[str, Any]:
+def _structured_type_to_json_schema(
+    cls: type,
+    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+) -> JsonSchemaDict:
     """Generate JSON Schema for a structured type (dataclass, Pydantic, etc.)."""
     from emergent.wire.axis.schema import inspect_type
 
@@ -124,27 +145,93 @@ def _structured_type_to_json_schema(cls: type) -> dict[str, Any]:
     except TypeError:
         return {"type": "object"}
 
-    properties: dict[str, Any] = {}
+    properties: JsonSchemaDict = {}
     required: list[str] = []
 
     for name, field_info in fields.items():
-        properties[name] = _python_type_to_json_schema(field_info.base_type)
+        properties[name] = type_to_json_schema(field_info.base_type, type_map)
         if not field_info.is_optional:
             required.append(name)
 
-    result: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-    }
+    result: JsonSchemaDict = {"type": "object", "properties": properties}
     if required:
         result["required"] = required
 
     return result
 
 
+def make_openapi_initial(
+    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+) -> Callable[[str, type], "OpenAPIContext"]:
+    """Factory for OpenAPI initial function with custom type map.
+
+    The initial function closes over the type map. Users create custom phases::
+
+        from emergent.wire.compile._schema import DEFAULT_JSON_TYPE_MAP, make_openapi_initial
+
+        my_map = {**DEFAULT_JSON_TYPE_MAP, MyType: {"type": "string", "format": "custom"}}
+        my_phase = CompilationPhase(OpenAPIContext, OpenAPICompilable, make_openapi_initial(my_map))
+    """
+    from emergent.wire.axis._capability import OpenAPIContext
+
+    def _initial(name: str, field_type: type) -> OpenAPIContext:
+        schema = type_to_json_schema(field_type, type_map)
+        return OpenAPIContext(name, field_type, schema=schema)
+
+    return _initial
+
+
+# Backward compat aliases
+python_type_to_json_schema = type_to_json_schema
+_python_type_to_json_schema = type_to_json_schema
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # OpenAPI Schema Generation
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def assemble_openapi(
+    cls: type,
+    fields: EntityCompilation | Sequence[FieldCompilation],
+    phase: CompilationPhase[Any] = OPENAPI_PHASE,
+) -> dict[str, Any]:
+    """Assemble OpenAPI schema from compiled fields.
+
+    Accepts EntityCompilation or a sequence of FieldCompilation.
+
+    Use with SchemaCompiler for composable compilation::
+
+        compiler = FASTAPI_SCHEMA + SA_SCHEMA
+        ec = compiler.compile(User, axes)
+        schema = assemble_openapi(User, ec)
+    """
+    from emergent.wire.axis.schema.dialects.compose import ComposeCapability
+
+    field_seq = fields.fields if isinstance(fields, EntityCompilation) else fields
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    for fc in field_seq:
+        # Skip compose.Node fields — resolved at runtime by nodnod, not from request body
+        if fc.info.has(ComposeCapability):
+            continue
+
+        ctx = fc[phase]
+        properties[fc.name] = ctx.schema
+
+        if not fc.info.is_optional:
+            required.append(fc.name)
+
+    result: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+
+    if required:
+        result["required"] = required
+
+    return result
 
 
 def to_openapi_schema(
@@ -155,7 +242,7 @@ def to_openapi_schema(
 ) -> dict[str, Any]:
     """Generate OpenAPI 3.x schema from dataclass + capabilities.
 
-    Thin assembler over compile_fields + OPENAPI_PHASE.
+    Thin assembler over SchemaCompiler + assemble_openapi.
 
     Args:
         cls: Dataclass to generate schema for
@@ -181,33 +268,8 @@ def to_openapi_schema(
         #   "required": ["email", "age"]
         # }
     """
-    from emergent.wire.axis.schema.dialects.compose import ComposeCapability
-
-    compiled = compile_fields(cls, axes, [OPENAPI_PHASE])
-
-    properties: dict[str, Any] = {}
-    required: list[str] = []
-
-    for fc in compiled:
-        # Skip compose.Node fields — resolved at runtime by nodnod, not from request body
-        if fc.info.has(ComposeCapability):
-            continue
-
-        ctx = fc[OPENAPI_PHASE]
-        properties[fc.name] = ctx.schema
-
-        if not fc.info.is_optional:
-            required.append(fc.name)
-
-    result: dict[str, Any] = {
-        "type": "object",
-        "properties": properties,
-    }
-
-    if required:
-        result["required"] = required
-
-    return result
+    ec = SchemaCompiler(phases=(OPENAPI_PHASE,)).compile(cls, axes)
+    return assemble_openapi(cls, ec)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -303,6 +365,7 @@ def _convert_openapi_to_json_schema(schema: dict[str, Any]) -> None:
 
 
 __all__ = (
+    "assemble_openapi",
     "to_openapi_schema",
     "to_json_schema",
 )

@@ -1,23 +1,11 @@
 """Testing target — framework-agnostic compilation for direct invocation.
 
-Compiles wire Application to callable routes without framework dependencies.
-Useful for unit/integration testing of wire endpoints.
+Target compilation via WrapPhase — same pattern as schema compilation.
 
     from emergent.wire.compile.targets.testing import testing_compile
 
     test = testing_compile(app)
     result = await test.routes[0].call({"name": "Alice", "age": 30})
-
-    # With family (App-tier scope lifecycle)
-    test = testing_compile(app, family=my_family)
-    async with test:
-        result = await test.routes[0].call({"name": "Alice"})
-
-    # With scope injection (e.g. inject a mock DB)
-    result = await test.routes[0].call(
-        {"name": "Alice"},
-        inject=lambda scope: scope.inject(DBPool, mock_pool),
-    )
 """
 
 from __future__ import annotations
@@ -25,21 +13,21 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 
 from nodnod import Scope
 
 from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
-from emergent.wire.compile._core import Axes
+from emergent.wire.compile._core import Axes, fold
 from emergent.wire.compile._execute import (
     ScopeInjector,
     execute_delegate_unified,
     execute_immediate_unified,
     execute_rrc_unified,
 )
-from emergent.wire.compile._target import CodecAdapter, TargetCompiler
+from emergent.wire.compile._target import CodecBinding, TargetCompiler
 
 if TYPE_CHECKING:
     from emergent.graph._family import ScopeFamily
@@ -49,17 +37,38 @@ if TYPE_CHECKING:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Route type — callable test route
+# TestingWrapContext
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class TestingWrapContext:
+    """Wrap context for Testing target."""
+
+    execute: Callable[..., Any] | None = None
+    trigger: object | None = None
+
+
+from typing import runtime_checkable
+
+
+@runtime_checkable
+class TestingPipelineCompilable(Protocol):
+    """Capability that configures Testing pipeline."""
+
+    def compile_testing_pipeline(
+        self, ctx: TestingWrapContext,
+    ) -> TestingWrapContext: ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Route type
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass(frozen=True, slots=True)
 class TestRoute:
-    """Compiled route for testing — call with a plain dict, get response.
-
-    Attributes:
-        trigger: Original trigger (HTTPRouteTrigger, CLITrigger, etc.) for identification.
-    """
+    """Compiled route for testing — call with a plain dict, get response."""
 
     trigger: object
     _invoke: Callable[[Mapping[str, object], ScopeInjector | None], Awaitable[object]]
@@ -69,34 +78,17 @@ class TestRoute:
         fields: Mapping[str, object] | None = None,
         inject: ScopeInjector | None = None,
     ) -> object:
-        """Call this route with optional field values and scope injector.
-
-        Args:
-            fields: Dict of field values for RRC request building. Ignored by
-                    Delegate/Immediate codecs.
-            inject: Optional scope injector for testing with mocked dependencies.
-
-        Returns:
-            Response object (type depends on codec's response class).
-        """
         return await self._invoke(fields or {}, inject)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TestApp — route collection + optional scope lifecycle
+# TestApp
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 @dataclass
 class TestApp:
-    """Collection of compiled test routes with optional app scope lifecycle.
-
-    Use as async context manager when a ScopeFamily is provided:
-
-        test = testing_compile(app, family=my_family)
-        async with test:
-            result = await test.routes[0].call({"name": "Alice"})
-    """
+    """Collection of compiled test routes with optional app scope lifecycle."""
 
     routes: tuple[TestRoute, ...]
     _app_scope: Scope | None = None
@@ -107,7 +99,6 @@ class TestApp:
             await self._app_scope.__aenter__()
             if self._app_compose:
                 from emergent.graph._compose import Composer
-
                 composer = Composer.create(self._app_scope)
                 await composer.compose_batch(set(self._app_compose))
         return self
@@ -123,87 +114,113 @@ class TestApp:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Wrap functions — one per codec
+# from_codec functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 _NOOP_INJECT: ScopeInjector = lambda _scope: None
 
 
-def wrap_rrc_testing(
-    handler: Handler[RequestResponseCodec],
+def rrc_from_codec_testing(
+    codec: RequestResponseCodec,
     trigger: object,
-    axes: Axes,
-) -> TestRoute:
-    """Wrap RRC handler for testing — call with a plain dict of field values."""
-
-    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
-        return await execute_rrc_unified(
-            handler=handler,
-            axes=axes,
-            get_value=fields.get,
-            inject_scope=inject or _NOOP_INJECT,
-        )
-
-    return TestRoute(trigger=trigger, _invoke=invoke)
+) -> TestingWrapContext:
+    """Seed TestingWrapContext from RRC codec."""
+    return TestingWrapContext(execute=_rrc_execute_testing, trigger=trigger)
 
 
-def wrap_delegate_testing(
-    handler: Handler[DelegateCodec],
+def delegate_from_codec_testing(
+    codec: DelegateCodec,
     trigger: object,
-    axes: Axes,
-) -> TestRoute:
-    """Wrap DelegateCodec handler for testing."""
-
-    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
-        return await execute_delegate_unified(
-            handler=handler,
-            inject_scope=inject or _NOOP_INJECT,
-            axes=axes,
-        )
-
-    return TestRoute(trigger=trigger, _invoke=invoke)
+) -> TestingWrapContext:
+    """Seed TestingWrapContext from DelegateCodec."""
+    return TestingWrapContext(execute=_delegate_execute_testing, trigger=trigger)
 
 
-def wrap_immediate_testing(
-    handler: Handler[ImmediateCodec],
+def immediate_from_codec_testing(
+    codec: ImmediateCodec | ImmediateFactoryCodec,
     trigger: object,
-    axes: Axes,
-) -> TestRoute:
-    """Wrap ImmediateCodec handler for testing."""
-
-    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
-        return execute_immediate_unified(handler)
-
-    return TestRoute(trigger=trigger, _invoke=invoke)
-
-
-def wrap_immediate_factory_testing(
-    handler: Handler[ImmediateFactoryCodec],
-    trigger: object,
-    axes: Axes,
-) -> TestRoute:
-    """Wrap ImmediateFactoryCodec handler for testing."""
-
-    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
-        return execute_immediate_unified(handler)
-
-    return TestRoute(trigger=trigger, _invoke=invoke)
+) -> TestingWrapContext:
+    """Seed TestingWrapContext from ImmediateCodec."""
+    return TestingWrapContext(execute=_immediate_execute_testing, trigger=trigger)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Compiler — matches ALL triggers via object
+# Execute functions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _rrc_execute_testing(
+    handler: Handler[RequestResponseCodec],
+    fields: Mapping[str, object],
+    inject: ScopeInjector | None,
+    axes: Axes,
+) -> object:
+    return await execute_rrc_unified(
+        handler=handler,
+        axes=axes,
+        get_value=fields.get,
+        inject_scope=inject or _NOOP_INJECT,
+    )
+
+
+async def _delegate_execute_testing(
+    handler: Handler[DelegateCodec],
+    fields: Mapping[str, object],
+    inject: ScopeInjector | None,
+    axes: Axes,
+) -> object:
+    return await execute_delegate_unified(
+        handler=handler,
+        inject_scope=inject or _NOOP_INJECT,
+        axes=axes,
+    )
+
+
+async def _immediate_execute_testing(
+    handler: Handler[Any],
+    fields: Mapping[str, object],
+    inject: ScopeInjector | None,
+    axes: Axes,
+) -> object:
+    return execute_immediate_unified(handler)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Assembler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def assemble_testing_route(
+    ctx: TestingWrapContext,
+    handler: Handler[Any],
+    axes: Axes,
+) -> TestRoute:
+    """Assemble TestRoute from compiled WrapContext."""
+    execute_fn = ctx.execute
+
+    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
+        return await execute_fn(handler, fields, inject, axes)
+
+    return TestRoute(trigger=ctx.trigger, _invoke=invoke)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Compiler
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 TESTING_COMPILER: TargetCompiler[object] = TargetCompiler(
     trigger_type=object,  # isinstance(any_trigger, object) → always True
     adapters=(
-        CodecAdapter(RequestResponseCodec, wrap_rrc_testing),
-        CodecAdapter(ImmediateCodec, wrap_immediate_testing),
-        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_testing),
-        CodecAdapter(DelegateCodec, wrap_delegate_testing),
+        CodecBinding(RequestResponseCodec, rrc_from_codec_testing),
+        CodecBinding(ImmediateCodec, immediate_from_codec_testing),
+        CodecBinding(ImmediateFactoryCodec, immediate_from_codec_testing),
+        CodecBinding(DelegateCodec, delegate_from_codec_testing),
     ),
+    pipeline_protocol=TestingPipelineCompilable,
+    pipeline_method="compile_testing_pipeline",
+    assemble=assemble_testing_route,
 )
 
 
@@ -218,20 +235,7 @@ def testing_compile(
     compiler: TargetCompiler[object] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> TestApp:
-    """Compile wire Application to callable test routes.
-
-    Args:
-        app: Wire application
-        axes: Axes context (default: Axes.default())
-        compiler: TargetCompiler (default: TESTING_COMPILER). Pass custom
-                  compiler to add/swap/remove codec adapters.
-        family: Optional ScopeFamily for tiered scope management. When provided,
-                an App scope is created and composed on __aenter__, and Request
-                scopes inherit from it.
-
-    Returns:
-        TestApp with routes ready to call.
-    """
+    """Compile wire Application to callable test routes."""
     base_axes = axes or Axes.default()
 
     app_scope: Scope | None = None
@@ -263,11 +267,62 @@ def testing_compile(
     )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backward-compat wrappers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def wrap_rrc_testing(
+    handler: Handler[RequestResponseCodec],
+    trigger: object,
+    axes: Axes,
+) -> TestRoute:
+    ctx = rrc_from_codec_testing(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, TestingPipelineCompilable, "compile_testing_pipeline", trace=axes.trace)
+    return assemble_testing_route(ctx, handler, axes)
+
+
+def wrap_delegate_testing(
+    handler: Handler[DelegateCodec],
+    trigger: object,
+    axes: Axes,
+) -> TestRoute:
+    ctx = delegate_from_codec_testing(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, TestingPipelineCompilable, "compile_testing_pipeline", trace=axes.trace)
+    return assemble_testing_route(ctx, handler, axes)
+
+
+def wrap_immediate_testing(
+    handler: Handler[ImmediateCodec],
+    trigger: object,
+    axes: Axes,
+) -> TestRoute:
+    ctx = immediate_from_codec_testing(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, TestingPipelineCompilable, "compile_testing_pipeline", trace=axes.trace)
+    return assemble_testing_route(ctx, handler, axes)
+
+
+def wrap_immediate_factory_testing(
+    handler: Handler[ImmediateFactoryCodec],
+    trigger: object,
+    axes: Axes,
+) -> TestRoute:
+    ctx = immediate_from_codec_testing(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, TestingPipelineCompilable, "compile_testing_pipeline", trace=axes.trace)
+    return assemble_testing_route(ctx, handler, axes)
+
+
 __all__ = (
     "TestRoute",
     "TestApp",
+    "TestingWrapContext",
+    "TestingPipelineCompilable",
     "testing_compile",
     "TESTING_COMPILER",
+    "rrc_from_codec_testing",
+    "delegate_from_codec_testing",
+    "immediate_from_codec_testing",
+    "assemble_testing_route",
     "wrap_rrc_testing",
     "wrap_delegate_testing",
     "wrap_immediate_testing",

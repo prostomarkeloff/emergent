@@ -1,5 +1,7 @@
 """Event target — compile Application to EventDispatcher.
 
+Target compilation via WrapPhase — same pattern as schema compilation.
+
     from emergent.wire.compile.targets.event import event_compile
 
     dispatcher = event_compile(app)
@@ -11,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Any, Protocol
 
 from nodnod import Scope
 
@@ -20,17 +22,43 @@ from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.codecs.delegate import DelegateCodec
 from emergent.wire.axis.surface.triggers.event import EventTrigger
-from emergent.wire.compile._core import Axes
+from emergent.wire.compile._core import Axes, fold
 from emergent.wire.compile._execute import (
     ScopeInjector,
     execute_rrc_unified,
     execute_delegate_unified,
 )
-from emergent.wire.compile._target import CodecAdapter, TargetCompiler
+from emergent.wire.compile._target import CodecBinding, TargetCompiler
 from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
 from emergent.wire.compile.targets.pure import app_scope_lifespan
 
 from emergent.graph._family import ScopeFamily
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EventWrapContext — seeded by from_codec, refined by capabilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class EventWrapContext:
+    """Wrap context for Event target."""
+
+    event_type: type | None = None
+    execute: Callable[..., Any] | None = None
+    trigger: EventTrigger[object] | None = None
+
+
+from typing import runtime_checkable
+
+
+@runtime_checkable
+class EventPipelineCompilable(Protocol):
+    """Capability that configures Event pipeline."""
+
+    def compile_event_pipeline(
+        self, ctx: EventWrapContext,
+    ) -> EventWrapContext: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -75,60 +103,93 @@ class EventRoute:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RRC Wrapper
+# from_codec functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def wrap_rrc_event(
-    handler: Handler[RequestResponseCodec],
+def rrc_from_codec_event(
+    codec: RequestResponseCodec,
     trigger: EventTrigger[object],
-    axes: Axes,
-) -> EventRoute:
-    """Wrap RRC handler for event dispatch — event fields become request values."""
-
-    async def invoke(event: object, inject: ScopeInjector | None) -> object:
-        def event_inject(scope: Scope) -> None:
-            scope.inject(type(event), event)
-
-        return await execute_rrc_unified(
-            handler=handler,
-            axes=axes,
-            get_value=lambda name: getattr(event, name, None),
-            inject_scope=_chain_injectors(event_inject, inject),
-        )
-
-    return EventRoute(
+) -> EventWrapContext:
+    """Seed EventWrapContext from RRC codec."""
+    return EventWrapContext(
         event_type=trigger.event_type,
+        execute=_rrc_execute_event,
         trigger=trigger,
-        _invoke=invoke,
+    )
+
+
+def delegate_from_codec_event(
+    codec: DelegateCodec,
+    trigger: EventTrigger[object],
+) -> EventWrapContext:
+    """Seed EventWrapContext from DelegateCodec."""
+    return EventWrapContext(
+        event_type=trigger.event_type,
+        execute=_delegate_execute_event,
+        trigger=trigger,
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Delegate Wrapper
+# Execute functions — codec-specific
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def wrap_delegate_event(
+async def _rrc_execute_event(
+    handler: Handler[RequestResponseCodec],
+    event: object,
+    inject: ScopeInjector | None,
+    axes: Axes,
+) -> object:
+    """RRC execution for events."""
+    def event_inject(scope: Scope) -> None:
+        scope.inject(type(event), event)
+
+    return await execute_rrc_unified(
+        handler=handler,
+        axes=axes,
+        get_value=lambda name: getattr(event, name, None),
+        inject_scope=_chain_injectors(event_inject, inject),
+    )
+
+
+async def _delegate_execute_event(
     handler: Handler[DelegateCodec],
-    trigger: EventTrigger[object],
+    event: object,
+    inject: ScopeInjector | None,
+    axes: Axes,
+) -> object:
+    """Delegate execution for events."""
+    def event_inject(scope: Scope) -> None:
+        scope.inject(type(event), event)
+
+    return await execute_delegate_unified(
+        handler=handler,
+        axes=axes,
+        inject_scope=_chain_injectors(event_inject, inject),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Assembler
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def assemble_event_route(
+    ctx: EventWrapContext,
+    handler: Handler[Any],
     axes: Axes,
 ) -> EventRoute:
-    """Wrap DelegateCodec for event dispatch — event injected into scope."""
+    """Assemble EventRoute from compiled WrapContext."""
+    execute_fn = ctx.execute
 
     async def invoke(event: object, inject: ScopeInjector | None) -> object:
-        def event_inject(scope: Scope) -> None:
-            scope.inject(type(event), event)
-
-        return await execute_delegate_unified(
-            handler=handler,
-            axes=axes,
-            inject_scope=_chain_injectors(event_inject, inject),
-        )
+        return await execute_fn(handler, event, inject, axes)
 
     return EventRoute(
-        event_type=trigger.event_type,
-        trigger=trigger,
+        event_type=ctx.event_type,
+        trigger=ctx.trigger,
         _invoke=invoke,
     )
 
@@ -141,9 +202,12 @@ def wrap_delegate_event(
 EVENT_COMPILER: TargetCompiler[EventTrigger[object]] = TargetCompiler(
     trigger_type=EventTrigger,
     adapters=(
-        CodecAdapter(RequestResponseCodec, wrap_rrc_event),
-        CodecAdapter(DelegateCodec, wrap_delegate_event),
+        CodecBinding(RequestResponseCodec, rrc_from_codec_event),
+        CodecBinding(DelegateCodec, delegate_from_codec_event),
     ),
+    pipeline_protocol=EventPipelineCompilable,
+    pipeline_method="compile_event_pipeline",
+    assemble=assemble_event_route,
 )
 
 
@@ -154,14 +218,7 @@ EVENT_COMPILER: TargetCompiler[EventTrigger[object]] = TargetCompiler(
 
 @dataclass
 class EventDispatcher:
-    """Compiled event dispatcher — routes events to handlers by type.
-
-    Usage::
-
-        dispatcher = event_compile(app)
-        async with dispatcher:
-            results = await dispatcher.dispatch(OrderCreated(order_id=1, total=99.99))
-    """
+    """Compiled event dispatcher — routes events to handlers by type."""
 
     routes: Mapping[type, tuple[EventRoute, ...]]
     _app_scope: Scope | None = field(default=None, repr=False)
@@ -172,10 +229,7 @@ class EventDispatcher:
         event: object,
         inject: ScopeInjector | None = None,
     ) -> tuple[object, ...]:
-        """Dispatch event to all matching handlers.
-
-        Returns tuple of results from each handler.
-        """
+        """Dispatch event to all matching handlers."""
         handlers = self.routes.get(type(event), ())
         return tuple([await r.call(event, inject) for r in handlers])
 
@@ -209,19 +263,7 @@ def event_compile(
     compiler: TargetCompiler[EventTrigger[object]] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> EventDispatcher:
-    """Compile wire Application to EventDispatcher.
-
-    Args:
-        app: Wire application
-        axes: Axes context (default: Axes.default())
-        compiler: TargetCompiler (default: EVENT_COMPILER). Pass custom
-                  compiler to add/swap/remove codec adapters.
-        family: Optional ScopeFamily for tiered scope management.
-
-    Returns:
-        EventDispatcher ready for dispatch (use as async context manager
-        when family is provided).
-    """
+    """Compile wire Application to EventDispatcher."""
     base_axes = axes or Axes.default()
     _compiler = compiler or EVENT_COMPILER
 
@@ -239,7 +281,6 @@ def event_compile(
         )
         request_axes = base_axes.with_scope_layer(layer)
 
-    # Scan and wrap all event handlers
     grouped: dict[type, list[EventRoute]] = {}
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         grouped.setdefault(route.event_type, []).append(route)
@@ -259,12 +300,40 @@ def event_compile(
 
 __all__ = (
     "EventRoute",
+    "EventWrapContext",
+    "EventPipelineCompilable",
     "EventDispatcher",
     "EVENT_COMPILER",
     "event_compile",
-    "wrap_rrc_event",
-    "wrap_delegate_event",
+    "rrc_from_codec_event",
+    "delegate_from_codec_event",
+    "assemble_event_route",
 )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backward-compat wrappers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def wrap_rrc_event(
+    handler: Handler[RequestResponseCodec],
+    trigger: EventTrigger[object],
+    axes: Axes,
+) -> EventRoute:
+    ctx = rrc_from_codec_event(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, EventPipelineCompilable, "compile_event_pipeline", trace=axes.trace)
+    return assemble_event_route(ctx, handler, axes)
+
+
+def wrap_delegate_event(
+    handler: Handler[DelegateCodec],
+    trigger: EventTrigger[object],
+    axes: Axes,
+) -> EventRoute:
+    ctx = delegate_from_codec_event(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, EventPipelineCompilable, "compile_event_pipeline", trace=axes.trace)
+    return assemble_event_route(ctx, handler, axes)
+
 
 # Alias for cleaner API
 compile = event_compile

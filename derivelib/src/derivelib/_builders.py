@@ -225,7 +225,7 @@ class EndpointBuilder:
             exposures.append(exposure_obj)
 
         runner = builder.compile()
-        return _Endpoint(runner=runner, exposures=exposures)
+        return _Endpoint(runner=runner, exposures=tuple(exposures))
 
 
 def endpoint_builder() -> EndpointBuilder:

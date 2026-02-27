@@ -1,19 +1,24 @@
 """FastAPI adapter — functional compiler for FastAPI.
 
-from emergent.wire.compile import Axes, fastapi_compile
+Target compilation via WrapPhase — same pattern as schema compilation:
+    from_codec(codec, trigger) → WrapCtx → fold(capabilities) → WrapCtx → assemble → Route
 
-axes = Axes.default()
-app = fastapi_compile(wire_app, axes)
+    from emergent.wire.compile import Axes
+    from emergent.wire.compile.targets.fastapi import fastapi_compile
+
+    axes = Axes.default()
+    app = fastapi_compile(wire_app, axes)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Protocol
 
 import fastapi
 from kungfu import Some, Nothing
 from nodnod import Scope
+
 from emergent.wire.axis.surface._handler import Handler
 from emergent.wire.axis.surface._scan import scan_endpoint, scan_stack, StackView
 from emergent.wire.axis.surface._app import Application
@@ -33,14 +38,19 @@ from emergent.wire.axis.surface.codecs.resolve import (
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
 from emergent.wire.compile._core import Axes, fold
-from emergent.wire.compile._target import CodecAdapter, TargetCompiler
+from emergent.wire.compile._target import CodecBinding, TargetCompiler
+from emergent.wire.compile._pipeline import (
+    CompiledPipeline,
+    compile_pipeline,
+    execute_with_pipeline,
+)
 from emergent.wire.compile._capabilities import (
     apply_response_capabilities,
     FastAPICompileContext,
     FastAPICompilable,
     FastAPIRouteCompilable,
 )
-from emergent.wire.axis._capability import FastAPIRouteContext
+from emergent.wire.axis._capability import FastAPIRouteContext, CoercionSpec
 from emergent.wire.compile._execute import (
     execute_rrc_unified,
     execute_immediate_unified,
@@ -67,7 +77,122 @@ from emergent.wire.compile.targets.pure import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pydantic Detection
+# FastAPI Extractors
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class FastAPIExtractor(Protocol):
+    """Extract raw dict from FastAPI request."""
+
+    async def extract(self, request: fastapi.Request) -> dict[str, object]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIJsonExtractor:
+    """Extract from JSON body + path params."""
+
+    include_path_params: bool = True
+
+    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+        content_type = request.headers.get("content-type", "")
+        if (
+            "application/x-www-form-urlencoded" in content_type
+            or "multipart/form-data" in content_type
+        ):
+            body: dict[str, object] = dict(await request.form())
+        else:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+        if self.include_path_params:
+            return {**body, **dict(request.path_params)}
+        return body
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIQueryExtractor:
+    """Extract from query params + path params."""
+
+    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+        return {**dict(request.query_params), **dict(request.path_params)}
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIFormExtractor:
+    """Extract from form data + path params."""
+
+    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+        return {**dict(await request.form()), **dict(request.path_params)}
+
+
+# Pre-built extraction constants
+EXTRACT_FORM = None  # lazy init below
+EXTRACT_JSON = None
+EXTRACT_QUERY = None
+
+
+def _init_fastapi_extraction_constants() -> None:
+    """Initialize extraction constants (for use in capabilities)."""
+    global EXTRACT_FORM, EXTRACT_JSON, EXTRACT_QUERY
+    from emergent.wire.axis.surface.capabilities._pipeline import Extraction
+
+    EXTRACT_FORM = Extraction(fastapi=FastAPIFormExtractor())
+    EXTRACT_JSON = Extraction(fastapi=FastAPIJsonExtractor())
+    EXTRACT_QUERY = Extraction(fastapi=FastAPIQueryExtractor())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FastAPIWrapContext — seeded by from_codec, refined by capabilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class FastAPIWrapContext:
+    """Wrap context for FastAPI — seeded by from_codec, refined by capabilities.
+
+    Same pattern as schema compilation contexts (PydanticContext, etc.):
+    - from_codec reads codec data into initial context
+    - fold(capabilities) customizes via compile_fastapi_pipeline
+    - assembler reads final context to build route
+
+    Fields populated by from_codec:
+        request_type, response_type — from codec
+        execute — codec-specific execution function
+        trigger — original HTTP trigger (for OpenAPI, path params, etc.)
+        extractor — framework extraction strategy (GET→query, POST→body)
+        coercion — validation spec (Pydantic, msgspec, etc.)
+        error_type — exception type for validation errors
+        inject_type — type to inject raw_request as into scope
+    """
+
+    # From codec (via from_codec):
+    request_type: type | None = None
+    response_type: type | None = None
+    execute: Callable[..., Any] | None = None
+
+    # From trigger/framework defaults (via from_codec):
+    trigger: HTTPRouteTrigger | None = None
+    extractor: FastAPIExtractor | None = None
+    coercion: CoercionSpec | None = None
+    error_type: type | None = None
+    inject_type: type = fastapi.Request
+
+
+from typing import runtime_checkable
+
+
+@runtime_checkable
+class FastAPIPipelineCompilable(Protocol):
+    """Capability that configures FastAPI request pipeline."""
+
+    def compile_fastapi_pipeline(
+        self, ctx: FastAPIWrapContext,
+    ) -> FastAPIWrapContext: ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pydantic Detection (for stateful)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -75,7 +200,6 @@ def is_pydantic_model(typ: Any) -> bool:
     """Check if type is Pydantic BaseModel."""
     try:
         from pydantic import BaseModel
-
         return isinstance(typ, type) and issubclass(typ, BaseModel)
     except ImportError:
         return False
@@ -95,7 +219,7 @@ def _get_pydantic_types_from_transitions(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Scope Setup
+# Scope Setup (for stateful)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -130,7 +254,7 @@ async def setup_fastapi_scope(
 class FastAPIRoute:
     """Structured result of wrapping a handler for FastAPI.
 
-    The wrap function knows its codec and fills ALL metadata.
+    The assembler fills ALL metadata.
     register_handler reads ONLY from this — zero hasattr/getattr on codec.
     """
 
@@ -140,200 +264,252 @@ class FastAPIRoute:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# RRC Wrapper
+# Execute functions — codec-specific (called by execute_with_pipeline)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def wrap_rrc_fastapi(
+async def _rrc_execute(
     handler: Handler[RequestResponseCodec],
-    trigger: HTTPRouteTrigger,
-    axes: Axes,
-) -> FastAPIRoute:
-    """Wrap RRC handler for FastAPI — uses Pydantic for type coercion."""
-    from emergent.wire.compile._generate import to_pydantic
+    scope: Scope,
+    get_value: Callable[[str], object] | None,
+) -> object:
+    """RRC execution: build request → run op → map response."""
+    from emergent.graph._compose import Composer
+    from emergent.wire.compile._rrc import execute_rrc
+    from emergent.wire.compile._request import build_request
 
     req_cls = handler.codec.request
-    resp_cls = handler.codec.response
-
-    # Compile request to Pydantic for type coercion
-    RequestModel = to_pydantic(req_cls, axes)
-
-    async def _route(request: fastapi.Request) -> Any:
-        from fastapi.exceptions import RequestValidationError
-        from pydantic import ValidationError
-
-        # Parse request data based on method
-        if trigger.method in ("POST", "PUT", "PATCH"):
-            content_type = request.headers.get("content-type", "")
-            if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
-                body = dict(await request.form())
-            else:
-                try:
-                    body = await request.json()
-                except Exception:
-                    body = {}
-        else:
-            body = dict(request.query_params)
-
-        # Merge path params + body/query (path params take precedence)
-        all_values = {**body, **dict(request.path_params)}
-
-        # Coerce types via Pydantic
-        try:
-            pydantic_instance = RequestModel(**all_values)
-        except ValidationError as e:
-            raise RequestValidationError(e.errors()) from e
-        coerced = pydantic_instance.model_dump()
-
-        # Unified execution — just provide the pieces
-        return await execute_rrc_unified(
-            handler=handler,
-            axes=axes,
-            get_value=lambda name: coerced.get(name),
-            inject_scope=lambda scope: scope.inject(fastapi.Request, request),
-        )
-
-    _route.__annotations__ = {
-        "request": fastapi.Request,
-        "return": resp_cls,
-    }
-
-    return FastAPIRoute(
-        endpoint=_route,
-        response_model=resp_cls,
-        openapi_extra=build_rrc_openapi_extra(handler.codec, trigger, axes),
+    composer = Composer.create(scope)
+    request = await build_request(
+        request_cls=req_cls,
+        get_value=get_value or (lambda _name: None),
+        agent_cls=composer.agent_cls,
+        scope=scope,
     )
+    scope.inject(req_cls, request)
+    response = await execute_rrc(handler, request, scope)
+    response = apply_response_capabilities(response, handler.capabilities)
+    return response
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Stateful Wrapper
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def wrap_stateful_fastapi(
+async def _stateful_execute(
     handler: Handler[StatefulCodec],
-    trigger: HTTPRouteTrigger,
-    axes: Axes,
-) -> FastAPIRoute:
-    """Wrap StatefulCodec handler for FastAPI."""
+    scope: Scope,
+    get_value: Callable[[str], object] | None,
+) -> object:
+    """Stateful execution: compose key → load state → transition → done."""
     from emergent.graph._compose import Composer
 
     codec = handler.codec
     transitions = get_transitions(codec.flow)
     pydantic_types = _get_pydantic_types_from_transitions(transitions)
 
-    async def _route(request: fastapi.Request) -> Any:
-        layer = axes.scope_layer
+    # Get the raw request from scope
+    req_wrapper = scope.get(fastapi.Request)
+    if req_wrapper is None:
+        raise RuntimeError("fastapi.Request not found in scope")
+    request = req_wrapper.value
 
-        # 1. Compose key_node → store key
-        key_scope = layer.parent.create_child("stateful-key") if layer else Scope()
-        async with key_scope:
-            key_scope.inject(fastapi.Request, request)
-            composer = Composer.create(key_scope, codec.agent_cls)
+    layer = scope._parent_ref if hasattr(scope, "_parent_ref") else None
 
-            success, key_value = await composer.compose(codec.key_node)
-            if not success:
-                raise RuntimeError(f"Session key resolution failed: {key_value}")
-            store_key = str(key_value)
+    # 1. Compose key_node → store key
+    key_scope = scope.create_child("stateful-key")
+    async with key_scope:
+        key_scope.inject(fastapi.Request, request)
+        composer = Composer.create(key_scope, codec.agent_cls)
+        success, key_value = await composer.compose(codec.key_node)
+        if not success:
+            raise RuntimeError(f"Session key resolution failed: {key_value}")
+        store_key = str(key_value)
 
-        # 2. Load state
-        state = await load_state(codec, store_key)
+    # 2. Load state
+    state = await load_state(codec, store_key)
 
-        # 3. Setup scope, resolve transition
-        transition_scope = layer.parent.create_child("stateful-transition") if layer else Scope()
-        async with transition_scope:
-            await setup_fastapi_scope(transition_scope, request, pydantic_types)
-            resolved = await resolve_transition(transitions, transition_scope, codec.agent_cls)
+    # 3. Setup scope, resolve transition
+    transition_scope = scope.create_child("stateful-transition")
+    async with transition_scope:
+        await setup_fastapi_scope(transition_scope, request, pydantic_types)
+        resolved = await resolve_transition(transitions, transition_scope, codec.agent_cls)
 
-        # 4. Execute transition
-        match resolved:
-            case Some((method, composed)):
-                new_state, response, is_terminal = await execute_stateful_turn(
-                    handler, state, method, composed
-                )
-            case Nothing():
-                raise RuntimeError("No transition resolvable")
+    # 4. Execute transition
+    match resolved:
+        case Some((method, composed)):
+            new_state, response, is_terminal = await execute_stateful_turn(
+                handler, state, method, composed
+            )
+        case Nothing():
+            raise RuntimeError("No transition resolvable")
 
-        # 5. Continue or Done
-        if not is_terminal:
-            await save_state(codec, store_key, state, new_state)
-            if response is not None:
-                return apply_response_capabilities(response, handler.capabilities)
-            return None
+    # 5. Continue or Done
+    if not is_terminal:
+        await save_state(codec, store_key, state, new_state)
+        if response is not None:
+            return apply_response_capabilities(response, handler.capabilities)
+        return None
 
-        # 6. Done — execute with enrichers
-        done_scope = layer.parent.create_child("stateful-done") if layer else Scope()
-        async with done_scope:
-            await setup_fastapi_scope(done_scope, request, pydantic_types)
-            final = await execute_stateful_done(handler, new_state, done_scope)
+    # 6. Done — execute with enrichers
+    done_scope = scope.create_child("stateful-done")
+    async with done_scope:
+        await setup_fastapi_scope(done_scope, request, pydantic_types)
+        final = await execute_stateful_done(handler, new_state, done_scope)
 
-        await delete_state(codec, store_key)
+    await delete_state(codec, store_key)
+    final = apply_response_capabilities(final, handler.capabilities)
+    return final
 
-        final = apply_response_capabilities(final, handler.capabilities)
-        return final
 
-    _route.__annotations__ = {
-        "request": fastapi.Request,
-        "return": codec.response,
-    }
+async def _immediate_execute(
+    handler: Handler[Any],
+    scope: Scope,
+    get_value: Callable[[str], object] | None,
+) -> object:
+    """Immediate execution: produce response directly."""
+    return execute_immediate_unified(handler)
 
-    return FastAPIRoute(
-        endpoint=_route,
-        response_model=codec.response,
+
+async def _delegate_execute(
+    handler: Handler[DelegateCodec],
+    scope: Scope,
+    get_value: Callable[[str], object] | None,
+) -> object:
+    """Delegate execution: compose params → call handler."""
+    from emergent.wire.compile._execute import execute_delegate_unified
+
+    # Get the raw request from scope
+    req_wrapper = scope.get(fastapi.Request)
+    request = req_wrapper.value if req_wrapper is not None else None
+
+    def inject_scope(s: Scope) -> None:
+        if request is not None:
+            s.inject(fastapi.Request, request)
+            for _, value in request.path_params.items():
+                s.inject(type(value), value)
+
+    return await execute_delegate_unified(
+        handler=handler,
+        inject_scope=inject_scope,
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Immediate Handlers
+# from_codec functions — read codec data into context
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def wrap_immediate_fastapi(
+def _default_extractor(trigger: HTTPRouteTrigger) -> FastAPIExtractor:
+    """Default extractor based on HTTP method."""
+    if trigger.method in ("POST", "PUT", "PATCH"):
+        return FastAPIJsonExtractor()
+    return FastAPIQueryExtractor()
+
+
+def _default_coercion() -> CoercionSpec:
+    """Default Pydantic coercion."""
+    from emergent.wire.compile._generate import _pydantic_coercion
+    return _pydantic_coercion()
+
+
+def _validation_error_type() -> type:
+    """FastAPI's RequestValidationError."""
+    from fastapi.exceptions import RequestValidationError
+    return RequestValidationError
+
+
+def rrc_from_codec(
+    codec: RequestResponseCodec,
+    trigger: HTTPRouteTrigger,
+) -> FastAPIWrapContext:
+    """Seed WrapContext from RRC codec — request/response types + extraction."""
+    return FastAPIWrapContext(
+        request_type=codec.request,
+        response_type=codec.response,
+        execute=_rrc_execute,
+        trigger=trigger,
+        extractor=_default_extractor(trigger),
+        coercion=_default_coercion(),
+        error_type=_validation_error_type(),
+    )
+
+
+def stateful_from_codec(
+    codec: StatefulCodec,
+    trigger: HTTPRouteTrigger,
+) -> FastAPIWrapContext:
+    """Seed WrapContext from StatefulCodec — no extraction/coercion needed."""
+    return FastAPIWrapContext(
+        response_type=codec.response,
+        execute=_stateful_execute,
+        trigger=trigger,
+    )
+
+
+def immediate_from_codec(
+    codec: ImmediateCodec | ImmediateFactoryCodec,
+    trigger: HTTPRouteTrigger,
+) -> FastAPIWrapContext:
+    """Seed WrapContext from ImmediateCodec — trivial, no extraction."""
+    return FastAPIWrapContext(
+        execute=_immediate_execute,
+        trigger=trigger,
+        inject_type=type(None),
+    )
+
+
+def delegate_from_codec(
+    codec: DelegateCodec,
+    trigger: HTTPRouteTrigger,
+) -> FastAPIWrapContext:
+    """Seed WrapContext from DelegateCodec — compose resolves params."""
+    return FastAPIWrapContext(
+        execute=_delegate_execute,
+        trigger=trigger,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Assembler — truly DUMB (reads context, builds route)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def assemble_fastapi_route(
+    ctx: FastAPIWrapContext,
     handler: Handler[Any],
-    trigger: HTTPRouteTrigger,
     axes: Axes,
 ) -> FastAPIRoute:
-    """Wrap Immediate codecs for FastAPI — trivial with unified execution."""
+    """Assemble FastAPIRoute from compiled WrapContext.
 
-    async def _route() -> Any:
-        return execute_immediate_unified(handler)
-
-    return FastAPIRoute(endpoint=_route)
-
-
-# Alias for backwards compatibility
-wrap_immediate_factory_fastapi = wrap_immediate_fastapi
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Delegate Wrapper — compose dialect works by default
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def wrap_delegate_fastapi(
-    handler: Handler[DelegateCodec],
-    trigger: HTTPRouteTrigger,
-    axes: Axes,
-) -> FastAPIRoute:
-    """Wrap DelegateCodec handler for FastAPI — trivial with unified execution.
-
-    Compose dialect works by default on handler params.
+    All intelligence is in execute_with_pipeline.
+    This just wraps it in a FastAPI route closure + generates OpenAPI.
     """
-    from emergent.wire.compile._execute import execute_delegate_unified
+    compiled = compile_pipeline(ctx, axes)
 
-    async def _route(request: fastapi.Request) -> Any:
-        def inject_scope(scope: Scope) -> None:
-            scope.inject(fastapi.Request, request)
-            for _, value in request.path_params.items():
-                scope.inject(type(value), value)
+    # Codecs that need request (RRC, Stateful, Delegate) get a route with request arg.
+    # Codecs that don't (Immediate) get a simple no-arg route.
+    if ctx.extractor is not None or ctx.inject_type is not type(None):
+        async def _route(request: fastapi.Request) -> Any:
+            return await execute_with_pipeline(compiled, handler, axes, request)
 
-        return await execute_delegate_unified(
-            handler=handler,
-            inject_scope=inject_scope,
-            axes=axes,
-        )
+        _route.__annotations__ = {
+            "request": fastapi.Request,
+            "return": ctx.response_type or Any,
+        }
+        endpoint = _route
+    else:
+        async def _simple_route() -> Any:
+            return await execute_with_pipeline(compiled, handler, axes, None)
 
-    return FastAPIRoute(endpoint=_route)
+        endpoint = _simple_route
+
+    # OpenAPI extra for RRC
+    openapi_extra: dict[str, Any] | None = None
+    if ctx.request_type is not None and ctx.trigger is not None:
+        openapi_extra = build_rrc_openapi_extra(handler.codec, ctx.trigger, axes)
+
+    return FastAPIRoute(
+        endpoint=endpoint,
+        response_model=ctx.response_type,
+        openapi_extra=openapi_extra,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -346,23 +522,14 @@ def build_rrc_openapi_extra(
     trigger: HTTPRouteTrigger,
     axes: Axes,
 ) -> dict[str, Any] | None:
-    """Build openapi_extra for RRC codec using schema axis.
-
-    Uses to_openapi_schema() to generate proper request schema.
-    FastAPI will merge this into the route's OpenAPI specification.
-    """
+    """Build openapi_extra for RRC codec using schema axis."""
     import re
     from emergent.wire.compile._schema import to_openapi_schema
 
     req_cls = codec.request
-
-    # Generate request schema using schema axis
     request_schema = to_openapi_schema(req_cls, axes)
-
-    # Extract path params from trigger
     path_param_names = set(re.findall(r"\{(\w+)\}", trigger.path))
 
-    # Build path parameters list
     path_parameters: list[dict[str, Any]] = []
     if path_param_names and "properties" in request_schema:
         for name in path_param_names:
@@ -377,13 +544,10 @@ def build_rrc_openapi_extra(
 
     result: dict[str, Any] = {}
 
-    # Add path parameters
     if path_parameters:
         result["parameters"] = path_parameters
 
-    # Add request body for POST/PUT/PATCH
     if trigger.method in ("POST", "PUT", "PATCH"):
-        # Remove path params from body schema
         body_schema = dict(request_schema)
         if "properties" in body_schema and path_param_names:
             body_schema = dict(body_schema)
@@ -397,7 +561,6 @@ def build_rrc_openapi_extra(
                     if r not in path_param_names
                 ]
 
-        # Only add requestBody if there are body properties
         if body_schema.get("properties"):
             result["requestBody"] = {
                 "required": True,
@@ -408,7 +571,6 @@ def build_rrc_openapi_extra(
                 },
             }
     else:
-        # GET/DELETE — add query parameters
         query_parameters: list[dict[str, Any]] = []
         if "properties" in request_schema:
             required_fields = set(request_schema.get("required", []))
@@ -512,19 +674,22 @@ def register_handler(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FASTAPI_COMPILER — open-world codec adapter set
+# FASTAPI_COMPILER — open-world codec binding set
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 FASTAPI_COMPILER: TargetCompiler[HTTPRouteTrigger] = TargetCompiler(
     trigger_type=HTTPRouteTrigger,
     adapters=(
-        CodecAdapter(RequestResponseCodec, wrap_rrc_fastapi),
-        CodecAdapter(StatefulCodec, wrap_stateful_fastapi),
-        CodecAdapter(ImmediateCodec, wrap_immediate_fastapi),
-        CodecAdapter(ImmediateFactoryCodec, wrap_immediate_factory_fastapi),
-        CodecAdapter(DelegateCodec, wrap_delegate_fastapi),
+        CodecBinding(RequestResponseCodec, rrc_from_codec),
+        CodecBinding(StatefulCodec, stateful_from_codec),
+        CodecBinding(ImmediateCodec, immediate_from_codec),
+        CodecBinding(ImmediateFactoryCodec, immediate_from_codec),
+        CodecBinding(DelegateCodec, delegate_from_codec),
     ),
+    pipeline_protocol=FastAPIPipelineCompilable,
+    pipeline_method="compile_fastapi_pipeline",
+    assemble=assemble_fastapi_route,
 )
 
 
@@ -537,36 +702,18 @@ def fastapi_compile_endpoint(
     endp: Endpoint,
     axes: Axes | None = None,
 ) -> list[fastapi.routing.APIRoute]:
-    """Compile single Endpoint to list of FastAPI APIRoute objects.
-
-    Args:
-        endp: Wire endpoint
-        axes: Axes context (default: Axes.default())
-
-    Returns:
-        List of APIRoute objects for all HTTP exposures
-
-    Example:
-        from emergent.wire import endpoint
-        from emergent.wire.compile import fastapi_compile_endpoint
-
-        routes = fastapi_compile_endpoint(
-            endpoint(my_runner)
-                .expose(HTTPRouteTrigger("POST", "/users"), rrc(CreateUser, UserResponse))
-                .expose(HTTPRouteTrigger("GET", "/users/{id}"), rrc(GetUser, UserResponse))
-        )
-
-        app = FastAPI()
-        for route in routes:
-            app.routes.append(route)
-        # or
-        router = APIRouter(routes=routes)
-    """
+    """Compile single Endpoint to list of FastAPI APIRoute objects."""
     axes = axes or Axes.default()
     routes: list[fastapi.routing.APIRoute] = []
 
     for trigger, handler in scan_endpoint(endp, HTTPRouteTrigger, RequestResponseCodec):
-        fapi_route = wrap_rrc_fastapi(handler, trigger, axes)
+        ctx = rrc_from_codec(handler.codec, trigger)
+        ctx = fold(
+            handler.capabilities, ctx,
+            FastAPIPipelineCompilable, "compile_fastapi_pipeline",
+            trace=axes.trace,
+        )
+        fapi_route = assemble_fastapi_route(ctx, handler, axes)
         routes.append(
             fastapi.routing.APIRoute(
                 path=trigger.path,
@@ -577,7 +724,13 @@ def fastapi_compile_endpoint(
         )
 
     for trigger, handler in scan_endpoint(endp, HTTPRouteTrigger, StatefulCodec):
-        fapi_route = wrap_stateful_fastapi(handler, trigger, axes)
+        ctx = stateful_from_codec(handler.codec, trigger)
+        ctx = fold(
+            handler.capabilities, ctx,
+            FastAPIPipelineCompilable, "compile_fastapi_pipeline",
+            trace=axes.trace,
+        )
+        fapi_route = assemble_fastapi_route(ctx, handler, axes)
         routes.append(
             fastapi.routing.APIRoute(
                 path=trigger.path,
@@ -596,27 +749,7 @@ def fastapi_compile(
     compiler: TargetCompiler[HTTPRouteTrigger] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> fastapi.FastAPI:
-    """Compile wire Application to FastAPI app.
-
-    Handles:
-    - HTTP routes (HTTPRouteTrigger) via TargetCompiler
-    - Lifecycle (StartupTrigger, ShutdownTrigger) via lifespan
-    - Exception handlers (ExceptionTrigger)
-    - WebSockets (WebSocketTrigger)
-    - Global capabilities (Application.capabilities)
-
-    Args:
-        app: Wire application
-        axes: Axes context (default: Axes.default())
-        compiler: TargetCompiler (default: FASTAPI_COMPILER). Pass custom
-                  compiler to add/swap/remove codec adapters.
-        family: Optional ScopeFamily for tiered scope management. When provided,
-                an App scope is composed once at startup and Request scopes
-                inherit from it. mapped_scopes routes node results to tiers.
-
-    Returns:
-        FastAPI application
-    """
+    """Compile wire Application to FastAPI app."""
     from contextlib import asynccontextmanager
     from collections.abc import AsyncIterator
 
@@ -628,7 +761,6 @@ def fastapi_compile(
     base_axes = axes or Axes.default()
     _compiler = compiler or FASTAPI_COMPILER
 
-    # Build scope hierarchy from family
     app_scope: Scope | None = None
     request_axes = base_axes
 
@@ -655,7 +787,7 @@ def fastapi_compile(
 
     @asynccontextmanager
     async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
-        del fastapi_app  # unused but required by FastAPI
+        del fastapi_app
         app_types = list(family.types_for(App)) if family else []
         if app_scope is not None:
             async with app_scope_lifespan(app_scope, app_types):
@@ -673,7 +805,7 @@ def fastapi_compile(
 
     fapi = fastapi.FastAPI(lifespan=lifespan)
 
-    # 2. Process application-level capabilities → middleware (fold with tracing)
+    # 2. Process application-level capabilities → middleware
     app_ctx = fold(
         app.capabilities, FastAPIAppContext(),
         FastAPIAppCompilable, "compile_fastapi_app",
@@ -686,7 +818,7 @@ def fastapi_compile(
     for router in app_ctx.routers:
         fapi.include_router(router)
 
-    # 3. Exception handlers — via pure compiler + FastAPI scope injection
+    # 3. Exception handlers
     for exc_trigger, _, exc_route in EXCEPTION_COMPILER.scan_and_wrap(app, base_axes):
         async def _exc_handler(
             request: fastapi.Request,
@@ -701,7 +833,7 @@ def fastapi_compile(
                 return await _route.handler(exc_scope)
         fapi.add_exception_handler(exc_route.exception_type, _exc_handler)
 
-    # 4. WebSocket routes — via pure compiler + FastAPI scope injection
+    # 4. WebSocket routes
     for ws_trigger, _, ws_route in WEBSOCKET_COMPILER.scan_and_wrap(app, base_axes):
         async def _ws_handler(
             websocket: fastapi.WebSocket,
@@ -714,7 +846,7 @@ def fastapi_compile(
                 await _route.handler(ws_scope)
         fapi.add_api_websocket_route(ws_trigger.path, _ws_handler, name=ws_trigger.name)
 
-    # 5. HTTP routes — via TargetCompiler, no isinstance chains
+    # 5. HTTP routes — via TargetCompiler
     mounted: set[tuple[int, str]] = set()
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(fapi, trigger, handler, route, request_axes, mounted)
@@ -728,10 +860,16 @@ def _wrap_for_stack(
     axes: Axes,
     compiler: TargetCompiler[HTTPRouteTrigger],
 ) -> FastAPIRoute:
-    """Find the right adapter and wrap handler for stack compilation."""
-    for adapter in compiler.adapters:
-        if isinstance(handler.codec, adapter.codec_type):
-            return adapter.wrap(handler, trigger, axes)
+    """Find the right binding and wrap handler for stack compilation."""
+    for binding in compiler.bindings:
+        if isinstance(handler.codec, binding.codec_type):
+            ctx = binding.from_codec(handler.codec, trigger)
+            ctx = fold(
+                handler.capabilities, ctx,
+                compiler.pipeline_protocol, compiler.pipeline_method,
+                trace=axes.trace,
+            )
+            return compiler.assemble(ctx, handler, axes)
     raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
@@ -792,16 +930,71 @@ __all__ = (
     "fastapi_compile_endpoint",
     "fastapi_compile_stack",
     "FastAPIRoute",
-    "wrap_rrc_fastapi",
-    "wrap_stateful_fastapi",
-    "wrap_immediate_fastapi",
-    "wrap_immediate_factory_fastapi",
+    "FastAPIWrapContext",
+    "FastAPIPipelineCompilable",
+    "rrc_from_codec",
+    "stateful_from_codec",
+    "immediate_from_codec",
+    "delegate_from_codec",
+    "assemble_fastapi_route",
     "register_handler",
     "setup_fastapi_scope",
     "is_pydantic_model",
     "build_rrc_openapi_extra",
     "FASTAPI_COMPILER",
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Backward-compat wrappers — compose from_codec → fold → assemble into one call
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def wrap_rrc_fastapi(
+    handler: Handler[RequestResponseCodec],
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+) -> FastAPIRoute:
+    ctx = rrc_from_codec(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline", trace=axes.trace)
+    return assemble_fastapi_route(ctx, handler, axes)
+
+
+def wrap_stateful_fastapi(
+    handler: Handler[StatefulCodec],
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+) -> FastAPIRoute:
+    ctx = stateful_from_codec(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline", trace=axes.trace)
+    return assemble_fastapi_route(ctx, handler, axes)
+
+
+def wrap_immediate_fastapi(
+    handler: Handler[Any],
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+) -> FastAPIRoute:
+    ctx = immediate_from_codec(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline", trace=axes.trace)
+    return assemble_fastapi_route(ctx, handler, axes)
+
+
+wrap_immediate_factory_fastapi = wrap_immediate_fastapi
+
+
+def wrap_delegate_fastapi(
+    handler: Handler[DelegateCodec],
+    trigger: HTTPRouteTrigger,
+    axes: Axes,
+) -> FastAPIRoute:
+    ctx = delegate_from_codec(handler.codec, trigger)
+    ctx = fold(handler.capabilities, ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline", trace=axes.trace)
+    return assemble_fastapi_route(ctx, handler, axes)
+
+
+# Old context name alias
+FastAPIPipelineContext = FastAPIWrapContext
 
 
 # Alias for cleaner API
