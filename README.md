@@ -100,6 +100,19 @@ Four levels of control — pure algebra, algebra + methods, pure methods, pure w
 
 ---
 
+## Tutorial
+
+A story-driven, 26-chapter walkthrough — from first API to handing your codebase to a coding agent.
+
+**[Start here → `docs/tutorial/00-intro.md`](docs/tutorial/00-intro.md)**
+
+| Part | Chapters | What you'll build |
+|---|---|---|
+| I–IV | [01](docs/tutorial/01-first-api.md)–[14](docs/tutorial/14-whats-next.md) | CRUD, methods, transforms, auth, nested resources, multi-target, custom dialects, raw wire, bridge |
+| V–VI | [15](docs/tutorial/15-queries.md)–[18](docs/tutorial/18-scope-and-di.md) | Query axis, providers, ops & runners, scope & DI |
+| VII–VIII | [19](docs/tutorial/19-enrichers.md)–[24](docs/tutorial/24-design.md) | Enrichers, storage, compilation internals, stateful codecs, roulette walkthrough, design philosophy |
+| IX | [25](docs/tutorial/25-llm-sweet-spot.md)–[26](docs/tutorial/26-handing-it-to-the-machine.md) | Why emergent is LLM-native, agent workflows, copy-paste CLAUDE.md |
+
 ## Docs
 
 | | |
