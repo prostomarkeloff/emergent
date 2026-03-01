@@ -197,14 +197,15 @@ Pick what fits. Mix in one app. Drop down a level when you need control, stay hi
 Transforms in emergent dispatch on domain *meaning*, not syntax. This is a novel mechanism — no existing macro system combines domain-semantic awareness with compositional algebra:
 
 ```python
-# soft_delete() knows what "delete" means across ALL targets.
-# It rewrites delete → update(deleted_at=now), and patches
-# every read query to exclude soft-deleted records.
+# readonly() knows what "mutation" means — it inspects effects on each op
+# and removes every op that Creates, Updates, or Deletes.
+# without_delete() does the same for just the delete effect.
+# rate_limited() finds ops declaring RateLimited and adds the enricher.
 @derive(
     http_crud("/posts", provider_node=Posts),
-    soft_delete(),          # ← one line, all targets updated
-    audit_trail(),          # ← composable with soft_delete
-    rate_limit(rpm=100),
+    without_delete(),       # ← removes DELETE op across all targets
+    rate_limited(rpm=100),  # ← adds rate limiting to ops with RateLimited effect
+    paginated(page_size=20),# ← adds pagination to ops with Pageable effect
 )
 @dataclass
 class Post:
