@@ -23,6 +23,9 @@ from typing import Annotated, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytest.importorskip("telegrinder")
+
 from kungfu import Ok, Error, Result, Option, Nothing
 from nodnod import Scope, DataNode
 from nodnod.agent.event_loop.agent import EventLoopAgent

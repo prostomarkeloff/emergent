@@ -58,6 +58,9 @@ if TYPE_CHECKING:
         # Constraints
         ConstraintsContext,
     )
+    from emergent.wire.verify._length import LengthVerifyCtx
+    from emergent.wire.verify._numeric import NumericVerifyCtx
+    from emergent.wire.verify._semantics import SemanticsVerifyCtx
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -223,6 +226,9 @@ class Identity(UniversalCapability):
     def compile_storage_field(self, ctx: "StorageFieldContext") -> "StorageFieldContext":
         return replace(ctx, is_identity=True)
 
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_identity=True)
+
 
 @dataclass(frozen=True, slots=True)
 class Unique(UniversalCapability):
@@ -232,6 +238,9 @@ class Unique(UniversalCapability):
         return sqlalchemy_column(ctx, unique=True)
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
+        return replace(ctx, is_unique=True)
+
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
         return replace(ctx, is_unique=True)
 
 
@@ -288,6 +297,9 @@ class Min(UniversalCapability):
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, min_value=self.value)
 
+    def compile_verify_numeric(self, ctx: "NumericVerifyCtx") -> "NumericVerifyCtx":
+        return replace(ctx, lower_bound=float(self.value))
+
 
 @dataclass(frozen=True, slots=True)
 class Max(UniversalCapability):
@@ -305,6 +317,9 @@ class Max(UniversalCapability):
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, max_value=self.value)
+
+    def compile_verify_numeric(self, ctx: "NumericVerifyCtx") -> "NumericVerifyCtx":
+        return replace(ctx, upper_bound=float(self.value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +339,9 @@ class ExclusiveMin(UniversalCapability):
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, exclusive_min=self.value)
 
+    def compile_verify_numeric(self, ctx: "NumericVerifyCtx") -> "NumericVerifyCtx":
+        return replace(ctx, exclusive_lower=float(self.value))
+
 
 @dataclass(frozen=True, slots=True)
 class ExclusiveMax(UniversalCapability):
@@ -342,6 +360,9 @@ class ExclusiveMax(UniversalCapability):
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, exclusive_max=self.value)
 
+    def compile_verify_numeric(self, ctx: "NumericVerifyCtx") -> "NumericVerifyCtx":
+        return replace(ctx, exclusive_upper=float(self.value))
+
 
 @dataclass(frozen=True, slots=True)
 class MultipleOf(UniversalCapability):
@@ -359,6 +380,9 @@ class MultipleOf(UniversalCapability):
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
         return replace(ctx, multiple_of=self.value)
+
+    def compile_verify_numeric(self, ctx: "NumericVerifyCtx") -> "NumericVerifyCtx":
+        return replace(ctx, multiple_of=float(self.value))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -381,6 +405,9 @@ class MinLen(UniversalCapability):
         return openapi_schema(ctx, minLength=self.value)
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
+        return replace(ctx, min_length=self.value)
+
+    def compile_verify_length(self, ctx: "LengthVerifyCtx") -> "LengthVerifyCtx":
         return replace(ctx, min_length=self.value)
 
 
@@ -409,6 +436,9 @@ class MaxLen(UniversalCapability):
             return replace(ctx, column_type=String(self.value))
         return ctx
 
+    def compile_verify_length(self, ctx: "LengthVerifyCtx") -> "LengthVerifyCtx":
+        return replace(ctx, max_length=self.value)
+
 
 @dataclass(frozen=True, slots=True)
 class Pattern(UniversalCapability):
@@ -425,6 +455,9 @@ class Pattern(UniversalCapability):
         return openapi_schema(ctx, pattern=self.regex)
 
     def compile_constraints(self, ctx: "ConstraintsContext") -> "ConstraintsContext":
+        return replace(ctx, pattern=self.regex)
+
+    def compile_verify_length(self, ctx: "LengthVerifyCtx") -> "LengthVerifyCtx":
         return replace(ctx, pattern=self.regex)
 
 
@@ -568,6 +601,9 @@ class ReadOnly(UniversalCapability):
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, readOnly=True)
 
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_read_only=True)
+
 
 @dataclass(frozen=True, slots=True)
 class WriteOnly(UniversalCapability):
@@ -589,6 +625,9 @@ class WriteOnly(UniversalCapability):
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, writeOnly=True)
+
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_write_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,6 +661,9 @@ class Sensitive(UniversalCapability):
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, writeOnly=True, format="password")
 
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_sensitive=True, is_write_only=True)
+
 
 @dataclass(frozen=True, slots=True)
 class Immutable(UniversalCapability):
@@ -641,6 +683,9 @@ class Immutable(UniversalCapability):
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, **{"x-immutable": True})
+
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_immutable=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -669,6 +714,9 @@ class Nullable(UniversalCapability):
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
         return sqlalchemy_column(ctx, nullable=True)
+
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_nullable=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -738,6 +786,9 @@ class Computed(UniversalCapability):
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, readOnly=True, **{"x-computed": True})
+
+    def compile_verify_semantics(self, ctx: "SemanticsVerifyCtx") -> "SemanticsVerifyCtx":
+        return replace(ctx, is_computed=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

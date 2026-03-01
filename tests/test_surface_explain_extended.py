@@ -15,9 +15,11 @@ Covers missed lines:
 
 from __future__ import annotations
 
+import importlib.util
 from dataclasses import dataclass
 from typing import Self
 
+import pytest
 from kungfu import Result, Ok, Error
 
 from emergent.ops._graph import Op
@@ -133,6 +135,10 @@ class TestExplainTelegrinderTrigger:
         assert d["view"] == "message"
         assert "rules" not in d
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("telegrinder"),
+        reason="telegrinder not installed",
+    )
     def test_telegrinder_trigger_with_rules(self) -> None:
         """TelegrinderTrigger with mock rules."""
         from emergent.wire.axis.surface.triggers.telegrinder import TelegrinderTrigger

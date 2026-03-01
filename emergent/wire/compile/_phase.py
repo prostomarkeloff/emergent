@@ -472,6 +472,12 @@ OPENAPI_SCHEMA_FOLD: EntityFold[OpenAPISchemaContext] = EntityFold(
 )
 
 
+
+def _pydantic_initial(name: str, field_type: type) -> PydanticContext:
+    from pydantic.fields import FieldInfo
+    return PydanticContext(name, field_type, FieldInfo())
+
+
 PYDANTIC_PHASE = CompilationPhase(
     PydanticContext, PydanticCompilable, _pydantic_initial,
     entity=PYDANTIC_MODEL_FOLD,

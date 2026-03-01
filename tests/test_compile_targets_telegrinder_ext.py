@@ -30,6 +30,9 @@ from typing import Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+pytest.importorskip("telegrinder")
+
 from kungfu import Ok, Error, Result, Option, Some, Nothing
 
 from emergent.ops._graph import Op, ops

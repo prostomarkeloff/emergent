@@ -16,6 +16,9 @@ from typing import Annotated, Self
 from unittest.mock import MagicMock
 
 import pytest
+
+pytest.importorskip("telegrinder")
+
 from kungfu import Ok, Error, Result
 
 from emergent.wire.compile.targets.telegrinder import (

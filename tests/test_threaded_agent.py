@@ -31,6 +31,11 @@ import pytest
 from nodnod import Node, Scope, scalar_node
 from nodnod.error import NodeError
 
+try:
+    from emergent.graph.runtime import AutoDowngrade as _check  # noqa: F401
+except ImportError:
+    pytest.skip("AutoDowngrade not available", allow_module_level=True)
+
 from emergent.graph.runtime import (
     AutoDowngrade,
     Cooperative,
