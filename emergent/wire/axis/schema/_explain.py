@@ -24,8 +24,6 @@ from typing import Any
 from emergent.wire.axis.schema._inspect import FieldInfo, inspect_type
 from emergent.wire.axis.schema._universal import (
     SchemaAxisCapability,
-    SchemaCapability,
-    UniversalCapability,
     get_schema_meta,
 )
 
@@ -94,14 +92,14 @@ def _build_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
     }
 
 
-_DIALECT_BASES: Mapping[str, type[SchemaAxisCapability]] | None = None
+_dialect_bases_cache: Mapping[str, type[SchemaAxisCapability]] | None = None
 
 
 def _get_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
-    global _DIALECT_BASES
-    if _DIALECT_BASES is None:
-        _DIALECT_BASES = _build_dialect_bases()
-    return _DIALECT_BASES
+    global _dialect_bases_cache
+    if _dialect_bases_cache is None:
+        _dialect_bases_cache = _build_dialect_bases()
+    return _dialect_bases_cache
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -127,7 +125,7 @@ def field_info_dict(
 
     d: dict[str, Any] = {
         "name": info.name,
-        "type": info.base_type.__name__ if isinstance(info.base_type, type) else str(info.base_type),
+        "type": info.base_type.__name__,
         "optional": info.is_optional,
         "has_default": info.has_default,
     }
@@ -303,4 +301,6 @@ __all__ = (
     # Human-readable layer
     "explain_schema",
     "explain_field",
+    # Helpers (used by tests)
+    "_cap_repr",
 )

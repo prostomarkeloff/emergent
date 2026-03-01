@@ -145,6 +145,8 @@ def _assemble_lifecycle(
 ) -> LifecycleRoute:
     """Assemble LifecycleRoute from WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("LifecycleWrapContext has no execute function")
 
     async def _handler() -> None:
         await execute_fn(handler)
@@ -187,6 +189,8 @@ def _assemble_exception(
 ) -> ExceptionRoute:
     """Assemble ExceptionRoute from WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("ExceptionWrapContext has no execute function")
 
     async def _handler(scope: Scope) -> Any:
         return await execute_fn(handler, scope)
@@ -230,6 +234,8 @@ def _assemble_websocket(
 ) -> WebSocketRoute:
     """Assemble WebSocketRoute from WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("WebSocketWrapContext has no execute function")
 
     async def _handler(scope: Scope) -> None:
         await execute_fn(handler, scope)

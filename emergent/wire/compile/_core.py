@@ -158,9 +158,9 @@ def fold[Ctx](
         return result
     ctx = initial
     for item in items:
-        item_type = type(item)
-        if handlers and item_type in handlers:
-            ctx = handlers[item_type](item, ctx)
+        item_cls: type = item.__class__
+        if handlers and item_cls in handlers:
+            ctx = handlers[item_cls](item, ctx)
         elif isinstance(item, protocol):
             ctx = getattr(item, method)(ctx)
     return ctx
@@ -223,11 +223,11 @@ def traced_fold[Ctx](
     items_applied = 0
 
     for item in items:
-        item_type = type(item)
+        item_cls: type = item.__class__
         ctx_before = ctx
 
-        if handlers and item_type in handlers:
-            ctx = handlers[item_type](item, ctx)
+        if handlers and item_cls in handlers:
+            ctx = handlers[item_cls](item, ctx)
             dispatch = "handler"
         elif isinstance(item, protocol):
             ctx = getattr(item, method)(ctx)
@@ -236,7 +236,7 @@ def traced_fold[Ctx](
             dispatch = "skipped"
 
         step = FoldStep(
-            item_type=item_type.__qualname__,
+            item_type=item_cls.__qualname__,
             dispatch=dispatch,
             method=method,
             context_before=ctx_before,

@@ -58,6 +58,11 @@ class CodecBinding[Trigger]:
         """Backward compat alias for from_codec."""
         return self.from_codec
 
+    @property
+    def legacy(self) -> bool:
+        """Whether this binding uses legacy wrap signature."""
+        return self._legacy
+
     def same_slot(self, other: CodecBinding[Trigger]) -> bool:
         """True if other handles the same codec_type."""
         return self.codec_type is other.codec_type
@@ -308,7 +313,7 @@ class TargetCompiler[Trigger]:
                         ),
                     ))
 
-                if binding._legacy:
+                if binding.legacy:
                     # Legacy: wrap(handler, trigger, axes) → route
                     wrapped = binding.from_codec(handler, trigger, axes)
                 elif self.assemble is not None and self.pipeline_method:

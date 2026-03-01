@@ -12,7 +12,7 @@ Reuses schema axis patterns for type unwrapping.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, get_type_hints
 
@@ -29,8 +29,8 @@ from emergent.wire.axis.schema import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_caps() -> list[SchemaAxisCapability]:
-    return []
+def _empty_caps() -> tuple[SchemaAxisCapability, ...]:
+    return ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +41,7 @@ class HandlerParameter:
     base_type: type | None
     is_optional: bool
     default: object
-    capabilities: list[SchemaAxisCapability] = field(default_factory=_empty_caps)
+    capabilities: Sequence[SchemaAxisCapability] = field(default_factory=_empty_caps)
 
     def has_default(self) -> bool:
         """Check if parameter has a default value."""
@@ -67,7 +67,7 @@ class HandlerSignature:
 
     parameters: dict[str, HandlerParameter] = field(default_factory=_empty_params)
     return_type: type | None = None
-    return_capabilities: list[SchemaAxisCapability] = field(default_factory=_empty_caps)
+    return_capabilities: Sequence[SchemaAxisCapability] = field(default_factory=_empty_caps)
     is_async: bool = False
 
     def body_type(self) -> type | None:
@@ -153,7 +153,7 @@ def analyze_signature(handler: Callable[..., object]) -> HandlerSignature:
     # Parse return type
     return_annotation = hints.get("return")
     return_type: type | None = None
-    return_capabilities: list[SchemaAxisCapability] = []
+    return_capabilities: Sequence[SchemaAxisCapability] = ()
 
     if return_annotation is not None:
         base, annotations = unwrap_annotated(return_annotation)

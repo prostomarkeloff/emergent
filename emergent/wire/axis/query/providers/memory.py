@@ -11,14 +11,23 @@ import dataclasses
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, Never, TypeVar
 
+from emergent._types import Result, Ok
 from emergent.wire.axis.query._relational import (
     RelationalQuerySet,
     Aggregate,
 )
-from emergent.wire.axis.query._fold import MEMORY_DIALECT
+from emergent.wire.axis.query._contexts import (
+    MemoryQueryContext,
+    MemoryQueryCompilable,
+    MemoryAPIContext,
+    MemoryAPICompilable,
+)
+from emergent.wire.compile._core import fold, ItemHandler
 from emergent.wire.axis.query._aggregate import (
+    AggregateSpec,
+    AggHandler,
     Count,
     Sum,
     Avg,
@@ -26,7 +35,10 @@ from emergent.wire.axis.query._aggregate import (
     Max,
     ArrayAgg,
     StringAgg,
+    fold_aggregate,
 )
+from fnmatch import fnmatch
+
 from emergent.wire.axis.query._kv import (
     KVQuerySet,
     KVGet,
@@ -43,13 +55,6 @@ from emergent.wire.axis.query._api import (
     CreateOp,
     UpdateOp,
     DeleteOp,
-    FilterMod,
-    OrderMod,
-    PageMod,
-    CursorMod,
-    OffsetMod,
-    SelectMod,
-    SearchMod,
     IncludeMod,
 )
 from emergent.wire.axis.query._provider import NextId
@@ -149,8 +154,10 @@ class MemoryRelationalProvider(Generic[T]):
     # ─── Query Execution ──────────────────────────────────────────────────
 
     def _execute(self, query: RelationalQuerySet[T]) -> list[T]:
-        """Execute query on data via fold_query."""
-        return MEMORY_DIALECT.fold(query.ops, list(self._data))
+        """Execute query on data via fold() with MemoryQueryCompilable protocol."""
+        ctx = MemoryQueryContext(data=list(self._data))
+        result = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
+        return result.data  # type: ignore[return-value]
 
     async def fetch_one(self, query: RelationalQuerySet[T]) -> T | None:
         """Fetch single result."""
@@ -223,8 +230,18 @@ class MemoryRelationalProvider(Generic[T]):
 
     # ─── Aggregation ──────────────────────────────────────────────────────
 
-    async def aggregate(self, query: RelationalQuerySet[T]) -> dict[str, Any]:
+    async def aggregate(
+        self,
+        query: RelationalQuerySet[T],
+        handlers: dict[type, AggHandler[list[object]]] | None = None,
+    ) -> dict[str, Any]:
         """Execute aggregate query.
+
+        Args:
+            query: Query with aggregate specs.
+            handlers: Optional handler map for aggregate functions.
+                      If None, uses built-in handlers. Pass custom handlers
+                      to support custom AggregateFunc types.
 
         Usage:
             q = (
@@ -241,96 +258,78 @@ class MemoryRelationalProvider(Generic[T]):
         """
         # Get filtered data (exclude Aggregate ops for data collection)
         non_agg_ops = tuple(op for op in query.ops if not isinstance(op, Aggregate))
-        data = MEMORY_DIALECT.fold(non_agg_ops, list(self._data))
+        ctx = MemoryQueryContext(data=list(self._data))
+        fold_result = fold(non_agg_ops, ctx, MemoryQueryCompilable, "compile_memory_query")
+        data = fold_result.data
 
-        # Use introspection property from RelationalMixin
         agg_specs = query.aggregates
+        h = handlers if handlers is not None else _make_memory_agg_handlers()
 
-        # Compute aggregates using pattern matching on typed AggregateFunc
         result: dict[str, Any] = {}
         for spec in agg_specs:
-            match spec.func:
-                case Count():
-                    if spec.field is None:
-                        # COUNT(*) - count all rows
-                        result[spec.alias] = len(data)
-                    else:
-                        # COUNT(field) - count non-null values
-                        result[spec.alias] = sum(
-                            1 for item in data
-                            if getattr(item, spec.field, None) is not None
-                        )
-
-                case Sum():
-                    if spec.field is None:
-                        result[spec.alias] = None
-                    else:
-                        values = [
-                            getattr(item, spec.field)
-                            for item in data
-                            if getattr(item, spec.field) is not None
-                        ]
-                        result[spec.alias] = sum(values) if values else None
-
-                case Avg():
-                    if spec.field is None:
-                        result[spec.alias] = None
-                    else:
-                        values = [
-                            getattr(item, spec.field)
-                            for item in data
-                            if getattr(item, spec.field) is not None
-                        ]
-                        result[spec.alias] = (
-                            sum(values) / len(values) if values else None
-                        )
-
-                case Min():
-                    if spec.field is None:
-                        result[spec.alias] = None
-                    else:
-                        values = [
-                            getattr(item, spec.field)
-                            for item in data
-                            if getattr(item, spec.field) is not None
-                        ]
-                        result[spec.alias] = min(values) if values else None
-
-                case Max():
-                    if spec.field is None:
-                        result[spec.alias] = None
-                    else:
-                        values = [
-                            getattr(item, spec.field)
-                            for item in data
-                            if getattr(item, spec.field) is not None
-                        ]
-                        result[spec.alias] = max(values) if values else None
-
-                case ArrayAgg():
-                    if spec.field is None:
-                        result[spec.alias] = []
-                    else:
-                        result[spec.alias] = [
-                            getattr(item, spec.field)
-                            for item in data
-                        ]
-
-                case StringAgg(separator=sep):
-                    if spec.field is None:
-                        result[spec.alias] = ""
-                    else:
-                        values = [
-                            str(getattr(item, spec.field))
-                            for item in data
-                            if getattr(item, spec.field) is not None
-                        ]
-                        result[spec.alias] = sep.join(values)
-
-                case _:
-                    raise TypeError(f"Unsupported aggregate: {type(spec.func)}")
-
+            result[spec.alias] = fold_aggregate(spec, data, h)
         return result
+
+
+def _get_non_null_values(data: list[object], field: str) -> list[Any]:
+    """Extract non-null field values from data list."""
+    return [getattr(item, field) for item in data if getattr(item, field, None) is not None]
+
+
+def _make_memory_agg_handlers() -> dict[type, AggHandler[list[object]]]:
+    """Build handler map for in-memory aggregate computation."""
+    def handle_count(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return len(data)
+        return sum(1 for item in data if getattr(item, spec.field, None) is not None)
+
+    def handle_sum(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return None
+        values = _get_non_null_values(data, spec.field)
+        return sum(values) if values else None
+
+    def handle_avg(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return None
+        values = _get_non_null_values(data, spec.field)
+        return sum(values) / len(values) if values else None
+
+    def handle_min(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return None
+        values = _get_non_null_values(data, spec.field)
+        return min(values) if values else None
+
+    def handle_max(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return None
+        values = _get_non_null_values(data, spec.field)
+        return max(values) if values else None
+
+    def handle_array_agg(spec: AggregateSpec, data: list[object]) -> object:
+        if spec.field is None:
+            return []
+        return [getattr(item, spec.field) for item in data]
+
+    def handle_string_agg(spec: AggregateSpec, data: list[object]) -> object:
+        if not isinstance(spec.func, StringAgg):
+            return ""
+        sep = spec.func.separator
+        if spec.field is None:
+            return ""
+        values = [str(getattr(item, spec.field)) for item in data if getattr(item, spec.field, None) is not None]
+        return sep.join(values)
+
+    return {
+        Count: handle_count,
+        Sum: handle_sum,
+        Avg: handle_avg,
+        Min: handle_min,
+        Max: handle_max,
+        ArrayAgg: handle_array_agg,
+        StringAgg: handle_string_agg,
+    }
 
 
 # ─── Memory KV Provider ───────────────────────────────────────────────────────
@@ -343,8 +342,9 @@ V = TypeVar("V")
 class MemoryKVProvider(Generic[K, V]):
     """In-memory KV provider.
 
-    Simple dict-based key-value store.
+    Simple dict-based key-value store with direct dispatch.
     Generic over K (key type) and V (value type).
+    Returns Result[T, Never] — memory KV never fails.
 
     Usage:
         provider = MemoryKVProvider[str, User]()
@@ -366,50 +366,58 @@ class MemoryKVProvider(Generic[K, V]):
         """Clear all data."""
         self._data.clear()
 
-    async def get(self, query: KVQuerySet[K, V]) -> V | None:
+    async def get(self, query: KVQuerySet[K, V]) -> Result[V | None, Never]:
         """Get by key."""
-        if not isinstance(query.op, KVGet):
-            raise TypeError(f"Expected KVGet op, got {type(query.op)}")
-        return self._data.get(query.op.key)
+        match query.op:
+            case KVGet(key=key):
+                return Ok(self._data.get(key))
+            case _:
+                raise TypeError(f"get() requires KVGet op, got {type(query.op)}")
 
-    async def set(self, query: KVQuerySet[K, V]) -> None:
+    async def set(self, query: KVQuerySet[K, V]) -> Result[None, Never]:
         """Set value."""
-        if not isinstance(query.op, KVSet):
-            raise TypeError(f"Expected KVSet op, got {type(query.op)}")
-        self._data[query.op.key] = query.op.value
-        # TTL ignored in memory provider
+        match query.op:
+            case KVSet(key=key, value=value):
+                self._data[key] = value
+                return Ok(None)
+            case _:
+                return Ok(None)
 
-    async def delete(self, query: KVQuerySet[K, V]) -> bool:
+    async def delete(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Delete by key."""
-        if not isinstance(query.op, KVDelete):
-            raise TypeError(f"Expected KVDelete op, got {type(query.op)}")
-        key = query.op.key
-        if key in self._data:
-            del self._data[key]
-            return True
-        return False
+        match query.op:
+            case KVDelete(key=key):
+                existed = key in self._data
+                self._data.pop(key, None)
+                return Ok(existed)
+            case _:
+                return Ok(False)
 
-    async def exists(self, query: KVQuerySet[K, V]) -> bool:
+    async def exists(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Check existence."""
-        if not isinstance(query.op, Exists):
-            raise TypeError(f"Expected Exists op, got {type(query.op)}")
-        return query.op.key in self._data
+        match query.op:
+            case Exists(key=key):
+                return Ok(key in self._data)
+            case _:
+                return Ok(False)
 
-    async def scan(self, query: KVQuerySet[K, V]) -> list[V]:
-        """Scan by pattern (matches against str(key))."""
-        if not isinstance(query.op, Scan):
-            raise TypeError(f"Expected Scan op, got {type(query.op)}")
-        import fnmatch
-        pattern = query.op.pattern
-        return [v for k, v in self._data.items() if fnmatch.fnmatch(str(k), pattern)]
+    async def scan(self, query: KVQuerySet[K, V]) -> Result[list[V], Never]:
+        """Scan by pattern."""
+        match query.op:
+            case Scan(pattern=pattern):
+                result = [v for k, v in self._data.items() if fnmatch(str(k), pattern)]
+                return Ok(result)
+            case _:
+                return Ok([])
 
-    async def keys(self, query: KVQuerySet[K, V]) -> list[K]:
-        """Get keys by pattern (matches against str(key))."""
-        if not isinstance(query.op, Keys):
-            raise TypeError(f"Expected Keys op, got {type(query.op)}")
-        import fnmatch
-        pattern = query.op.pattern
-        return [k for k in self._data.keys() if fnmatch.fnmatch(str(k), pattern)]
+    async def keys(self, query: KVQuerySet[K, V]) -> Result[list[K], Never]:
+        """Get keys by pattern."""
+        match query.op:
+            case Keys(pattern=pattern):
+                result = [k for k in self._data if fnmatch(str(k), pattern)]
+                return Ok(result)
+            case _:
+                return Ok([])
 
 
 # ─── Memory API Provider ─────────────────────────────────────────────────────
@@ -426,6 +434,21 @@ class MemoryAPIListResult(Generic[T]):
 
 
 AK = TypeVar("AK")  # API key type
+
+
+def _include_mod_memory_raise(
+    mod: object, ctx: MemoryAPIContext,
+) -> MemoryAPIContext:
+    """Handler override: IncludeMod raises for memory provider."""
+    raise TypeError(
+        "IncludeMod requires relation metadata. "
+        "Memory provider does not support include."
+    )
+
+
+_MEMORY_API_INCLUDE_HANDLER: dict[type, ItemHandler[MemoryAPIContext]] = {
+    IncludeMod: _include_mod_memory_raise,
+}
 
 
 class MemoryAPIProvider(Generic[AK, T]):
@@ -474,76 +497,26 @@ class MemoryAPIProvider(Generic[AK, T]):
 
     # ─── Modifier Application ─────────────────────────────────────────────
 
-    def _apply_mods(self, data: list[T], query: APIQuerySet[AK, T]) -> list[T]:
-        """Apply all modifiers to data list."""
-        result = list(data)
-
-        for mod in query.mods:
-            match mod:
-                case FilterMod(expr=expr):
-                    result = [item for item in result if expr.evaluate(item)]
-
-                case OrderMod(specs=specs):
-                    for spec in reversed(specs):
-                        result.sort(
-                            key=lambda item, _f=spec.field: getattr(item, _f),
-                            reverse=not spec.ascending,
-                        )
-
-                case SearchMod(query=search_query):
-                    search_lower = search_query.lower()
-                    result = [
-                        item for item in result
-                        if any(
-                            search_lower in str(getattr(item, f.name, "")).lower()
-                            for f in dataclasses.fields(item)  # type: ignore[arg-type]
-                        )
-                    ]
-
-                case SelectMod(fields=fields):
-                    result = [
-                        {f: getattr(item, f) for f in fields}  # type: ignore[misc]
-                        for item in result
-                    ]
-
-                case IncludeMod():
-                    raise TypeError(
-                        "IncludeMod requires relation metadata. "
-                        "Memory provider does not support include."
-                    )
-
-                case PageMod() | CursorMod() | OffsetMod():
-                    pass  # pagination handled separately
-
-        return result
-
-    def _apply_pagination(
+    def _apply_mods(
         self, data: list[T], query: APIQuerySet[AK, T]
-    ) -> tuple[list[T], int, bool]:
-        """Apply pagination. Returns (page_items, total, has_more)."""
-        total = len(data)
+    ) -> tuple[list[T], int | None, bool]:
+        """Apply all mods via fold() and return typed result.
 
-        for mod in query.mods:
-            match mod:
-                case PageMod(page=page, per_page=per_page):
-                    start = (page - 1) * per_page
-                    end = start + per_page
-                    return data[start:end], total, end < total
-
-                case OffsetMod(offset=offset, limit=limit):
-                    end = offset + limit
-                    return data[offset:end], total, end < total
-
-                case CursorMod(cursor=cursor, limit=limit):
-                    # Simple cursor = index as string
-                    try:
-                        start = int(cursor)
-                    except (ValueError, TypeError):
-                        start = 0
-                    end = start + limit
-                    return data[start:end], total, end < total
-
-        return data, total, False
+        Fold operates on list[object] (MemoryAPIContext erases T).
+        Items remain T because fold only filters/sorts/slices — never adds
+        foreign items. list invariance prevents expressing this in the type
+        system, so the single assignment below is the unavoidable bridge.
+        """
+        ctx = MemoryAPIContext(data=list(data))
+        result = fold(
+            query.mods, ctx,
+            MemoryAPICompilable, "compile_memory_api",
+            _MEMORY_API_INCLUDE_HANDLER,
+        )
+        # Fold preserves element types (only filters/sorts/slices).
+        # list is invariant so list[object] → list[T] cannot be expressed.
+        items: list[T] = result.data  # type: ignore[assignment]  # list invariance; fold preserves T
+        return items, result.total, result.has_more
 
     # ─── Read Operations ──────────────────────────────────────────────────
 
@@ -558,8 +531,8 @@ class MemoryAPIProvider(Generic[AK, T]):
                     None,
                 )
             case ListOp():
-                filtered = self._apply_mods(self._data, query)
-                return filtered[0] if filtered else None
+                items, _, _ = self._apply_mods(self._data, query)
+                return items[0] if items else None
             case _:
                 raise TypeError(f"fetch_one() expects GetOp or ListOp, got {type(query.op)}")
 
@@ -567,19 +540,17 @@ class MemoryAPIProvider(Generic[AK, T]):
         """Execute list query, return all results."""
         if not isinstance(query.op, ListOp):
             raise TypeError(f"fetch_many() expects ListOp, got {type(query.op)}")
-        filtered = self._apply_mods(self._data, query)
-        items, _, _ = self._apply_pagination(filtered, query)
+        items, _, _ = self._apply_mods(self._data, query)
         return items
 
     async def fetch_page(self, query: APIQuerySet[AK, T]) -> MemoryAPIListResult[T]:
         """Execute list query, return result with pagination info."""
         if not isinstance(query.op, ListOp):
             raise TypeError(f"fetch_page() expects ListOp, got {type(query.op)}")
-        filtered = self._apply_mods(self._data, query)
-        items, total, has_more = self._apply_pagination(filtered, query)
+        items, total, has_more = self._apply_mods(self._data, query)
         return MemoryAPIListResult(
             items=items,
-            total=total,
+            total=total if total is not None else len(items),
             has_more=has_more,
         )
 

@@ -751,7 +751,7 @@ def coerce_expr(
 
     Universal — any backend with query support.
     """
-    from emergent.wire.axis.query._coerce import _coerce_expr
+    from emergent.wire.axis.query._coerce import ExprCoercer
 
     coercion: dict[str, Callable[[object], object]] = {}
     for fc in fields:
@@ -760,7 +760,7 @@ def coerce_expr(
             coercion[fc.name] = meta.to_storage
     if not coercion:
         return expr
-    return _coerce_expr(expr, coercion)
+    return ExprCoercer(coercion)(expr)
 
 
 __all__ = (

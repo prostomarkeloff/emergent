@@ -252,7 +252,7 @@ requires-dist = [{ name = "emergent", editable = "." }]
 
 [[package]]
 name = "emergent"
-version = "0.6.2"
+version = "0.6.5"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

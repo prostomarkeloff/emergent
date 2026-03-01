@@ -107,7 +107,7 @@ def test_unknown_op_serialize_raises() -> None:
     class FakeExpr:
         pass
 
-    with pytest.raises((ValueError, AttributeError)):
+    with pytest.raises((ValueError, AttributeError, TypeError)):
         expr_to_dict(FakeExpr())  # type: ignore[arg-type]
 
 

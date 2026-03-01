@@ -30,6 +30,7 @@ from emergent.wire.compile._phase import (
 
 from emergent.wire.axis._capability import (
     Capability,
+    CoercionSpec,
     PydanticContext,
     ArgparseContext,
     ArgparseKwargValue,
@@ -92,26 +93,36 @@ def to_pydantic(
 
 
 def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
-    """Pydantic coercion: model(**raw) → model_dump()."""
+    """Pydantic coercion: model(**raw) -> model_dump()."""
     instance = model(**raw)
+    # model_dump() returns dict[str, Any] from Pydantic — no way to narrow to object
+    # without cast; Pydantic's return type is inherently Any-based.
     return instance.model_dump()  # type: ignore[no-any-return]
 
 
-def _pydantic_coercion() -> "CoercionSpec":
+def _pydantic_coercion() -> CoercionSpec:  # noqa: used via lazy import in fastapi.py and _pipeline.py
     """Lazy construction to avoid circular imports."""
-    from emergent.wire.axis._capability import CoercionSpec
+
+    def _assemble_bridge(cls: type, ec: object) -> type:
+        # CoercionSpec.assemble is Callable[[type, object], type] — object is
+        # the deliberate erasure to avoid circular imports between _capability
+        # and _phase. At runtime ec is always EntityCompilation.
+        if not isinstance(ec, EntityCompilation):
+            msg = f"Expected EntityCompilation, got {type(ec)}"
+            raise TypeError(msg)
+        return assemble_pydantic(cls, ec)
 
     return CoercionSpec(
         compiler=SchemaCompiler(phases=(PYDANTIC_PHASE,)),
-        assemble=lambda cls, ec: assemble_pydantic(cls, ec),
+        assemble=_assemble_bridge,
         validate=_pydantic_validate,
     )
 
 
 def _assemble_pydantic(
     cls: type,
-    compiled: list,
-    phase: object,
+    compiled: list[FieldCompilation],
+    phase: CompilationPhase[PydanticContext],
 ) -> type["BaseModel"]:
     """Assemble Pydantic model from compiled field results."""
     from typing import Annotated
@@ -234,8 +245,8 @@ def to_argparse_args(
 
 def _assemble_argparse(
     cls: type,
-    compiled: list,
-    phase: object,
+    compiled: list[FieldCompilation],
+    phase: CompilationPhase[ArgparseContext],
 ) -> list[ArgSpec]:
     """Assemble argparse specs from compiled field results."""
     import dataclasses
@@ -311,21 +322,27 @@ def to_datanode(cls: type, compose_from: dict[str, type], axes: Axes | None = No
     field_names = [f.name for f in get_fields(cls)]
     compose_params = {n: compose_from[n] for n in field_names if n in compose_from}
 
-    def make_compose(params: dict[str, type], fields: list[str]):  # type: ignore[reportUnknownParameterType]
-        def __compose__(node_cls, **kwargs):  # type: ignore[reportUnknownParameterType]
+    # nodnod's DataNode.__compose__ is a dynamically-constructed classmethod
+    # whose signature is built at runtime via __annotations__. Python's type
+    # system cannot express this pattern — the parameters, return type, and
+    # body all depend on runtime-inspected field metadata. type: ignore
+    # annotations below suppress errors that arise from this fundamentally
+    # untyped metaprogramming boundary.
+    def make_compose(params: dict[str, type], fields: list[str]) -> classmethod[type, ..., object]:  # type: ignore[type-arg]  # classmethod generic args are not expressible for dynamic signatures
+        def __compose__(node_cls: type, **kwargs: object) -> object:
             extracted = {
-                n: getattr(kwargs[n], "value", kwargs[n])  # type: ignore[reportUnknownArgumentType]
+                n: getattr(kwargs[n], "value", kwargs[n])
                 for n in fields if n in kwargs
             }
-            return node_cls(**extracted)  # type: ignore[reportUnknownVariableType]
+            return node_cls(**extracted)
 
         __compose__.__annotations__ = {**params, "return": cls}
-        return classmethod(__compose__)  # type: ignore[reportUnknownVariableType]
+        return classmethod(__compose__)  # type: ignore[arg-type]  # classmethod expects specific callable signature, but __compose__ is dynamically shaped
 
     return type(
         f"{cls.__name__}Node",
         (cls, DataNode),
-        {"__compose__": make_compose(compose_params, field_names), "__module__": cls.__module__},  # type: ignore[reportUnknownArgumentType]
+        {"__compose__": make_compose(compose_params, field_names), "__module__": cls.__module__},
     )
 
 
@@ -356,28 +373,29 @@ def to_datanode_from_context(
         raise ImportError("nodnod required")
 
     try:
-        from telegrinder.bot.dispatch.context import Context
+        from telegrinder.bot.dispatch.context import Context  # type: ignore[import-unresolved]  # telegrinder is an optional dependency, not always installed
     except ImportError:
         raise ImportError("telegrinder required")
 
     field_names = [f.name for f in get_fields(cls)]
     extractors = field_extractors or {n: n for n in field_names}
 
-    def make_compose(ext: dict[str, str], fields: list[str]):  # type: ignore[reportUnknownParameterType]
-        def __compose__(node_cls, ctx):  # type: ignore[reportUnknownParameterType]
+    # Same dynamic metaprogramming pattern as to_datanode() — see comment there.
+    def make_compose(ext: dict[str, str], fields: list[str]) -> classmethod[type, ..., object]:  # type: ignore[type-arg]  # classmethod generic args are not expressible for dynamic signatures
+        def __compose__(node_cls: type, ctx: object) -> object:
             extracted: dict[str, object] = {
-                n: ctx.get(ext.get(n, n))  # type: ignore[reportUnknownMemberType]
-                for n in fields if ctx.get(ext.get(n, n)) is not None  # type: ignore[reportUnknownMemberType]
+                n: ctx.get(ext.get(n, n))  # type: ignore[attr-defined]  # ctx is telegrinder Context (optional dep) whose .get() method cannot be statically typed here
+                for n in fields if ctx.get(ext.get(n, n)) is not None  # type: ignore[attr-defined]  # same as above — Context.get() is from optional telegrinder
             }
-            return node_cls(**extracted)  # type: ignore[reportUnknownVariableType]
+            return node_cls(**extracted)
 
         __compose__.__annotations__ = {"ctx": Context, "return": cls}
-        return classmethod(__compose__)  # type: ignore[reportUnknownVariableType]
+        return classmethod(__compose__)  # type: ignore[arg-type]  # classmethod expects specific callable signature, but __compose__ is dynamically shaped
 
     return type(
         f"{cls.__name__}Node",
         (cls, DataNode),
-        {"__compose__": make_compose(extractors, field_names), "__module__": cls.__module__},  # type: ignore[reportUnknownArgumentType]
+        {"__compose__": make_compose(extractors, field_names), "__module__": cls.__module__},
     )
 
 
@@ -412,4 +430,6 @@ __all__ = (
     "to_datanode_auto",
     "to_datanode_from_context",
     "to_telegram_fields",
+    # Lazy-imported by fastapi.py and _pipeline.py
+    "_pydantic_coercion",
 )

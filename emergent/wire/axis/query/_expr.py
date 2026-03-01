@@ -15,11 +15,27 @@ from __future__ import annotations
 
 import dataclasses as _dc
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
 
 T = TypeVar("T")
+R = TypeVar("R")
+
+
+# Non-narrowing type checks — prevent pyright from narrowing Any to
+# dict[Unknown, Unknown] / list[Unknown] etc. in JSON/array evaluate() methods.
+def _is_dict(v: Any) -> bool:
+    return isinstance(v, dict)
+
+
+def _is_seq(v: Any) -> bool:
+    return isinstance(v, (list, tuple))
+
+
+def _is_collection(v: Any) -> bool:
+    return isinstance(v, (list, tuple, set, frozenset))
 
 
 # ─── Base ─────────────────────────────────────────────────────────────────────
@@ -419,8 +435,8 @@ class ArrayOverlap(Expr):
     values: tuple[Any, ...]
 
     def evaluate(self, obj: Any) -> bool:
-        arr = self.field.evaluate(obj)
-        if not isinstance(arr, (list, tuple, set, frozenset)):
+        arr: Any = self.field.evaluate(obj)
+        if not _is_collection(arr):
             return False
         return bool(set(arr) & set(self.values))
 
@@ -442,11 +458,11 @@ class JsonExtract(Expr):
     path: str
 
     def evaluate(self, obj: Any) -> Any:
-        val = self.field.evaluate(obj)
+        val: Any = self.field.evaluate(obj)
         for key in self.path.split("."):
-            if isinstance(val, dict):
+            if _is_dict(val):
                 val = val.get(key)
-            elif isinstance(val, (list, tuple)) and key.isdigit():
+            elif _is_seq(val) and key.isdigit():
                 idx = int(key)
                 val = val[idx] if 0 <= idx < len(val) else None
             else:
@@ -466,8 +482,8 @@ class JsonContains(Expr):
     value: Any
 
     def evaluate(self, obj: Any) -> bool:
-        val = self.field.evaluate(obj)
-        if isinstance(val, dict) and isinstance(self.value, dict):
+        val: Any = self.field.evaluate(obj)
+        if _is_dict(val) and _is_dict(self.value):
             return all(val.get(k) == v for k, v in self.value.items())
         return val == self.value
 
@@ -488,6 +504,83 @@ class JsonHasKey(Expr):
         if isinstance(val, dict):
             return self.key in val
         return False
+
+
+# ─── Expr Fold — tree catamorphism ────────────────────────────────────────────
+
+
+type ExprHandler[R] = Callable[["Expr", Callable[["Expr"], R]], R]
+
+
+def fold_expr(
+    expr: Expr,
+    handlers: Mapping[type, ExprHandler[R]],
+    *,
+    default: ExprHandler[R] | None = None,
+) -> R:
+    """Tree fold over Expr AST — symmetric with fold() from _core.py.
+
+    Two-level dispatch per node:
+      1. handler map (priority) — exact type lookup
+      2. default (fallback) — catch-all for unknown nodes
+      3. raise TypeError (closed-world) — if neither handles
+
+    Each handler receives (node, recurse) where recurse applies the same
+    dispatch to child nodes. This is the tree analog of fold()'s linear
+    protocol dispatch.
+
+    Args:
+        expr: Root expression node
+        handlers: Handlers keyed by Expr subclass type
+        default: Optional fallback handler for unmatched types
+
+    Returns:
+        Result of folding the expression tree
+    """
+    def recurse(node: Expr) -> R:
+        node_type = type(node)
+        handler = handlers.get(node_type)
+        if handler is not None:
+            return handler(node, recurse)
+        if default is not None:
+            return default(node, recurse)
+        raise TypeError(f"No handler for {node_type.__name__}")
+    return recurse(expr)
+
+
+@dataclass(frozen=True, slots=True)
+class ExprDialect(Generic[R]):
+    """Expr dialect descriptor — reified handler set for Expr tree fold.
+
+    Symmetric with QueryDialect and CompilationPhase.
+    Immutable value. Use .with_handler() / .without_handler() for customization.
+
+    Usage:
+        dialect = ExprDialect(handlers={Field: ..., Eq: ..., ...})
+        result = dialect.fold(expr)
+
+        # Extend with custom Expr type:
+        my_dialect = dialect.with_handler(MyCustomExpr, my_handler)
+    """
+
+    handlers: Mapping[type, ExprHandler[R]]
+    default: ExprHandler[R] | None = None
+
+    def fold(self, expr: Expr) -> R:
+        """Run fold_expr with this dialect's handlers."""
+        return fold_expr(expr, self.handlers, default=self.default)
+
+    def with_handler(
+        self, expr_type: type, handler: ExprHandler[R]
+    ) -> ExprDialect[R]:
+        """Return new dialect with added/replaced handler. Immutable."""
+        merged = {**self.handlers, expr_type: handler}
+        return ExprDialect(handlers=merged, default=self.default)
+
+    def without_handler(self, expr_type: type) -> ExprDialect[R]:
+        """Return new dialect without handler for given type. Immutable."""
+        filtered = {k: v for k, v in self.handlers.items() if k is not expr_type}
+        return ExprDialect(handlers=filtered, default=self.default)
 
 
 __all__ = (
@@ -530,4 +623,8 @@ __all__ = (
     "JsonExtract",
     "JsonContains",
     "JsonHasKey",
+    # Fold
+    "ExprHandler",
+    "fold_expr",
+    "ExprDialect",
 )

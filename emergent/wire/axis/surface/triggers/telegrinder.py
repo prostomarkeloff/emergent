@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from telegrinder.bot.rules.abc import ABCRule
+from emergent.wire._telegrinder_compat import ABCRule
 
 
 @dataclass(frozen=True, slots=True)

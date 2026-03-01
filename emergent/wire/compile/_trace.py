@@ -163,14 +163,14 @@ class ListCollector:
     Mutable — accumulates during compilation, then queried after.
     """
 
-    fold_steps: list[FoldStep] = field(default_factory=list)
-    fold_traces: list[FoldTrace] = field(default_factory=list)
-    field_phases: list[FieldPhaseTrace] = field(default_factory=list)
-    field_traces: list[FieldTrace] = field(default_factory=list)
-    type_traces: list[TypeTrace] = field(default_factory=list)
-    scan_events: list[ScanEvent] = field(default_factory=list)
-    wrap_events: list[WrapEvent] = field(default_factory=list)
-    capability_events: list[CapabilityEvent] = field(default_factory=list)
+    fold_steps: list[FoldStep] = field(default_factory=lambda: list[FoldStep]())
+    fold_traces: list[FoldTrace] = field(default_factory=lambda: list[FoldTrace]())
+    field_phases: list[FieldPhaseTrace] = field(default_factory=lambda: list[FieldPhaseTrace]())
+    field_traces: list[FieldTrace] = field(default_factory=lambda: list[FieldTrace]())
+    type_traces: list[TypeTrace] = field(default_factory=lambda: list[TypeTrace]())
+    scan_events: list[ScanEvent] = field(default_factory=lambda: list[ScanEvent]())
+    wrap_events: list[WrapEvent] = field(default_factory=lambda: list[WrapEvent]())
+    capability_events: list[CapabilityEvent] = field(default_factory=lambda: list[CapabilityEvent]())
 
     def fold_step(self, step: FoldStep) -> None:
         self.fold_steps.append(step)

@@ -12,6 +12,17 @@ wheels/
 .data/*
 # deployme generated Dockerfile (transient, written by ComposeTarget)
 .deployme.Dockerfile
+deployme.py
+algosik
+botbot
+teleflow
+_telegrinder_clone
+.ruff_cache
+.pytest_cache
+.emergent
+.data
+.claude
+emergent_research
 
 deployme.py
 _sematest

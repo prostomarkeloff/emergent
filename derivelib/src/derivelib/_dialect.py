@@ -90,7 +90,14 @@ class TriggerGen(Protocol):
 # Generic Trigger Generators
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DEFAULT_REST_ROUTES: dict[str, tuple[Method, bool]] = {
+# Route spec: (method, suffix)
+# suffix is a string appended to base_path. Use {id} for identity fields.
+#   True  → shorthand for "/{id}" (auto-built from entity Identity fields)
+#   False → shorthand for "" (no suffix)
+#   str   → literal suffix, e.g. "/{id}/submit"
+type RouteSpec = tuple[Method, bool | str]
+
+DEFAULT_REST_ROUTES: dict[str, RouteSpec] = {
     "List": ("GET", False),
     "Get": ("GET", True),
     "Create": ("POST", False),
@@ -108,21 +115,38 @@ class HTTPTriggers:
     REST routes. Identity path params are built from entity's Identity
     fields (supports composite keys).
 
-    Pass custom routes to override defaults or add new op mappings:
+    Pass custom routes to override defaults or add new op mappings::
 
-        HTTPTriggers("/api/users", routes={**DEFAULT_REST_ROUTES, "Search": ("POST", False)})
+        HTTPTriggers("/api/users", routes={
+            **DEFAULT_REST_ROUTES,
+            "Search": ("POST", False),
+        })
+
+    String suffixes for full path control::
+
+        HTTPTriggers("/api/orders", routes={
+            **DEFAULT_REST_ROUTES,
+            "Submit": ("POST", "/{id}/submit"),
+            "Cancel": ("POST", "/{id}/cancel"),
+            "Export": ("GET", "/export"),
+        })
     """
 
     base_path: str
-    routes: dict[str, tuple[Method, bool]] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
+    routes: dict[str, RouteSpec] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
 
     def __call__(self, entity: type, op: Op) -> Trigger:
         path = self.base_path.rstrip("/")
         if op.name in self.routes:
-            method, has_id = self.routes[op.name]
-            suffix = self._id_suffix(entity) if has_id else ""
+            method, spec = self.routes[op.name]
+            if spec is True:
+                suffix = self._id_suffix(entity)
+            elif spec is False:
+                suffix = ""
+            else:
+                suffix = spec
             return HTTPRouteTrigger(method=method, path=path + suffix)
-        # Unknown ops → POST
+        # Unknown ops → POST /base/{name_lower}
         return HTTPRouteTrigger(method="POST", path=f"{path}/{op.name.lower()}")
 
     def _id_suffix(self, entity: type) -> str:
@@ -154,7 +178,7 @@ class NestedHTTPTriggers:
     parent_path: str
     scope_fields: tuple[str, ...]
     child_segment: str
-    routes: dict[str, tuple[Method, bool]] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
+    routes: dict[str, RouteSpec] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
 
     def __call__(self, entity: type, op: Op) -> Trigger:
         prefix = self.parent_path.rstrip("/")
@@ -163,8 +187,13 @@ class NestedHTTPTriggers:
         child_path = f"{prefix}/{self.child_segment}"
 
         if op.name in self.routes:
-            method, has_id = self.routes[op.name]
-            suffix = self._child_id_suffix(entity) if has_id else ""
+            method, spec = self.routes[op.name]
+            if spec is True:
+                suffix = self._child_id_suffix(entity)
+            elif spec is False:
+                suffix = ""
+            else:
+                suffix = spec
             return HTTPRouteTrigger(method=method, path=child_path + suffix)
         return HTTPRouteTrigger(method="POST", path=f"{child_path}/{op.name.lower()}")
 
@@ -431,6 +460,7 @@ __all__ = (
     "Dialect",
     "ChainedPattern",
     # Trigger generators
+    "RouteSpec",
     "DEFAULT_REST_ROUTES",
     "HTTPTriggers",
     "NestedHTTPTriggers",

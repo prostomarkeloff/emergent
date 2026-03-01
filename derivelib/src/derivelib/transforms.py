@@ -55,6 +55,7 @@ from derivelib._effects import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+from derivelib._protocols import TransformableStep as _Transformable, replace_caps
 from derivelib.axes.surface import DeriveOp as _DeriveOp
 
 if TYPE_CHECKING:
@@ -68,15 +69,15 @@ if TYPE_CHECKING:
     from derivelib._errors import DomainError
     from derivelib._protocols import HandlerSpec, HandlerTemplate, HasProvider, WrapperFn
 
-type EffectHandler = Callable[[DerivationEffect, _DeriveOp], _DeriveOp | None]
+type EffectHandler[S: _Transformable] = Callable[[DerivationEffect, S], S | None]
 
 
-def _fold_effects(
+def _fold_effects[S: _Transformable](
     effects: tuple[DerivationEffect, ...],
-    step: _DeriveOp,
-    handlers: dict[type, EffectHandler],
-) -> _DeriveOp | None:
-    """Dispatch DeriveOp's effects through handler table via isinstance.
+    step: S,
+    handlers: dict[type, EffectHandler[S]],
+) -> S | None:
+    """Dispatch step's effects through handler table via isinstance.
 
     Supports effect hierarchy: Creates extends Mutation, so
     handlers={Mutation: fn} matches effects=(Creates(),).
@@ -92,26 +93,24 @@ def _fold_effects(
 
 
 def map_by_effect(
-    handlers: dict[type, EffectHandler],
+    handlers: dict[type, EffectHandler[_Transformable]],
 ) -> DerivationT:
-    """Fold-based DerivationT: dispatch on DeriveOp effects through handler table.
+    """Fold-based DerivationT: dispatch on effects through handler table.
 
-    For each DeriveOp, fold its effects. First matching handler transforms it.
+    For each TransformableStep, fold its effects. First matching handler transforms it.
     Handler returns None → step removed. No match → step unchanged.
-    Non-DeriveOp steps pass through.
+    Non-transformable steps pass through.
 
         from derivelib._effects import Mutation
         from derivelib.transforms import map_by_effect
 
         # Double capabilities on mutations:
-        map_by_effect({Mutation: lambda eff, op: replace(op, capabilities=(*op.capabilities, extra))})
+        map_by_effect({Mutation: lambda eff, op: replace_caps(op, (*op.capabilities, extra))})
     """
     def transform(steps: Derivation) -> Derivation:
-        from derivelib.axes.surface import DeriveOp
-
         result: list[Step] = []
         for s in steps:
-            if isinstance(s, DeriveOp):
+            if isinstance(s, _Transformable):
                 out = _fold_effects(s.effects, s, handlers)
                 if out is not None:
                     result.append(out)
@@ -122,21 +121,23 @@ def map_by_effect(
 
 
 def reject_by_effect(*effect_types: type[DerivationEffect]) -> DerivationT:
-    """Remove DeriveOp steps that have any of the given effects.
+    """Remove TransformableStep steps that have any of the given effects.
 
-    Non-DeriveOp steps pass through.
+    Non-transformable steps pass through.
 
         reject_by_effect(Mutation)           # remove all mutations
         reject_by_effect(Mutation, Deletes)  # remove mutations OR deletes
     """
-    handlers: dict[type, EffectHandler] = {et: lambda _eff, _op: None for et in effect_types}
+    handlers: dict[type, EffectHandler[_Transformable]] = {
+        et: lambda _eff, _op: None for et in effect_types
+    }
     return map_by_effect(handlers)
 
 
 def select_by_effect(*effect_types: type[DerivationEffect]) -> DerivationT:
-    """Keep only DeriveOp steps that have any of the given effects.
+    """Keep only TransformableStep steps that have any of the given effects.
 
-    Non-DeriveOp steps (preamble) always pass through.
+    Non-transformable steps (preamble) always pass through.
 
         select_by_effect(Mutation)  # keep only mutations
         select_by_effect(Read)      # keep only reads
@@ -144,11 +145,9 @@ def select_by_effect(*effect_types: type[DerivationEffect]) -> DerivationT:
     type_set = set(effect_types)
 
     def transform(steps: Derivation) -> Derivation:
-        from derivelib.axes.surface import DeriveOp
-
         return tuple(
             s for s in steps
-            if not isinstance(s, DeriveOp)
+            if not isinstance(s, _Transformable)
             or any(has_effect(s.effects, et) for et in type_set)
         )
     return transform
@@ -270,23 +269,33 @@ def wrap_by_effect(
     return map_by_effect({effect: _wrap})
 
 
+def map_all_transformable(fn: Callable[[_Transformable], _Transformable]) -> DerivationT:
+    """Transform all TransformableStep steps. Non-transformable steps pass through.
+
+        map_all_transformable(lambda s: replace_caps(s, (*s.capabilities, cap)))
+    """
+    def transform(steps: Derivation) -> Derivation:
+        return tuple(fn(s) if isinstance(s, _Transformable) else s for s in steps)
+    return transform
+
+
 def add_capability(
     cap: SurfaceCapability,
     effect: type[DerivationEffect] | None = None,
 ) -> DerivationT:
-    """Add capability to DeriveOp steps, optionally filtered by effect type.
+    """Add capability to TransformableStep steps, optionally filtered by effect type.
 
-        # All ops:
+        # All transformable steps:
         .chain(add_capability(CORSCap()))
 
         # Only mutations:
         .chain(add_capability(AuthCap(), Mutation))
     """
-    def _add(_eff: DerivationEffect, op: _DeriveOp) -> _DeriveOp:
-        return replace(op, capabilities=(*op.capabilities, cap))
+    def _add(_eff: DerivationEffect, s: _Transformable) -> _Transformable:
+        return replace_caps(s, (*s.capabilities, cap))
 
     if effect is None:
-        return map_all_ops(lambda op: replace(op, capabilities=(*op.capabilities, cap)))
+        return map_all_transformable(lambda s: replace_caps(s, (*s.capabilities, cap)))
     return map_by_effect({effect: _add})
 
 
@@ -666,7 +675,7 @@ def searchable(*fields: str) -> DerivationT:
 
 
 def rate_limited(rpm: int | None = None) -> DerivationT:
-    """Add rate limiting to ops declaring RateLimited effect.
+    """Add rate limiting to steps declaring RateLimited effect.
 
     rpm arg overrides effect default. If None, reads from RateLimited.rpm.
     Different from with_rate_limit() which applies to ALL ops unconditionally.
@@ -675,18 +684,17 @@ def rate_limited(rpm: int | None = None) -> DerivationT:
         .chain(rate_limited(30))    # explicit override
     """
     def transform(steps: Derivation) -> Derivation:
-        from derivelib.axes.surface import DeriveOp
         from combinators.concurrency import RateLimitPolicy
         from emergent.wire.axis.surface.enrichers import RateLimit
 
         result: list[Step] = []
         for s in steps:
-            if isinstance(s, DeriveOp):
+            if isinstance(s, _Transformable):
                 eff = get_effect(s.effects, RateLimited)
                 rate = rpm if rpm is not None else (eff.rpm if eff else None)
                 if rate is not None:
                     cap = RateLimit(policy=RateLimitPolicy(max_per_second=rate / 60.0))
-                    s = replace(s, capabilities=(*s.capabilities, cap))
+                    s = replace_caps(s, (*s.capabilities, cap))
             result.append(s)
         return tuple(result)
     return transform
@@ -723,15 +731,13 @@ def deprecated() -> DerivationT:
             return await call(scope)
 
     def transform(steps: Derivation) -> Derivation:
-        from derivelib.axes.surface import DeriveOp
-
         result: list[Step] = []
         for s in steps:
-            if isinstance(s, DeriveOp):
+            if isinstance(s, _Transformable):
                 eff = get_effect(s.effects, Deprecated)
                 if eff is not None:
                     enricher = DeprecationEnricher(since=eff.since, message=eff.message)
-                    s = replace(s, capabilities=(*s.capabilities, enricher))
+                    s = replace_caps(s, (*s.capabilities, enricher))
             result.append(s)
         return tuple(result)
     return transform
@@ -799,6 +805,7 @@ __all__ = (
     "reject_by_effect",
     "select_by_effect",
     "map_all_ops",
+    "map_all_transformable",
     # Response projection
     "project_response",
     # Handler wrapping

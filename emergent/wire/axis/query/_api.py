@@ -21,8 +21,12 @@ For querying external APIs with typed filters and pagination.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable, Generic, TypeVar
+import dataclasses as _dc
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._contexts import MemoryAPIContext, HTTPAPIContext
 
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import (
@@ -32,6 +36,17 @@ from emergent.wire.axis.query._proxy import (
     build_order,
     EntityProxy,
 )
+
+# ─── Cross-compilable ops (from _relational) ─────────────────────────────────
+# Filter, OrderBy, Select are now unified types that compile for ALL backends.
+# Import them here and alias to old *Mod names for backward compatibility.
+from emergent.wire.axis.query._relational import Filter, OrderBy, Select
+
+# Backward compat aliases — existing code using FilterMod/OrderMod/SelectMod
+# continues to work. These ARE the same types.
+FilterMod = Filter
+OrderMod = OrderBy
+SelectMod = Select
 
 
 K = TypeVar("K")
@@ -73,63 +88,109 @@ class DeleteOp(Generic[K]):
     id: K
 
 
-# Filter/pagination modifiers
-@dataclass(frozen=True, slots=True)
-class FilterMod:
-    """Filter modifier."""
-    expr: Expr
-
-
-@dataclass(frozen=True, slots=True)
-class OrderMod:
-    """Order modifier."""
-    specs: tuple[OrderSpec, ...]
+# ─── API-only Modifiers (self-compiling) ──────────────────────────────────────
+# These have no relational equivalent — they stay here as API-specific mods.
 
 
 @dataclass(frozen=True, slots=True)
 class PageMod:
     """Page-based pagination."""
+
     page: int
     per_page: int
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        total = len(ctx.data)
+        start = (self.page - 1) * self.per_page
+        end = start + self.per_page
+        return replace(ctx, data=ctx.data[start:end], total=total, has_more=end < total)
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        ctx.apply_pagination(ctx.params, self)
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class CursorMod:
     """Cursor-based pagination."""
+
     cursor: str
     limit: int
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        total = len(ctx.data)
+        try:
+            start = int(self.cursor)
+        except (ValueError, TypeError):
+            start = 0
+        end = start + self.limit
+        return replace(ctx, data=ctx.data[start:end], total=total, has_more=end < total)
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        ctx.apply_pagination(ctx.params, self)
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class OffsetMod:
     """Offset-based pagination."""
+
     offset: int
     limit: int
 
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        total = len(ctx.data)
+        end = self.offset + self.limit
+        return replace(ctx, data=ctx.data[self.offset:end], total=total, has_more=end < total)
 
-@dataclass(frozen=True, slots=True)
-class SelectMod:
-    """Field selection (sparse fieldsets)."""
-    fields: tuple[str, ...]
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        ctx.apply_pagination(ctx.params, self)
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class SearchMod:
     """Full-text search."""
+
     query: str
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        search_lower = self.query.lower()
+        result = [
+            item for item in ctx.data
+            if any(
+                search_lower in str(getattr(item, f.name, "")).lower()
+                for f in _dc.fields(item)  # type: ignore[arg-type]
+            )
+        ]
+        return replace(ctx, data=result)
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        ctx.params["q"] = self.query
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class IncludeMod:
-    """Include related resources."""
+    """Include related resources.
+
+    No compile_memory_api — memory doesn't support include.
+    Skipped via open-world dispatch; memory provider adds handler
+    override that raises TypeError (preserving current behavior).
+    """
+
     relations: tuple[str, ...]
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        ctx.params["include"] = ",".join(self.relations)
+        return ctx
 
 
 # Union of all operations
 APIOp = ListOp | GetOp[Any] | CreateOp[Any] | UpdateOp[Any, Any] | DeleteOp[Any]
 
-# Union of all modifiers
-APIMod = FilterMod | OrderMod | PageMod | CursorMod | OffsetMod | SelectMod | SearchMod | IncludeMod
+# Union of all modifiers (Filter, OrderBy, Select are cross-compilable from _relational)
+APIMod = Filter | OrderBy | PageMod | CursorMod | OffsetMod | Select | SearchMod | IncludeMod
 
 
 # ─── QuerySet ────────────────────────────────────────────────────────────────
@@ -212,7 +273,7 @@ class APIQuerySet(Generic[K, T]):
             .filter(lambda u: u.balance > 100)
         """
         expr = build_expr(self.entity, predicate)
-        return self._with_mod(FilterMod(expr))
+        return self._with_mod(Filter(expr))
 
     def order_by(
         self, *order_fns: Callable[[EntityProxy[T]], FieldProxy | OrderSpec]
@@ -224,7 +285,7 @@ class APIQuerySet(Generic[K, T]):
             .order_by(lambda u: u.balance.desc())
         """
         specs = tuple(build_order(self.entity, fn) for fn in order_fns)
-        return self._with_mod(OrderMod(specs))
+        return self._with_mod(OrderBy(specs))
 
     def page(self, page: int, per_page: int = 20) -> APIQuerySet[K, T]:
         """Page-based pagination.
@@ -258,7 +319,7 @@ class APIQuerySet(Generic[K, T]):
         """
         proxy = EntityProxy(self.entity)
         fields = tuple(fn(proxy).name for fn in field_fns)  # type: ignore
-        return self._with_mod(SelectMod(fields))
+        return self._with_mod(Select(fields))
 
     def search(self, query: str) -> APIQuerySet[K, T]:
         """Full-text search.
@@ -281,14 +342,14 @@ class APIQuerySet(Generic[K, T]):
     @property
     def filters(self) -> list[Expr]:
         """All filter expressions."""
-        return [mod.expr for mod in self.mods if isinstance(mod, FilterMod)]
+        return [mod.expr for mod in self.mods if isinstance(mod, Filter)]
 
     @property
     def ordering(self) -> list[OrderSpec]:
         """All order specs."""
         result: list[OrderSpec] = []
         for mod in self.mods:
-            if isinstance(mod, OrderMod):
+            if isinstance(mod, OrderBy):
                 result.extend(mod.specs)
         return result
 
@@ -299,6 +360,11 @@ class APIQuerySet(Generic[K, T]):
             if isinstance(mod, (PageMod, CursorMod, OffsetMod)):
                 return mod
         return None
+
+    @property
+    def ops(self) -> tuple[APIMod, ...]:
+        """Pipeline ops for fold compilation. Uniform access with RelationalQuerySet."""
+        return self.mods
 
 
 def api(entity: type[T], key: Callable[[T], K] | None = None) -> APIQuerySet[K, T]:
@@ -322,13 +388,18 @@ __all__ = (
     "UpdateOp",
     "DeleteOp",
     "APIOp",
-    # Modifiers
+    # Cross-compilable (from _relational)
+    "Filter",
+    "OrderBy",
+    "Select",
+    # Backward compat aliases
     "FilterMod",
     "OrderMod",
+    "SelectMod",
+    # API-only modifiers
     "PageMod",
     "CursorMod",
     "OffsetMod",
-    "SelectMod",
     "SearchMod",
     "IncludeMod",
     "APIMod",

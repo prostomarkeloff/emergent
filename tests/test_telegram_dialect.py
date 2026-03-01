@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import importlib.util
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    not importlib.util.find_spec("telegrinder"),
+    reason="telegrinder not installed",
+)
 from nodnod import Scope
 
 from emergent.wire.axis.surface.dialects.telegram import (

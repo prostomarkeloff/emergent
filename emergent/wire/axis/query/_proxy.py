@@ -77,7 +77,7 @@ def _wrap(value: Any) -> Expr:
     - other → Const(value)
     """
     if isinstance(value, FieldProxy):
-        return value._to_expr()
+        return value.to_expr()
     if isinstance(value, Expr):
         return value
     return Const(value)
@@ -86,49 +86,49 @@ def _wrap(value: Any) -> Expr:
 class _ComparableMixin:
     """Shared comparison operators for FieldProxy and JsonFieldProxy.
 
-    Subclass must define _to_expr() -> Expr.
+    Subclass must define to_expr() -> Expr.
     """
 
-    def _to_expr(self) -> Expr: ...  # type: ignore[empty-body]
+    def to_expr(self) -> Expr: ...  # type: ignore[empty-body]
 
     def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Eq(self._to_expr(), _wrap(other))
+        return Eq(self.to_expr(), _wrap(other))
 
     def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
-        return Ne(self._to_expr(), _wrap(other))
+        return Ne(self.to_expr(), _wrap(other))
 
     def __lt__(self, other: Any) -> Expr:
-        return Lt(self._to_expr(), _wrap(other))
+        return Lt(self.to_expr(), _wrap(other))
 
     def __le__(self, other: Any) -> Expr:
-        return Le(self._to_expr(), _wrap(other))
+        return Le(self.to_expr(), _wrap(other))
 
     def __gt__(self, other: Any) -> Expr:
-        return Gt(self._to_expr(), _wrap(other))
+        return Gt(self.to_expr(), _wrap(other))
 
     def __ge__(self, other: Any) -> Expr:
-        return Ge(self._to_expr(), _wrap(other))
+        return Ge(self.to_expr(), _wrap(other))
 
     # Logical operators (use & | ~ instead of and or not)
 
     def __and__(self, other: Expr) -> Expr:
-        return And(self._to_expr(), other)
+        return And(self.to_expr(), other)
 
     def __or__(self, other: Expr) -> Expr:
-        return Or(self._to_expr(), other)
+        return Or(self.to_expr(), other)
 
     def __invert__(self) -> Expr:
-        return Not(self._to_expr())
+        return Not(self.to_expr())
 
     # Null checks
 
     def is_null(self) -> Expr:
         """Null check."""
-        return IsNull(self._to_expr())
+        return IsNull(self.to_expr())
 
     def is_not_null(self) -> Expr:
         """Not null check."""
-        return IsNotNull(self._to_expr())
+        return IsNotNull(self.to_expr())
 
 
 class FieldProxy(_ComparableMixin):
@@ -144,7 +144,7 @@ class FieldProxy(_ComparableMixin):
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def _to_expr(self) -> Field:
+    def to_expr(self) -> Field:
         return Field(self.name)
 
     @staticmethod
@@ -156,19 +156,19 @@ class FieldProxy(_ComparableMixin):
 
     def in_(self, values: list[Any] | tuple[Any, ...]) -> Expr:
         """Check membership: u.status.in_(["active", "pending"])"""
-        return In(self._to_expr(), tuple(values))
+        return In(self.to_expr(), tuple(values))
 
     def contains(self, substring: str) -> Expr:
         """String contains: u.name.contains("alice")"""
-        return Contains(self._to_expr(), substring)
+        return Contains(self.to_expr(), substring)
 
     def startswith(self, prefix: str) -> Expr:
         """String starts with: u.name.startswith("al")"""
-        return StartsWith(self._to_expr(), prefix)
+        return StartsWith(self.to_expr(), prefix)
 
     def endswith(self, suffix: str) -> Expr:
         """String ends with: u.name.endswith("ice")"""
-        return EndsWith(self._to_expr(), suffix)
+        return EndsWith(self.to_expr(), suffix)
 
     # Ordering (for order_by)
 
@@ -184,7 +184,7 @@ class FieldProxy(_ComparableMixin):
 
     def between(self, low: Any, high: Any) -> Expr:
         """Range check: u.balance.between(100, 1000)"""
-        return Between(self._to_expr(), _wrap(low), _wrap(high))
+        return Between(self.to_expr(), _wrap(low), _wrap(high))
 
     # ─── Pattern Matching ───────────────────────────────────────────────────────
 
@@ -193,33 +193,33 @@ class FieldProxy(_ComparableMixin):
 
         Pattern: % = any chars, _ = single char.
         """
-        return Like(self._to_expr(), pattern)
+        return Like(self.to_expr(), pattern)
 
     def ilike(self, pattern: str) -> Expr:
         """Case-insensitive LIKE: u.email.ilike('%@GMAIL.COM')"""
-        return ILike(self._to_expr(), pattern)
+        return ILike(self.to_expr(), pattern)
 
     def regex(self, pattern: str) -> Expr:
         """Regex match: u.email.regex(r'^\\w+@\\w+\\.\\w+$')"""
-        return Regex(self._to_expr(), pattern)
+        return Regex(self.to_expr(), pattern)
 
     # ─── Array Operators ────────────────────────────────────────────────────────
 
     def array_contains(self, value: Any) -> Expr:
         """Array contains value: u.tags.array_contains('vip')"""
-        return ArrayContains(self._to_expr(), value)
+        return ArrayContains(self.to_expr(), value)
 
     def array_any(self, *values: Any) -> Expr:
         """Array contains any of values: u.tags.array_any('vip', 'admin')"""
-        return ArrayAny(self._to_expr(), values)
+        return ArrayAny(self.to_expr(), values)
 
     def array_all(self, *values: Any) -> Expr:
         """Array contains all values: u.tags.array_all('vip', 'verified')"""
-        return ArrayAll(self._to_expr(), values)
+        return ArrayAll(self.to_expr(), values)
 
     def array_overlap(self, *values: Any) -> Expr:
         """Arrays have overlap: u.tags.array_overlap('a', 'b')"""
-        return ArrayOverlap(self._to_expr(), values)
+        return ArrayOverlap(self.to_expr(), values)
 
     # ─── JSON Operators ─────────────────────────────────────────────────────────
 
@@ -229,15 +229,15 @@ class FieldProxy(_ComparableMixin):
         Path is dot-separated: "profile.name" or "users.0.name"
         Returns a JsonFieldProxy that supports comparison operators.
         """
-        return JsonFieldProxy(self._to_expr(), path)
+        return JsonFieldProxy(self.to_expr(), path)
 
     def json_contains(self, value: Any) -> Expr:
         """JSON contains value/structure: u.metadata.json_contains({'role': 'admin'})"""
-        return JsonContains(self._to_expr(), value)
+        return JsonContains(self.to_expr(), value)
 
     def json_has_key(self, key: str) -> Expr:
         """JSON has key: u.metadata.json_has_key('profile')"""
-        return JsonHasKey(self._to_expr(), key)
+        return JsonHasKey(self.to_expr(), key)
 
     # ─── Aggregates ─────────────────────────────────────────────────────────────
 
@@ -308,7 +308,7 @@ class JsonFieldProxy(_ComparableMixin):
         self._base = base
         self._path = path
 
-    def _to_expr(self) -> JsonExtract:
+    def to_expr(self) -> JsonExtract:
         return JsonExtract(self._base, self._path)
 
 

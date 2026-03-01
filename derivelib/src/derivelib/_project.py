@@ -349,6 +349,19 @@ class CountResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class BoolResponse:
+    """Response = {"exists": bool} — for existence-check endpoints."""
+
+    def resolve[EntityT](self, schema: SchemaCtx[EntityT]) -> ResolvedResponse:
+        field_specs: list[FieldSpec] = [("exists", bool)]
+        converter = _result_converter(
+            ok=lambda cls, val: cls(exists=val),
+            error=lambda _cls, err: err,
+        )
+        return field_specs, converter
+
+
+@dataclass(frozen=True, slots=True)
 class EmptyResponse:
     """Response = empty (204 No Content semantics).
 
@@ -509,6 +522,10 @@ def count_response() -> CountResponse:
     return CountResponse()
 
 
+def bool_response() -> BoolResponse:
+    return BoolResponse()
+
+
 def empty_response() -> EmptyResponse:
     return EmptyResponse()
 
@@ -542,6 +559,7 @@ __all__ = (
     "OkResponse",
     "PaginatedResponse",
     "CountResponse",
+    "BoolResponse",
     "EmptyResponse",
     "CursorPaginatedResponse",
     "CustomResponse",
@@ -563,6 +581,7 @@ __all__ = (
     "ok_response",
     "paginated_response",
     "count_response",
+    "bool_response",
     "empty_response",
     "cursor_paginated_response",
     "custom_response",

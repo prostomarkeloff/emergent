@@ -5,6 +5,7 @@ Organized by module. Each test class targets specific uncovered lines.
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -2679,6 +2680,10 @@ class TestCompileGenerateToDatanodeAuto:
 class TestCompileGenerateToDatanodeFromContext:
     """Lines 286-312: to_datanode_from_context generates DataNode from Context."""
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("telegrinder"),
+        reason="telegrinder not installed",
+    )
     def test_to_datanode_from_context(self) -> None:
         from emergent.wire.compile._generate import to_datanode_from_context
 

@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
-from emergent.wire.axis._capability import openapi_schema
+from emergent.wire.axis._capability import JsonSchemaValue, openapi_schema
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import OpenAPIContext, QuerySchemaContext
@@ -158,7 +158,8 @@ class Operators(QueryCapability):
         return replace(ctx, operators=self.allowed)
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
-        return openapi_schema(ctx, **{"x-operators": [op.__name__ for op in self.allowed]})
+        ops: list[JsonSchemaValue] = [op.__name__ for op in self.allowed]
+        return openapi_schema(ctx, **{"x-operators": ops})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

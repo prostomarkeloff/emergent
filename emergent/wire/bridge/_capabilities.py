@@ -247,10 +247,13 @@ def fold_bridge[T, **P, R](
     Returns:
         Final accumulated context after all capabilities applied
     """
-    current = ctx
+    current: BridgeContext[T, P, R] = ctx
     for cap in capabilities:
         cap_type = type(cap)
         if handlers and cap_type in handlers:
+            # BridgeCapabilityHandler is type-erased to BridgeContext[object, ..., object]
+            # because heterogeneous handler mappings can't preserve per-key generics.
+            # The handler contract guarantees it returns the same BridgeContext shape.
             current = handlers[cap_type](cap, current)  # type: ignore[assignment]
         elif isinstance(cap, BridgeCompilable):
             current = cap.compile_bridge(current)

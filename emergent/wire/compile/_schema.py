@@ -125,7 +125,7 @@ def type_to_json_schema(
         return {"anyOf": schemas}
 
     # Structured types (dataclass, Pydantic, etc.)
-    from emergent.wire.axis.schema import is_structured_type, inspect_type
+    from emergent.wire.axis.schema import is_structured_type
     if isinstance(py_type, type) and is_structured_type(py_type):
         return _structured_type_to_json_schema(py_type, type_map)
 

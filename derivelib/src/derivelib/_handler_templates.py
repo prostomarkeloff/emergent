@@ -11,22 +11,20 @@ Not CRUD-specific — CRUD is just one dialect that uses them.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from kungfu import Ok, Result
+from kungfu import Ok, Error, Result
 
 from derivelib._ctx import OperationHandler
+from derivelib._errors import DomainError, NotFound
 from derivelib._protocols import HandlerSpec, HasProvider
 from derivelib._query_helpers import (
+    fetch_by_identity,
     fetch_or_not_found,
     identity_query,
     identity_values,
     scoped_query,
 )
-
-if TYPE_CHECKING:
-    from derivelib._errors import DomainError
 
 # Sentinel for PATCH: distinguishes "user sent None" from "user didn't send"
 _UNSET = object()
@@ -350,6 +348,85 @@ class SortedFetchMany:
         return handler
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Generic Non-CRUD Handler Templates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class SetField:
+    """Handler: fetch by identity, set one field to computed value, update.
+
+    Generic state-transition template. value_fn receives the op and returns
+    the new field value.
+
+        SetField("status", lambda op: "archived")
+        SetField("status", lambda op: op.new_status)
+    """
+
+    field_name: str
+    value_fn: Callable[[object], object]
+
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[EntityT, DomainError]:
+        entity = spec.entity
+        id_names = spec.identity_names
+        non_id_names = spec.non_identity_names
+        entity_name = spec.entity_name
+        fname, vfn = self.field_name, self.value_fn
+
+        async def handler(op: HasProvider[EntityT]) -> Result[EntityT, DomainError]:
+            obj = await fetch_by_identity(op.provider, entity, op, id_names)
+            if obj is None:
+                return Error(NotFound(entity=entity_name, id=identity_values(op, id_names)))
+            updated = entity(**{
+                **{n: getattr(obj, n) for n in (*id_names, *non_id_names)},
+                fname: vfn(op),
+            })
+            await op.provider.update(updated)
+            return Ok(updated)
+
+        return handler
+
+
+@dataclass(frozen=True, slots=True)
+class ExistsById:
+    """Handler: check if entity exists by identity. Returns bool.
+
+        EXISTS = Op("Exists", id_only(), BoolResponse(), ExistsById())
+    """
+
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[bool, DomainError]:
+        entity = spec.entity
+        id_names = spec.identity_names
+
+        async def handler(op: HasProvider[EntityT]) -> Result[bool, DomainError]:
+            obj = await fetch_by_identity(op.provider, entity, op, id_names)
+            return Ok(obj is not None)
+
+        return handler
+
+
+@dataclass(frozen=True, slots=True)
+class CountAll:
+    """Handler: count entities matching base query.
+
+        COUNT = Op("Count", no_fields(), CountResponse(), CountAll())
+    """
+
+    scope_fields: tuple[str, ...] = ()
+
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[int, DomainError]:
+        base = spec.base_query
+        sf = self.scope_fields
+
+        async def handler(op: HasProvider[EntityT]) -> Result[int, DomainError]:
+            assert base is not None
+            total = await op.provider.count(scoped_query(base, op, sf))
+            return Ok(total)
+
+        return handler
+
+
 __all__ = (
     "FetchMany",
     "FetchOneById",
@@ -360,4 +437,7 @@ __all__ = (
     "CachedFetchOneById",
     "PatchExisting",
     "SortedFetchMany",
+    "SetField",
+    "ExistsById",
+    "CountAll",
 )

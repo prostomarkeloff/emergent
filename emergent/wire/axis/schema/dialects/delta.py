@@ -274,6 +274,9 @@ def delta_type(entity: type[E]) -> type:
                     cast(type, CollectionDelta[Any] | None),
                     field(default=None),
                 ))
+            case _:
+                msg = f"Unknown delta kind: {ctx.delta_kind!r}"
+                raise ValueError(msg)
 
     return make_dataclass(
         f"{entity.__name__}Delta",

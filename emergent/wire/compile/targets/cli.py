@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import types
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -57,7 +58,7 @@ class CLIWrapContext:
     """Wrap context for CLI — seeded by from_codec, refined by capabilities."""
 
     request_type: type | None = None
-    response_type: type | None = None
+    response_type: type | types.UnionType | None = None
     execute: Callable[..., Any] | None = None
     trigger: CLITrigger | None = None
     arg_specs: tuple[ArgSpec, ...] = ()
@@ -123,7 +124,6 @@ async def _stateful_execute_cli(
     transitions = get_transitions(codec.flow)
     cli_args = {k: v for k, v in vars(ns).items() if not k.startswith("_")}
     state = codec.flow()
-    layer = scope._parent_ref if hasattr(scope, "_parent_ref") else None
 
     while True:
         method = transitions[0] if transitions else None
@@ -227,7 +227,12 @@ async def _compose_cli_param(
 
     if is_node:
         composer = Composer.create(scope, agent_cls)
-        success, value = await composer.compose(compose_type)
+        # compose_type is bare `type` (no parameter), so compose returns Unknown;
+        # we widen to object | str which is all wrap() needs
+        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # unparameterized type
+            compose_type,
+        )
+        success, value = compose_result
         return wrap(original_type, success, value if success else f"Node {compose_type.__name__} not composed")
 
     if name in cli_args and cli_args[name] is not None:
@@ -386,6 +391,8 @@ def assemble_cli_route(
 ) -> CLIRoute:
     """Assemble CLIRoute from compiled WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("CLIWrapContext.execute must be set before assembly")
 
     async def _handler(ns: argparse.Namespace) -> str:
         # Create scope manually for CLI (no pipeline extraction)
@@ -503,6 +510,8 @@ def _wrap_for_stack(
     compiler: TargetCompiler[CLITrigger],
 ) -> CLIRoute:
     """Find the right binding and wrap handler for stack compilation."""
+    if compiler.assemble is None:
+        raise ValueError("Compiler has no assemble function")
     for binding in compiler.bindings:
         if isinstance(handler.codec, binding.codec_type):
             ctx = binding.from_codec(handler.codec, trigger)
@@ -569,7 +578,7 @@ def cli_run(parser: argparse.ArgumentParser, args: list[str] | None = None) -> i
         return 1
 
     app_scope: Scope | None = getattr(parser, "_scope_app", None)
-    app_types = getattr(parser, "_scope_app_types", frozenset())
+    app_types: frozenset[type] = getattr(parser, "_scope_app_types", frozenset[type]())
 
     async def _run() -> str:
         if app_scope is not None:
@@ -611,15 +620,6 @@ def coerce_cli_values(
     coerced = model(**raw).model_dump()
     return lambda name: coerced.get(name)
 
-
-def _rrc_execute_cli_typed(
-    handler: Handler[RequestResponseCodec],
-    scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> Any:
-    """RRC typed CLI execute — wraps coercion around normal execute."""
-    # This gets called async from assemble_cli_route
-    raise NotImplementedError("Use typed_rrc_from_codec_cli instead")
 
 
 def typed_rrc_from_codec_cli(

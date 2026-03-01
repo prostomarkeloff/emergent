@@ -22,8 +22,9 @@
 
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from emergent.wire.axis._capability import (
     Capability as RootCapability,
@@ -39,7 +40,9 @@ from emergent.wire.axis._capability import (
 EnumValue = str | int | float | bool | None
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
+
+    from pydantic.fields import FieldInfo
 
     from emergent.wire.axis._capability import (
         # Field-level
@@ -47,13 +50,11 @@ if TYPE_CHECKING:
         OpenAPIContext,
         ArgparseContext,
         SQLAlchemyContext,
-        QuerySchemaContext,
+        StorageFieldContext,
         # Schema-level
         PydanticModelContext,
         OpenAPISchemaContext,
         SQLAlchemyTableContext,
-        # Types
-        JsonSchemaValue,
         # Constraints
         ConstraintsContext,
     )
@@ -608,11 +609,13 @@ class Sensitive(UniversalCapability):
     """
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        def _mutate(fi):  # type: (FieldInfo) -> None
+        def _mutate(fi: FieldInfo) -> None:
             fi.repr = False
-            existing = dict(fi.json_schema_extra) if fi.json_schema_extra else {}
-            existing["writeOnly"] = True
-            fi.json_schema_extra = existing
+            extra = fi.json_schema_extra
+            if isinstance(extra, dict):
+                fi.json_schema_extra = {**extra, "writeOnly": True}
+            else:
+                fi.json_schema_extra = {"writeOnly": True}
 
         return pydantic_field(ctx, _mutate)
 
@@ -742,8 +745,58 @@ class Computed(UniversalCapability):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class _Miss:
+    """Sentinel for _extract_attr miss — distinct from any real value including None."""
+    __slots__ = ()
+
+
+_MISS = _Miss()
+
+
+def _extract_attr(target: type, obj: object, name: str) -> object | _Miss:
+    """Extract attribute, checking isinstance first to avoid Unknown propagation.
+
+    When isinstance narrows to e.g. Some[Unknown], accessing .value produces Unknown.
+    This helper does isinstance + getattr in one step so the caller never sees the
+    narrowed Unknown-parameterized type.
+
+    Returns the attribute value if obj is an instance of target, otherwise _MISS.
+    """
+    if isinstance(obj, target):
+        return getattr(obj, name)
+    return _MISS
+
+
+def _is_tuple(v: object) -> TypeGuard[tuple[object, ...]]:
+    """TypeGuard: narrow object to tuple[object, ...] without Unknown propagation."""
+    return isinstance(v, tuple)
+
+
+def _is_list(v: object) -> TypeGuard[list[object]]:
+    """TypeGuard: narrow object to list[object] without Unknown propagation."""
+    return isinstance(v, list)
+
+
+def _is_set(v: object) -> TypeGuard[set[object]]:
+    """TypeGuard: narrow object to set[object] without Unknown propagation."""
+    return isinstance(v, set)
+
+
+def _is_frozenset(v: object) -> TypeGuard[frozenset[object]]:
+    """TypeGuard: narrow object to frozenset[object] without Unknown propagation."""
+    return isinstance(v, frozenset)
+
+
+def _is_dict(v: object) -> TypeGuard[dict[str, object]]:
+    """TypeGuard: narrow object to dict[str, object] without Unknown propagation.
+
+    json.loads always produces dict[str, ...] so str keys are guaranteed.
+    """
+    return isinstance(v, dict)
+
+
 def _resolve_coerce(
-    origin: type,
+    origin: object,
 ) -> tuple[
     "Callable[[object], object] | None",
     "Callable[[object], object] | None",
@@ -752,30 +805,40 @@ def _resolve_coerce(
     """Pure dispatch — resolve coercion fns + storage base type for known types.
 
     Returns (to_storage, from_storage, storage_type) or (None, None, None).
+    origin is typed as object because it may be a type, TypeAliasType, or UnionType.
     """
     if origin is tuple:
-        return (
-            lambda v: list(v) if isinstance(v, tuple) else v,
-            lambda v: tuple(v) if isinstance(v, list) else v,
-            list,
-        )
+        def _tuple_to(v: object) -> object:
+            return list(v) if _is_tuple(v) else v
+
+        def _tuple_from(v: object) -> object:
+            return tuple(v) if _is_list(v) else v
+
+        return (_tuple_to, _tuple_from, list)
     if origin is set:
-        return (
-            lambda v: list(v) if isinstance(v, set) else v,
-            lambda v: set(v) if isinstance(v, list) else v,
-            list,
-        )
+        def _set_to(v: object) -> object:
+            return list(v) if _is_set(v) else v
+
+        def _set_from(v: object) -> object:
+            return set(v) if _is_list(v) else v
+
+        return (_set_to, _set_from, list)
     if origin is frozenset:
-        return (
-            lambda v: list(v) if isinstance(v, frozenset) else v,
-            lambda v: frozenset(v) if isinstance(v, list) else v,
-            list,
-        )
+        def _frozenset_to(v: object) -> object:
+            return list(v) if _is_frozenset(v) else v
+
+        def _frozenset_from(v: object) -> object:
+            return frozenset(v) if _is_list(v) else v
+
+        return (_frozenset_to, _frozenset_from, list)
+
     from kungfu import Option, Some, Nothing
     if origin is Option:
         def _to(v: object) -> object:
-            if isinstance(v, Some):
-                return v.value
+            # _extract_attr avoids Unknown from isinstance narrowing on erased generics
+            val = _extract_attr(Some, v, "value")
+            if not isinstance(val, _Miss):
+                return val
             if isinstance(v, Nothing):
                 return None
             return v
@@ -790,15 +853,18 @@ def _resolve_coerce(
         import json
 
         def _sum_to(v: object) -> object:
-            if isinstance(v, Sum):
-                raw = v.v
+            # _extract_attr avoids Unknown from isinstance narrowing on erased generics
+            raw = _extract_attr(Sum, v, "v")
+            if not isinstance(raw, _Miss):
                 return json.dumps({"_t": type(raw).__name__, "_v": raw})
             return v
 
         def _sum_from(v: object) -> object:
             # Generic fallback — Coerce.__init__ overrides with Sum-aware version
-            data = json.loads(v) if isinstance(v, str) else v
-            return data["_v"] if isinstance(data, dict) and "_v" in data else data
+            parsed: object = json.loads(v) if isinstance(v, str) else v
+            if _is_dict(parsed):
+                return parsed["_v"] if "_v" in parsed else parsed
+            return parsed
 
         return (_sum_to, _sum_from, str)  # stored as JSON text
 
@@ -809,27 +875,33 @@ def _resolve_coerce(
 
     _is_result = origin is Result
     if not _is_result:
-        import types
         if isinstance(origin, types.UnionType):
-            _origins = {getattr(a, "__origin__", a) for a in origin.__args__}
+            union_args: tuple[object, ...] = origin.__args__
+            _origins = {getattr(a, "__origin__", a) for a in union_args}
             _is_result = _origins == {Ok, Error}
 
     if _is_result:
         import json
 
         def _result_to(v: object) -> object:
-            if isinstance(v, Ok):
-                return json.dumps({"ok": True, "v": v.value})
-            if isinstance(v, Error):
-                return json.dumps({"ok": False, "e": v.error})
+            # _extract_attr avoids Unknown from isinstance narrowing on erased generics
+            ok_val = _extract_attr(Ok, v, "value")
+            if not isinstance(ok_val, _Miss):
+                return json.dumps({"ok": True, "v": ok_val})
+            err_val = _extract_attr(Error, v, "error")
+            if not isinstance(err_val, _Miss):
+                return json.dumps({"ok": False, "e": err_val})
             return v
 
         def _result_from(v: object) -> object:
-            data = json.loads(v) if isinstance(v, str) else v
-            if isinstance(data, dict):
-                if data.get("ok"):
-                    return Ok(data["v"])
-                return Error(data["e"])
+            parsed: object = json.loads(v) if isinstance(v, str) else v
+            if _is_dict(parsed):
+                ok_flag = parsed.get("ok")
+                if ok_flag:
+                    v_val: object = parsed["v"]
+                    return Ok(v_val)
+                e_val: object = parsed["e"]
+                return Error(e_val)
             return v
 
         return (_result_to, _result_from, str)  # stored as JSON text
@@ -867,7 +939,7 @@ class Coerce(UniversalCapability):
         to_storage: "Callable[[object], object] | None" = None,
         from_storage: "Callable[[object], object] | None" = None,
     ) -> None:
-        origin = getattr(source, "__origin__", source)
+        origin: object = getattr(source, "__origin__", source)
         default_to, default_from, default_storage = _resolve_coerce(origin)
 
         resolved_to = to_storage if to_storage is not None else default_to
@@ -882,10 +954,11 @@ class Coerce(UniversalCapability):
 
         # Resolve storage_type: for Option[str] → str (from __args__)
         storage = default_storage
-        if storage is None and hasattr(source, "__args__") and source.__args__:
+        source_args: tuple[type, ...] = getattr(source, "__args__", ())
+        if storage is None and source_args:
             from kungfu import Option
             if origin is Option:
-                storage = source.__args__[0]
+                storage = source_args[0]
 
         # Sum-aware from_storage: reconstruct Sum[*Ts] with type discrimination
         from kungfu import Sum
@@ -896,10 +969,11 @@ class Coerce(UniversalCapability):
 
             def _sum_from_typed(v: object) -> object:
                 import json
-                data = json.loads(v) if isinstance(v, str) else v
-                if isinstance(data, dict) and "_t" in data:
-                    raw = data["_v"]
-                    t = type_lookup.get(data["_t"])
+                parsed: object = json.loads(v) if isinstance(v, str) else v
+                if _is_dict(parsed) and "_t" in parsed:
+                    raw: object = parsed["_v"]
+                    tag: object = parsed["_t"]
+                    t = type_lookup.get(tag) if isinstance(tag, str) else None
                     if t is not None:
                         raw = t(raw)
                     return sum_source(raw)

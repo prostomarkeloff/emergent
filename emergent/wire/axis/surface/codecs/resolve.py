@@ -214,7 +214,13 @@ async def compose_params(
 
     for name, (original_type, compose_type) in params.items():
         # First check if already injected (e.g., Pydantic models from body)
-        found, value = composer.retrieve(compose_type)
+        # compose_type is bare `type` — cast to type[object] for generic resolution
+        typed: type[object] = compose_type
+        # nodnod's Value.value is untyped, so retrieve/compose return partially
+        # unknown tuples; explicit annotations make the types known to pyright.
+        found: bool
+        value: object | None
+        found, value = composer.retrieve(typed)
         if found:
             composed[name] = wrap(original_type, True, value)
             continue
@@ -225,7 +231,9 @@ async def compose_params(
             continue
 
         # Compose through Composer
-        success, result = await composer.compose(compose_type)
+        success: bool
+        result: object | str
+        success, result = await composer.compose(typed)
         if success:
             composed[name] = wrap(original_type, True, result)
         else:
@@ -261,7 +269,12 @@ async def try_compose_params(
         is_optional = origin is Option or origin is Result
 
         # First check if already injected
-        found, pre_value = composer.retrieve(compose_type)
+        # compose_type is bare `type` — cast to type[object] for generic resolution
+        typed: type[object] = compose_type
+        # nodnod's Value.value is untyped; explicit annotations avoid Unknown
+        found: bool
+        pre_value: object | None
+        found, pre_value = composer.retrieve(typed)
         if found:
             composed[name] = wrap(original_type, True, pre_value)
             continue
@@ -274,7 +287,9 @@ async def try_compose_params(
             return Nothing()
 
         # Try to compose through Composer
-        success, result = await composer.compose(compose_type)
+        success: bool
+        result: object | str
+        success, result = await composer.compose(typed)
         if success:
             composed[name] = wrap(original_type, True, result)
         elif is_optional:

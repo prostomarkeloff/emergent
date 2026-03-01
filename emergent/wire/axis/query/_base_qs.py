@@ -258,7 +258,7 @@ class RelationalMixin(Generic[T]):
     @property
     def aggregates(self) -> list[AggregateSpec]:
         """All aggregate specs."""
-        from emergent.wire.axis.query._relational import Aggregate, AggregateSpec
+        from emergent.wire.axis.query._relational import Aggregate
         result: list[AggregateSpec] = []
         for op in self.ops:
             if isinstance(op, Aggregate):

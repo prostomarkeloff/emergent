@@ -376,7 +376,7 @@ class TestCompileExprEdgeCases:
             def evaluate(self, obj: object) -> object:
                 return None
 
-        with pytest.raises(TypeError, match="Unsupported expression type"):
+        with pytest.raises(TypeError, match="No handler for"):
             compile_expr(FakeExpr(), _user_compiled)
 
     def test_field_resolved_from_extra_model(self) -> None:

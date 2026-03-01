@@ -24,7 +24,6 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from emergent.wire.axis.surface.capabilities import (
     SurfaceCapability,
-    ResponseTransform,
 )
 from emergent.wire.axis._capability import (
     FastAPIRouteContext,

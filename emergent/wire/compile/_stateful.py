@@ -37,6 +37,32 @@ ScopeSetup = Callable[
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FromDomain helpers — avoid pyright Unknown propagation from generic Protocol
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _has_from_domain(cls: type) -> bool:
+    """Check if cls implements FromDomain protocol.
+
+    Separate function to avoid issubclass narrowing that introduces
+    Unknown in the FromDomain generic parameter.
+    """
+    from emergent.wire.axis.surface.codecs.rrc import FromDomain
+
+    return issubclass(cls, FromDomain)
+
+
+def _call_from_domain(cls: type, domain_value: Any) -> Any:
+    """Call from_domain classmethod without Unknown propagation.
+
+    Using getattr on the un-narrowed `type` avoids pyright seeing
+    the argument as `type[FromDomain[Unknown]]`.
+    """
+    from_domain_fn: Callable[[Any], Any] = getattr(cls, "from_domain")
+    return from_domain_fn(domain_value)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Universal Stateful Execution
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -83,19 +109,17 @@ async def execute_stateful_done(
         op_result = await handler.runner.run(op, scope_extras=scope_extras)
 
         # Format response via FromDomain protocol
-        from emergent.wire.axis.surface.codecs.rrc import FromDomain
-
         response_type = codec.response
-        if isinstance(response_type, type) and issubclass(response_type, FromDomain):
-            return response_type.from_domain(op_result)
+        if isinstance(response_type, type) and _has_from_domain(response_type):
+            return _call_from_domain(response_type, op_result)
 
         # Union type — find member implementing FromDomain
         from typing import get_origin, get_args, Union
         origin = get_origin(response_type)
         if origin is Union:
             for member in get_args(response_type):
-                if isinstance(member, type) and issubclass(member, FromDomain):
-                    return member.from_domain(op_result)
+                if isinstance(member, type) and _has_from_domain(member):
+                    return _call_from_domain(member, op_result)
             raise TypeError(f"No FromDomain implementor in {response_type}")
         raise TypeError(f"Response type {response_type} does not implement FromDomain")
 

@@ -18,8 +18,8 @@ Custom handlers via Mapping[type, SurfaceExplainHandler].
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, TypeGuard
 
 from emergent.wire.axis.surface._app import Application
 from emergent.wire.axis.surface._endpoint import Endpoint
@@ -83,8 +83,9 @@ def _explain_cli_trigger(t: CLITrigger) -> dict[str, Any]:
 
 def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> dict[str, Any]:
     d: dict[str, Any] = {"type": "TelegrinderTrigger", "view": t.view}
-    if t.rules:
-        d["rules"] = [type(r).__name__ for r in t.rules]
+    rules: tuple[object, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
+    if rules:
+        d["rules"] = [type(r).__name__ for r in rules]
     return d
 
 
@@ -289,9 +290,14 @@ def _format_obj_short(d: dict[str, Any]) -> str:
     return f"{name}({parts})"
 
 
-def _format_value(v: Any) -> str:
+def _is_sequence(v: object) -> TypeGuard[Sequence[object]]:
+    """TypeGuard: narrow object to Sequence[object] without Unknown propagation."""
+    return isinstance(v, (list, tuple))
+
+
+def _format_value(v: object) -> str:
     """Format a dict value for human-readable output."""
-    if isinstance(v, (list, tuple)):
+    if _is_sequence(v):
         return ", ".join(str(x) for x in v)
     return repr(v)
 

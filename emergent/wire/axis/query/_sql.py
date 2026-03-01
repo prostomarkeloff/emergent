@@ -23,31 +23,22 @@ Use .to_relational() to strip SQL ops for universal providers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable, Generic, TypeVar
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Callable, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._contexts import SAQueryContext
 
 from emergent.wire.axis.query._aggregate import AggregateFunc
 from emergent.wire.axis.query._base_qs import RelationalMixin
-from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import (
     EntityProxy,
     FieldProxy,
     OrderSpec,
 )
 from emergent.wire.axis.query._relational import (
-    Aggregate,
-    AggregateSpec,
-    Distinct,
-    Filter,
-    GroupBy,
-    Having,
-    Join,
-    Limit,
-    Offset,
-    OrderBy,
     RelationalOp,
     RelationalQuerySet,
-    Select,
 )
 from emergent.wire.axis.query._window import WindowSpec
 
@@ -74,6 +65,13 @@ class Window:
 
     specs: tuple[WindowSpec, ...]
 
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        stmt = ctx.stmt
+        for spec in self.specs:
+            win_col = ctx.window_func(spec)
+            stmt = stmt.add_columns(win_col)
+        return replace(ctx, stmt=stmt)
+
 
 @dataclass(frozen=True, slots=True)
 class ForUpdate:
@@ -87,6 +85,11 @@ class ForUpdate:
     nowait: bool = False
     skip_locked: bool = False
 
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        return replace(ctx, stmt=ctx.stmt.with_for_update(
+            nowait=self.nowait, skip_locked=self.skip_locked,
+        ))
+
 
 @dataclass(frozen=True, slots=True)
 class Returning:
@@ -97,6 +100,10 @@ class Returning:
     """
 
     fields: tuple[str, ...]
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        # Returning is not applicable to SELECT; used by delete_returning().
+        return ctx
 
 
 # Union of SQL-specific ops
@@ -147,13 +154,13 @@ class WindowBuilder:
         if partition_by is not None:
             if isinstance(partition_by, FieldProxy):
                 pb = (partition_by.name,)
-            elif isinstance(partition_by, tuple):
+            else:
+                names: list[str] = []
                 for p in partition_by:
-                    if not isinstance(p, FieldProxy):
-                        raise TypeError(
-                            f"partition_by expects FieldProxy, got {type(p).__name__}"
-                        )
-                pb = tuple(p.name for p in partition_by)
+                    if not hasattr(p, "name"):
+                        raise TypeError(f"partition_by expects FieldProxy, got {type(p)}")
+                    names.append(p.name)
+                pb = tuple(names)
 
         # Resolve order_by
         ob: tuple[OrderSpec, ...] = ()
@@ -162,22 +169,19 @@ class WindowBuilder:
                 ob = (order_by,)
             elif isinstance(order_by, FieldProxy):
                 ob = (OrderSpec(order_by.name, ascending=True),)
-            elif isinstance(order_by, tuple):
+            else:
+                # Runtime guard: callers may pass invalid types (e.g. str) despite type signature.
+                if not hasattr(order_by, "__iter__") or isinstance(order_by, str):
+                    raise TypeError(f"order_by expects OrderSpec, FieldProxy, or tuple, got {type(order_by)}")
                 resolved: list[OrderSpec] = []
                 for o in order_by:
                     if isinstance(o, OrderSpec):
                         resolved.append(o)
-                    elif isinstance(o, FieldProxy):
+                    elif hasattr(o, "name"):
                         resolved.append(OrderSpec(o.name, ascending=True))
                     else:
-                        raise TypeError(
-                            f"order_by expects OrderSpec or FieldProxy, got {type(o).__name__}"
-                        )
+                        raise TypeError(f"order_by expects OrderSpec or FieldProxy, got {type(o)}")
                 ob = tuple(resolved)
-            else:
-                raise TypeError(
-                    f"order_by expects OrderSpec, FieldProxy, or tuple, got {type(order_by).__name__}"
-                )
 
         # Alias will be set by SQLRelationalQuerySet.window()
         return WindowSpec(
@@ -312,17 +316,22 @@ class SQLRelationalQuerySet(RelationalMixin[T], Generic[T]):
 
     # ─── Conversion ───────────────────────────────────────────────────────
 
+    _SQL_ONLY: frozenset[type] = frozenset({Window, ForUpdate, Returning})
+
     def to_relational(self) -> RelationalQuerySet[T]:
         """Strip SQL ops, returning universal RelationalQuerySet.
 
         Useful for passing to universal providers (memory, etc.)
         that don't understand SQL-specific operations.
+
+        Open-world: excludes known SQL-only types. New universal ops
+        pass through automatically.
         """
-        universal_ops = tuple(
-            op for op in self.ops
-            if isinstance(op, (Filter, OrderBy, Limit, Offset, Select, Join, GroupBy, Having, Distinct, Aggregate))
-        )
-        return RelationalQuerySet(entity=self.entity, ops=universal_ops)
+        universal: list[RelationalOp] = []
+        for op in self.ops:
+            if not isinstance(op, (Window, ForUpdate, Returning)):
+                universal.append(op)
+        return RelationalQuerySet(entity=self.entity, ops=tuple(universal))
 
 
 def sql_relational(entity: type[T]) -> SQLRelationalQuerySet[T]:

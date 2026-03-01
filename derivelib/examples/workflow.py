@@ -22,12 +22,15 @@ from kungfu import Ok, Error, Result
 from emergent.wire.axis.schema import Identity
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
+from emergent.wire.axis.surface.capabilities import SurfaceCapability
+
 from derivelib import (
     derive, build_application_from_decorated, memory_node,
     exposure, SurfaceCtx, Derivation,
     fetch_by_identity, id_path, provider_field,
     NotFound, InvalidData, DomainError,
 )
+from derivelib._effects import Creates, Mutation, DerivationEffect
 from derivelib.axes.schema import inspect_entity, require_identity
 from derivelib._protocols import HasProvider
 
@@ -52,6 +55,12 @@ class WorkflowCreateStep:
     state_field: str
     initial_state: str
     provider_node: type
+    capabilities: tuple[SurfaceCapability, ...] = ()
+    effects: tuple[DerivationEffect, ...] = (Creates(),)
+
+    @property
+    def name(self) -> str:
+        return "create"
 
     def derive_surface[EntityT](self, ctx: SurfaceCtx[EntityT]) -> SurfaceCtx[EntityT]:
         schema = ctx.schema
@@ -86,6 +95,12 @@ class TransitionStep:
     transition: Transition
     state_field: str
     provider_node: type
+    capabilities: tuple[SurfaceCapability, ...] = ()
+    effects: tuple[DerivationEffect, ...] = (Mutation(),)
+
+    @property
+    def name(self) -> str:
+        return self.transition.name
 
     def derive_surface[EntityT](self, ctx: SurfaceCtx[EntityT]) -> SurfaceCtx[EntityT]:
         schema = ctx.schema

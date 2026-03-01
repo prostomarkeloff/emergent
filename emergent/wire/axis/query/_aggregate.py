@@ -19,12 +19,15 @@ Providers pattern-match on AggregateFunc types:
 from __future__ import annotations
 
 from abc import ABC
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query._proxy import FieldProxy, OrderSpec
     from emergent.wire.axis.query._window import WindowSpec
+
+_Ctx = TypeVar("_Ctx")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,6 +124,25 @@ class StringAgg(AggregateFunc):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Aggregate Spec — func + field + alias
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class AggregateSpec:
+    """Single aggregate specification.
+
+    Created by lambda in aggregate():
+        .aggregate(total=lambda u: u.balance.sum())
+        # → AggregateSpec(func=Sum(), field="balance", alias="total")
+    """
+
+    func: AggregateFunc  # Typed! Not string
+    field: str | None  # None for COUNT(*)
+    alias: str
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Aggregate Expression
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -161,6 +183,41 @@ class AggregateExpr:
         return WindowBuilder(self.func, self.field).over(partition_by, order_by)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Aggregate Fold — flat dispatch over AggregateFunc types
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+type AggHandler[Ctx] = Callable[[AggregateSpec, Ctx], object]
+
+
+def fold_aggregate(
+    spec: AggregateSpec,
+    ctx: _Ctx,
+    handlers: Mapping[type[AggregateFunc], Callable[[AggregateSpec, _Ctx], object]],
+) -> object:
+    """Dispatch aggregate computation by AggregateFunc type.
+
+    Flat dispatch (not recursive like fold_expr). Looks up handler
+    for spec.func's type, calls it with spec and context.
+
+    Args:
+        spec: AggregateSpec containing func, field, alias
+        handlers: Handlers keyed by AggregateFunc subclass type
+        ctx: Provider-specific context (list for memory, SA model for SQL)
+
+    Returns:
+        Computed aggregate value
+
+    Raises:
+        TypeError: If no handler for the func type
+    """
+    handler = handlers.get(type(spec.func))
+    if handler is not None:
+        return handler(spec, ctx)
+    raise TypeError(f"Unsupported aggregate: {type(spec.func).__name__}")
+
+
 __all__ = (
     # Base
     "AggregateFunc",
@@ -172,6 +229,11 @@ __all__ = (
     "Max",
     "ArrayAgg",
     "StringAgg",
+    # Spec
+    "AggregateSpec",
     # Expression
     "AggregateExpr",
+    # Fold
+    "AggHandler",
+    "fold_aggregate",
 )

@@ -198,6 +198,8 @@ def assemble_testing_route(
 ) -> TestRoute:
     """Assemble TestRoute from compiled WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("TestingWrapContext.execute must be set before assembly")
 
     async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
         return await execute_fn(handler, fields, inject, axes)

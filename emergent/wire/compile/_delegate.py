@@ -150,6 +150,16 @@ def _get_base_type(param_type: Any) -> type | None:
     return param_type if isinstance(param_type, type) else None
 
 
+def _extract_compose_result(raw: tuple[bool, object]) -> tuple[bool, object]:
+    """Extract compose result — breaks Unknown propagation from generic T.
+
+    Composer.compose[T] returns tuple[bool, T | str]. When T is Unknown
+    (from bare `type`), the entire result carries Unknown. This function
+    has a concrete signature that pyright trusts, cutting the chain.
+    """
+    return raw[0], raw[1]
+
+
 async def _compose_node(
     node_type: type,
     scope: Scope,
@@ -159,7 +169,12 @@ async def _compose_node(
     from emergent.graph._compose import Composer
 
     composer = Composer.create(scope, agent_cls)
-    success, value = await composer.compose(node_type)
+    # Composer.compose is generic: compose[T](node_type: type[T]) -> tuple[bool, T | str].
+    # With bare `type` (no type param), T resolves to Unknown — unavoidable since the
+    # node_type is only known at runtime via reflection (get_type_hints).
+    # _extract_compose_result breaks the Unknown propagation chain.
+    raw = await composer.compose(node_type)  # pyright: ignore[reportUnknownVariableType]  # T is Unknown because node_type is bare `type`
+    success, value = _extract_compose_result(raw)  # pyright: ignore[reportUnknownArgumentType]  # tuple carries Unknown T from compose
     if success:
         return True, value
     return False, None

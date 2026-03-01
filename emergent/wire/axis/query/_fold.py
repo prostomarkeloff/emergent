@@ -1,21 +1,31 @@
-"""Query fold — open-world op dispatch for query compilation.
+"""Query fold — handler-only op dispatch (legacy).
 
-fold_query is THE query primitive, symmetric with fold_field (compile)
-and fold_bridge (bridge).
+NOTE: Providers now use ``fold()`` from ``emergent.wire.compile._core``
+with protocol dispatch (``MemoryQueryCompilable`` / ``SAQueryCompilable``).
+Ops are self-compiling capabilities — see ``_contexts.py`` for protocols.
 
-    from emergent.wire.axis.query import fold_query, MEMORY_DIALECT
+``fold_query`` and ``QueryDialect`` remain valid as simpler handler-only
+fold primitives (no protocol fallback, pure handler map dispatch).
+Use them when you need a lightweight fold without protocols.
 
-    # Direct fold
-    result = fold_query(query.ops, list(data), MEMORY_HANDLERS)
+    from emergent.wire.axis.query import fold_query, QueryDialect
+
+    # Direct fold with handler map
+    result = fold_query(query.ops, list(data), my_handlers)
 
     # Via dialect
-    result = MEMORY_DIALECT.fold(query.ops, list(data))
+    dialect = QueryDialect(context_type=list, handlers=my_handlers)
+    result = dialect.fold(query.ops, list(data))
 
-    # Extend dialect with custom op
-    my_dialect = MEMORY_DIALECT.with_handler(SelectOp, my_select_handler)
+For provider-level query compilation, prefer:
 
-Key difference from fold_field: ops are pure data (no compile protocols),
-so fold_query uses handler-only dispatch (no protocol fallback).
+    from emergent.wire.compile._core import fold
+    from emergent.wire.axis.query._contexts import (
+        MemoryQueryContext, MemoryQueryCompilable,
+    )
+
+    ctx = MemoryQueryContext(data=list(data))
+    result = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
 """
 
 from __future__ import annotations

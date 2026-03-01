@@ -27,6 +27,7 @@ Requires: sqlalchemy[asyncio]
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
@@ -36,16 +37,6 @@ from sqlalchemy.orm import DeclarativeBase
 
 from emergent.wire.axis.query._relational import (
     RelationalQuerySet,
-    Filter,
-    OrderBy,
-    Limit,
-    Offset,
-    Select,
-    Join,
-    GroupBy,
-    Having,
-    Distinct,
-    Aggregate,
     AggregateSpec,
 )
 from emergent.wire.axis.query._aggregate import (
@@ -58,11 +49,10 @@ from emergent.wire.axis.query._aggregate import (
     StringAgg,
 )
 from emergent.wire.axis.query._sql import (
-    Window,
-    ForUpdate,
     Returning,
     SQLRelationalQuerySet,
 )
+from emergent.wire.axis.query._contexts import SAQueryContext, SAQueryCompilable
 from emergent.wire.axis.query._window import (
     WindowSpec,
     RowNumber,
@@ -73,12 +63,13 @@ from emergent.wire.axis.query._window import (
     Lead,
 )
 from emergent.wire.axis.query._provider import NextId
+from emergent.wire.compile._core import fold
 
 # Reuse from compile target
 from emergent.wire.compile._phase import Compilation
 from emergent.wire.compile.targets.sqlalchemy import (
     compile_sa,
-    compile_expr,
+    compile_expr as _compile_expr_raw,
     entity_to_model,
     model_to_entity,
 )
@@ -201,6 +192,8 @@ class SQLAlchemyRelationalProvider(Generic[T]):
     # ─── Write Operations ──────────────────────────────────────────────────
 
     async def insert(self, entity: T) -> T:
+        if not dataclasses.is_dataclass(entity) or isinstance(entity, type):
+            raise TypeError(f"insert() requires a dataclass entity, got {type(entity).__name__}")
         data = dataclasses.asdict(entity)
 
         # If identity field has autoincrement placeholder (0 or None),
@@ -305,78 +298,73 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
     # ─── Query Compilation ─────────────────────────────────────────────────
 
+    def _build_sa_context(self) -> SAQueryContext:
+        """Build SAQueryContext with closures over compiled model.
+
+        Each closure captures self._compiled so ops never import sqlalchemy.
+        Symmetric with compile-axis contexts (PydanticContext, etc.).
+        """
+        compiled = self._compiled
+        model = compiled.model
+
+        def get_column(name: str) -> Any:
+            return getattr(model, name)
+
+        def do_compile_expr(expr: Any) -> Any:
+            return _compile_expr_raw(expr, compiled)
+
+        def asc(col: Any) -> Any:
+            return col.asc()
+
+        def desc(col: Any) -> Any:
+            return col.desc()
+
+        def do_join(stmt: Any, target: type, on_expr: Any, kind: str, tablename: str | None) -> Any:
+            if tablename is None:
+                raise TypeError(
+                    f"Join target {target.__name__} requires explicit tablename. "
+                    f"Use .join({target.__name__}, on=..., tablename='...')"
+                )
+            base = next(
+                (cls for cls in model.__mro__
+                 if issubclass(cls, DeclarativeBase) and cls is not model and cls is not DeclarativeBase),
+                None,
+            )
+            join_compiled: Compilation[object, DeclarativeBase] = compile_sa(target, tablename, base=base)
+            on_clause = _compile_expr_raw(on_expr, compiled, join_compiled)
+            return stmt.join(
+                join_compiled.model,
+                on_clause,
+                isouter=(kind in ("left", "outer")),
+                full=(kind == "outer"),
+            )
+
+        def window_func(spec: Any) -> Any:
+            return self._compile_window_spec(spec)
+
+        def select_columns(stmt: Any, fields: Any) -> Any:
+            cols = [getattr(model, f) for f in fields]
+            return select(*cols).select_from(model)
+
+        return SAQueryContext(
+            stmt=select(model),
+            get_column=get_column,
+            compile_expr=do_compile_expr,
+            asc=asc,
+            desc=desc,
+            join=do_join,
+            window_func=window_func,
+            select_columns=select_columns,
+        )
+
     def _compile_query(self, query: RelationalQuerySet[T] | SQLRelationalQuerySet[T]) -> Any:
-        """Compile RelationalQuerySet or SQLRelationalQuerySet ops to SQLAlchemy Select."""
-        stmt = select(self._compiled.model)
+        """Compile RelationalQuerySet or SQLRelationalQuerySet ops to SQLAlchemy Select.
 
-        for op in query.ops:
-            match op:
-                case Filter(expr=expr):
-                    stmt = stmt.where(compile_expr(expr, self._compiled))
-
-                case OrderBy(specs=specs):
-                    for spec in specs:
-                        col = getattr(self._compiled.model, spec.field)
-                        stmt = stmt.order_by(
-                            col.asc() if spec.ascending else col.desc()
-                        )
-
-                case Limit(count=count):
-                    stmt = stmt.limit(count)
-
-                case Offset(count=count):
-                    stmt = stmt.offset(count)
-
-                case Distinct():
-                    stmt = stmt.distinct()
-
-                case Select(fields=fields):
-                    cols = [getattr(self._compiled.model, f) for f in fields]
-                    stmt = select(*cols).select_from(self._compiled.model)
-
-                case GroupBy(fields=fields):
-                    cols = [getattr(self._compiled.model, f) for f in fields]
-                    stmt = stmt.group_by(*cols)
-
-                case Having(expr=expr):
-                    stmt = stmt.having(compile_expr(expr, self._compiled))
-
-                case Join(target=target, on=on_expr, kind=kind, tablename=tbl):
-                    if tbl is None:
-                        raise TypeError(
-                            f"Join target {target.__name__} requires explicit tablename. "
-                            f"Use .join({target.__name__}, on=..., tablename='...')"
-                        )
-                    # Use the same DeclarativeBase as the main model
-                    base = next(
-                        (cls for cls in self._compiled.model.__mro__
-                         if issubclass(cls, DeclarativeBase) and cls is not self._compiled.model and cls is not DeclarativeBase),
-                        None,
-                    )
-                    join_compiled = compile_sa(target, tbl, base=base)
-                    on_clause = compile_expr(on_expr, self._compiled, join_compiled)
-                    stmt = stmt.join(
-                        join_compiled.model,
-                        on_clause,
-                        isouter=(kind in ("left", "outer")),
-                        full=(kind == "outer"),
-                    )
-
-                case Aggregate():
-                    pass  # handled in aggregate() method
-
-                # SQL-specific ops
-                case Window(specs=specs):
-                    win_cols = [self._compile_window_spec(s) for s in specs]
-                    stmt = stmt.add_columns(*win_cols)
-
-                case ForUpdate(nowait=nw, skip_locked=sl):
-                    stmt = stmt.with_for_update(nowait=nw, skip_locked=sl)
-
-                case Returning():
-                    pass  # not applicable to SELECT; used by delete_returning()
-
-        return stmt
+        Uses fold() with SAQueryCompilable protocol — ops compile themselves.
+        """
+        ctx = self._build_sa_context()
+        result = fold(query.ops, ctx, SAQueryCompilable, "compile_sa_query")
+        return result.stmt
 
     # ─── Returning Helpers ─────────────────────────────────────────────────
 
@@ -401,7 +389,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                 getattr(self._compiled.model, f) for f in spec.partition_by
             ]
         if spec.order_by:
-            order_cols = []
+            order_cols: list[Any] = []
             for o in spec.order_by:
                 col = getattr(self._compiled.model, o.field)
                 order_cols.append(col.asc() if o.ascending else col.desc())
@@ -409,72 +397,113 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
         return sa_func.over(**over_kw).label(spec.alias)
 
-    def _compile_window_func(self, spec: WindowSpec) -> Any:
-        """Compile WindowSpec function to SA func expression."""
-        match spec.func:
-            case RowNumber():
-                return func.row_number()
-            case Rank():
-                return func.rank()
-            case DenseRank():
-                return func.dense_rank()
-            case Ntile(num_buckets=n):
-                return func.ntile(n)
-            case Lag(offset=offset, default=default):
-                col = getattr(self._compiled.model, spec.field) if spec.field else None
-                args = [col, offset] if col is not None else [offset]
-                if default is not None:
-                    args.append(default)
-                return func.lag(*args)
-            case Lead(offset=offset, default=default):
-                col = getattr(self._compiled.model, spec.field) if spec.field else None
-                args = [col, offset] if col is not None else [offset]
-                if default is not None:
-                    args.append(default)
-                return func.lead(*args)
-            # Aggregate functions used as window functions
-            case Count():
-                if spec.field:
-                    return func.count(getattr(self._compiled.model, spec.field))
-                return func.count()
-            case Sum() | Avg() | Min() | Max():
-                if spec.field is None:
-                    raise TypeError(f"{type(spec.func).__name__} window requires a field")
-                col = getattr(self._compiled.model, spec.field)
-                fn_map = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
-                return fn_map[type(spec.func)](col)
-            case _:
-                raise TypeError(f"Unsupported window function: {type(spec.func)}")
+    def _compile_window_func(self, spec: WindowSpec, handlers: Mapping[type, Callable[[WindowSpec], Any]] | None = None) -> Any:
+        """Compile WindowSpec function to SA func expression.
+
+        Args:
+            spec: Window specification.
+            handlers: Optional handler map keyed by AggregateFunc/WindowFunc type.
+                      If None, uses built-in handlers.
+        """
+        h = handlers if handlers is not None else self._make_window_func_handlers()
+        handler = h.get(type(spec.func))
+        if handler is not None:
+            return handler(spec)
+        raise TypeError(f"Unsupported window function: {type(spec.func).__name__}")
+
+    def _make_window_func_handlers(self) -> dict[type, Callable[[WindowSpec], Any]]:
+        """Build handler map for window function compilation. Closures capture model."""
+        model = self._compiled.model
+
+        def _col_or_none(spec: WindowSpec) -> Any:
+            return getattr(model, spec.field) if spec.field else None
+
+        def _lag_lead(sa_fn: Any, spec: WindowSpec) -> Any:
+            from emergent.wire.axis.query._window import Lag, Lead
+            if not isinstance(spec.func, (Lag, Lead)):
+                raise TypeError(f"Expected Lag/Lead, got {type(spec.func)}")
+            col = _col_or_none(spec)
+            offset = spec.func.offset
+            default = spec.func.default
+            args: list[Any] = [col, offset] if col is not None else [offset]
+            if default is not None:
+                args.append(default)
+            return sa_fn(*args)
+
+        def _numeric_window(spec: WindowSpec) -> Any:
+            if spec.field is None:
+                raise TypeError(f"{type(spec.func).__name__} window requires a field")
+            col = getattr(model, spec.field)
+            fn_map: dict[type, Any] = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
+            sa_fn = fn_map.get(type(spec.func))
+            if sa_fn is None:
+                raise TypeError(f"Unsupported numeric window: {type(spec.func).__name__}")
+            return sa_fn(col)
+
+        return {
+            RowNumber: lambda _s: func.row_number(),
+            Rank: lambda _s: func.rank(),
+            DenseRank: lambda _s: func.dense_rank(),
+            Ntile: lambda s: func.ntile(s.func.num_buckets if isinstance(s.func, Ntile) else 1),
+            Lag: lambda s: _lag_lead(func.lag, s),
+            Lead: lambda s: _lag_lead(func.lead, s),
+            Count: lambda s: func.count(getattr(model, s.field)) if s.field else func.count(),
+            Sum: _numeric_window,
+            Avg: _numeric_window,
+            Min: _numeric_window,
+            Max: _numeric_window,
+        }
 
     def _resolve_agg_col(self, spec: AggregateSpec, source: Any = None) -> Any:
         """Resolve column reference for aggregate — from model or subquery."""
-        target = source if source is not None else self._compiled.model
         if spec.field is None:
             return None
-        return target.c[spec.field] if source is not None else getattr(target, spec.field)
+        if source is not None:
+            return source.c[spec.field]
+        return getattr(self._compiled.model, spec.field)
 
-    def _compile_aggregate_func(self, spec: AggregateSpec, source: Any = None) -> Any:
-        """Compile AggregateSpec to SA func().label(). source=subquery or None=model."""
+    def _compile_aggregate_func(self, spec: AggregateSpec, source: Any = None, handlers: Mapping[type, Callable[[AggregateSpec, Any], Any]] | None = None) -> Any:
+        """Compile AggregateSpec to SA func().label().
+
+        Args:
+            spec: Aggregate specification.
+            source: Subquery or None (uses model).
+            handlers: Optional handler map keyed by AggregateFunc type.
+                      If None, uses built-in handlers.
+        """
         col = self._resolve_agg_col(spec, source)
-        match spec.func:
-            case Count():
-                sa_fn = func.count() if col is None else func.count(col)
-            case Sum() | Avg() | Min() | Max():
-                if col is None:
-                    raise TypeError(f"{type(spec.func).__name__} requires a field")
-                fn_map = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
-                sa_fn = fn_map[type(spec.func)](col)
-            case ArrayAgg():
-                if col is None:
-                    raise TypeError("ArrayAgg requires a field")
-                sa_fn = func.array_agg(col)
-            case StringAgg(separator=sep):
-                if col is None:
-                    raise TypeError("StringAgg requires a field")
-                sa_fn = func.string_agg(col, sep)
-            case _:
-                raise TypeError(f"Unsupported aggregate: {type(spec.func)}")
-        return sa_fn.label(spec.alias)
+        h = handlers if handlers is not None else _make_sa_agg_handlers()
+        handler = h.get(type(spec.func))
+        if handler is not None:
+            return handler(spec, col).label(spec.alias)
+        raise TypeError(f"Unsupported aggregate: {type(spec.func).__name__}")
+
+
+def _make_sa_agg_handlers() -> dict[type, Callable[[AggregateSpec, Any], Any]]:
+    """Build handler map for SA aggregate function compilation.
+
+    Each handler takes (spec, resolved_col) and returns a SA func expression
+    (before .label()). The col may be None for COUNT(*).
+    """
+    def _require_col(spec: AggregateSpec, col: Any, name: str) -> Any:
+        if col is None:
+            raise TypeError(f"{name} requires a field")
+        return col
+
+    fn_map = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
+
+    return {
+        Count: lambda spec, col: func.count() if col is None else func.count(col),
+        Sum: lambda spec, col: fn_map[Sum](_require_col(spec, col, "Sum")),
+        Avg: lambda spec, col: fn_map[Avg](_require_col(spec, col, "Avg")),
+        Min: lambda spec, col: fn_map[Min](_require_col(spec, col, "Min")),
+        Max: lambda spec, col: fn_map[Max](_require_col(spec, col, "Max")),
+        ArrayAgg: lambda spec, col: func.array_agg(_require_col(spec, col, "ArrayAgg")),
+        StringAgg: lambda spec, col: func.string_agg(
+            _require_col(spec, col, "StringAgg"),
+            spec.func.separator if isinstance(spec.func, StringAgg) else ",",
+        ),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

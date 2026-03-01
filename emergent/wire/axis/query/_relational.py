@@ -13,17 +13,28 @@ For SQL databases and in-memory collections.
     )
 
     result = await sql_provider.fetch_many(q)
+
+Ops are self-compiling capabilities — each implements compile_memory_query
+and compile_sa_query, dispatched via fold() from _core.py. Symmetric with
+compile-axis capabilities (compile_pydantic, compile_openapi, etc.).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Generic, Literal, TypeVar
+import dataclasses as _dc
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Generic, Hashable, Literal, TypeVar
 
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import OrderSpec
-from emergent.wire.axis.query._aggregate import AggregateFunc
+from emergent.wire.axis.query._aggregate import AggregateSpec
 from emergent.wire.axis.query._base_qs import RelationalMixin
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._contexts import (
+        MemoryQueryContext, SAQueryContext,
+        MemoryAPIContext, HTTPAPIContext,
+    )
 
 
 T = TypeVar("T")
@@ -34,24 +45,99 @@ T = TypeVar("T")
 
 @dataclass(frozen=True, slots=True)
 class Filter:
-    """WHERE clause."""
+    """WHERE / filter clause — cross-compilable.
+
+    Implements 4 protocols: memory_query, sa_query, memory_api, http_api.
+    Same op works for relational AND API backends.
+    """
     expr: Expr
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        return replace(ctx, data=[item for item in ctx.data if self.expr.evaluate(item)])
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        clause = ctx.compile_expr(self.expr)
+        return replace(ctx, stmt=ctx.stmt.where(clause))
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        return replace(ctx, data=[item for item in ctx.data if self.expr.evaluate(item)])
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        filter_data = ctx.encode_filter(self.expr)
+        if ctx.is_body_filter:
+            if ctx.body is None:
+                ctx.body = {}
+            ctx.body.update(filter_data)
+        else:
+            ctx.params.update(filter_data)
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class OrderBy:
-    """ORDER BY clause."""
+    """ORDER BY clause — cross-compilable.
+
+    Implements 4 protocols: memory_query, sa_query, memory_api, http_api.
+    """
     specs: tuple[OrderSpec, ...]
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        result = list(ctx.data)
+        for spec in reversed(self.specs):
+            result.sort(
+                key=lambda item, _f=spec.field: getattr(item, _f),
+                reverse=not spec.ascending,
+            )
+        return replace(ctx, data=result)
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        stmt = ctx.stmt
+        for spec in self.specs:
+            col = ctx.get_column(spec.field)
+            ordered = ctx.asc(col) if spec.ascending else ctx.desc(col)
+            stmt = stmt.order_by(ordered)
+        return replace(ctx, stmt=stmt)
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        result = list(ctx.data)
+        for spec in reversed(self.specs):
+            result.sort(
+                key=lambda item, _f=spec.field: getattr(item, _f),
+                reverse=not spec.ascending,
+            )
+        return replace(ctx, data=result)
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        if ctx.encode_order is not None:
+            ctx.params.update(ctx.encode_order(self.specs))
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
 class Limit:
-    """LIMIT clause."""
+    """LIMIT clause — cross-compilable.
+
+    Implements 4 protocols: memory_query, sa_query, memory_api, http_api.
+    """
     count: int
 
     def __post_init__(self) -> None:
         if self.count < 0:
             raise ValueError(f"LIMIT must be non-negative, got {self.count}")
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        return replace(ctx, data=ctx.data[:self.count])
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        return replace(ctx, stmt=ctx.stmt.limit(self.count))
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        return replace(ctx, data=ctx.data[:self.count])
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        if ctx.encode_limit is not None:
+            ctx.params.update(ctx.encode_limit(self.count))
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,11 +149,42 @@ class Offset:
         if self.count < 0:
             raise ValueError(f"OFFSET must be non-negative, got {self.count}")
 
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        return replace(ctx, data=ctx.data[self.count:])
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        return replace(ctx, stmt=ctx.stmt.offset(self.count))
+
 
 @dataclass(frozen=True, slots=True)
 class Select:
-    """SELECT projection (empty = all)."""
+    """SELECT projection (empty = all) — cross-compilable.
+
+    Implements 4 protocols: memory_query, sa_query, memory_api, http_api.
+    """
     fields: tuple[str, ...]
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        projected: list[object] = [
+            {f: getattr(item, f) for f in self.fields}
+            for item in ctx.data
+        ]
+        return replace(ctx, data=projected)
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        return replace(ctx, stmt=ctx.select_columns(ctx.stmt, self.fields))
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        projected: list[object] = [
+            {f: getattr(item, f) for f in self.fields}
+            for item in ctx.data
+        ]
+        return replace(ctx, data=projected)
+
+    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
+        if ctx.encode_select is not None:
+            ctx.params.update(ctx.encode_select(self.fields))
+        return ctx
 
 
 JoinKind = Literal["inner", "left", "right", "outer"]
@@ -81,11 +198,19 @@ class Join:
     kind: JoinKind = "inner"
     tablename: str | None = None
 
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        new_stmt = ctx.join(ctx.stmt, self.target, self.on, self.kind, self.tablename)
+        return replace(ctx, stmt=new_stmt)
+
 
 @dataclass(frozen=True, slots=True)
 class GroupBy:
     """GROUP BY clause."""
     fields: tuple[str, ...]
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        cols = [ctx.get_column(f) for f in self.fields]
+        return replace(ctx, stmt=ctx.stmt.group_by(*cols))
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,25 +218,41 @@ class Having:
     """HAVING clause (filter after GROUP BY)."""
     expr: Expr
 
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        clause = ctx.compile_expr(self.expr)
+        return replace(ctx, stmt=ctx.stmt.having(clause))
+
 
 @dataclass(frozen=True, slots=True)
 class Distinct:
-    """DISTINCT modifier."""
-    pass
+    """DISTINCT modifier — cross-compilable.
 
-
-@dataclass(frozen=True, slots=True)
-class AggregateSpec:
-    """Single aggregate specification.
-
-    Created by lambda in aggregate():
-        .aggregate(total=lambda u: u.balance.sum())
-        # → AggregateSpec(func=Sum(), field="balance", alias="total")
+    Implements 3 protocols: memory_query, sa_query, memory_api.
     """
 
-    func: AggregateFunc  # Typed! Not string
-    field: str | None  # None for COUNT(*)
-    alias: str
+    def _deduplicate(self, data: list[object]) -> list[object]:
+        seen: set[Hashable] = set()
+        unique: list[object] = []
+        for item in data:
+            if _dc.is_dataclass(item):
+                key: Hashable = tuple(
+                    getattr(item, f.name) for f in _dc.fields(item)
+                )
+            else:
+                key = item  # type: ignore[assignment]
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+        return unique
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        return replace(ctx, data=self._deduplicate(ctx.data))
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        return replace(ctx, stmt=ctx.stmt.distinct())
+
+    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
+        return replace(ctx, data=self._deduplicate(ctx.data))
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,9 +260,19 @@ class Aggregate:
     """Aggregate operation.
 
     Contains multiple aggregate specs to compute.
+    Handled by provider.aggregate() method, not by fold.
     """
 
     specs: tuple[AggregateSpec, ...]
+
+    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+        # Aggregate is handled by provider.aggregate(), not by fold.
+        # Pass through unchanged.
+        return ctx
+
+    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+        # Aggregate is handled by provider.aggregate(), not by fold.
+        return ctx
 
 
 # Union type for all relational ops

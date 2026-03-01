@@ -183,6 +183,12 @@ def assemble_event_route(
 ) -> EventRoute:
     """Assemble EventRoute from compiled WrapContext."""
     execute_fn = ctx.execute
+    if execute_fn is None:
+        raise ValueError("EventWrapContext.execute must be set before assembly")
+    if ctx.event_type is None:
+        raise ValueError("EventWrapContext.event_type must be set before assembly")
+    if ctx.trigger is None:
+        raise ValueError("EventWrapContext.trigger must be set before assembly")
 
     async def invoke(event: object, inject: ScopeInjector | None) -> object:
         return await execute_fn(handler, event, inject, axes)
@@ -222,7 +228,7 @@ class EventDispatcher:
 
     routes: Mapping[type, tuple[EventRoute, ...]]
     _app_scope: Scope | None = field(default=None, repr=False)
-    _app_compose: frozenset[type] = field(default_factory=frozenset, repr=False)
+    _app_compose: frozenset[type] = field(default_factory=lambda: frozenset[type](), repr=False)
 
     async def dispatch(
         self,
@@ -282,14 +288,14 @@ def event_compile(
         request_axes = base_axes.with_scope_layer(layer)
 
     grouped: dict[type, list[EventRoute]] = {}
-    for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
+    for _trigger, _handler, route in _compiler.scan_and_wrap(app, request_axes):
         grouped.setdefault(route.event_type, []).append(route)
 
     routes: Mapping[type, tuple[EventRoute, ...]] = {
         ev_type: tuple(route_list) for ev_type, route_list in grouped.items()
     }
 
-    app_compose = frozenset(family.types_for(App)) if family else frozenset()
+    app_compose: frozenset[type] = frozenset(family.types_for(App)) if family else frozenset[type]()
 
     return EventDispatcher(
         routes=routes,

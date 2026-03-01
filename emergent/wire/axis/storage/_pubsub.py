@@ -12,7 +12,7 @@ PubSub = Publish + Subscribe capabilities composed with Codec.
 from dataclasses import dataclass
 from typing import Protocol, AsyncIterator
 
-from kungfu import Result, Ok, Error
+from kungfu import Result
 
 from emergent.wire.axis.storage._codec import Codec
 from emergent.wire.axis.storage._result import map_result

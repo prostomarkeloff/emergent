@@ -133,7 +133,7 @@ class SQLAlchemyContext:
     field_type: type
     column_type: type | None = None
     column_kwargs: Mapping[str, str | int | bool | None] = field(default_factory=_empty_column_kwargs)
-    type_map: Mapping[type, type] = field(default_factory=dict)
+    type_map: Mapping[type, type] = field(default_factory=lambda: dict[type, type]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -420,10 +420,16 @@ def pydantic_metadata(ctx: PydanticContext, *items: object) -> PydanticContext:
     return replace(ctx, field_info=fi)
 
 
-def pydantic_extra(ctx: PydanticContext, **extra: object) -> PydanticContext:
+def pydantic_extra(ctx: PydanticContext, **extra: JsonSchemaValue) -> PydanticContext:
     """Merge into Pydantic FieldInfo.json_schema_extra — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
-    existing = dict(fi.json_schema_extra) if fi.json_schema_extra else {}
+    current = fi.json_schema_extra
+    existing: dict[str, JsonSchemaValue] = {}
+    if isinstance(current, dict):
+        # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref
+        # that pyright cannot fully resolve, producing dict[str | Unknown, ...].
+        # Structurally identical to our JsonSchemaDict — safe to copy directly.
+        existing = dict(current)  # type: ignore[arg-type]  # Pydantic JsonDict → our JsonSchemaDict: structurally identical, forward-ref makes pyright lose str key type
     existing.update(extra)
     fi.json_schema_extra = existing
     return replace(ctx, field_info=fi)

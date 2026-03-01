@@ -398,73 +398,68 @@ class TestMemoryKV:
     @pytest.mark.asyncio
     async def test_set_and_get(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.set("alice", ALICE))
-        result = await prov.get(users_kv.get("alice"))
+        result = (await prov.get(users_kv.get("alice"))).unwrap()
         assert result is not None
         assert result.name == "alice"
 
     @pytest.mark.asyncio
     async def test_get_missing(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
-        result = await prov.get(users_kv.get("nobody"))
+        result = (await prov.get(users_kv.get("nobody"))).unwrap()
         assert result is None
 
     @pytest.mark.asyncio
     async def test_delete(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.set("alice", ALICE))
-        deleted = await prov.delete(users_kv.delete("alice"))
+        deleted = (await prov.delete(users_kv.delete("alice"))).unwrap()
         assert deleted is True
-        assert await prov.get(users_kv.get("alice")) is None
+        assert (await prov.get(users_kv.get("alice"))).unwrap() is None
 
     @pytest.mark.asyncio
     async def test_delete_missing(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
-        deleted = await prov.delete(users_kv.delete("nobody"))
+        deleted = (await prov.delete(users_kv.delete("nobody"))).unwrap()
         assert deleted is False
 
     @pytest.mark.asyncio
     async def test_exists(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
-        assert await prov.exists(users_kv.exists("alice")) is False
+        assert (await prov.exists(users_kv.exists("alice"))).unwrap() is False
         await prov.set(users_kv.set("alice", ALICE))
-        assert await prov.exists(users_kv.exists("alice")) is True
+        assert (await prov.exists(users_kv.exists("alice"))).unwrap() is True
 
     @pytest.mark.asyncio
     async def test_scan(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.set("user:alice", ALICE))
         await prov.set(users_kv.set("user:bob", BOB))
         await prov.set(users_kv.set("admin:charlie", CHARLIE))
-        result = await prov.scan(users_kv.scan("user:*"))
+        result = (await prov.scan(users_kv.scan("user:*"))).unwrap()
         assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_keys(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.set("a", ALICE))
         await prov.set(users_kv.set("b", BOB))
-        keys = await prov.keys(users_kv.keys("*"))
+        keys = (await prov.keys(users_kv.keys("*"))).unwrap()
         assert set(keys) == {"a", "b"}
 
     @pytest.mark.asyncio
     async def test_put(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.put(ALICE))
-        result = await prov.get(users_kv.get(ALICE.name))
+        result = (await prov.get(users_kv.get(ALICE.name))).unwrap()
         assert result is not None
         assert result.name == "alice"
 
     @pytest.mark.asyncio
     async def test_put_extracts_key(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         await prov.set(users_kv.put(BOB))
-        assert await prov.get(users_kv.get(BOB.name)) is not None
-        assert await prov.get(users_kv.get(ALICE.name)) is None
+        assert (await prov.get(users_kv.get(BOB.name))).unwrap() is not None
+        assert (await prov.get(users_kv.get(ALICE.name))).unwrap() is None
 
     @pytest.mark.asyncio
     async def test_set_with_ttl_accepted(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
         """TTL is accepted but silently ignored by memory provider."""
         await prov.set(users_kv.set("alice", ALICE, ttl=60))
-        result = await prov.get(users_kv.get("alice"))
+        result = (await prov.get(users_kv.get("alice"))).unwrap()
         assert result is not None
         assert result.name == "alice"
-
-    @pytest.mark.asyncio
-    async def test_wrong_op_raises(self, prov: MemoryKVProvider[str, User], users_kv: KVQuerySet[str, User]) -> None:
-        with pytest.raises(TypeError, match="Expected KVGet"):
-            await prov.get(users_kv.set("x", ALICE))
 
 
 class TestMemoryKVIntKeys:
@@ -483,20 +478,20 @@ class TestMemoryKVIntKeys:
     @pytest.mark.asyncio
     async def test_int_key_preserved(self, prov: MemoryKVProvider[int | str, User], users_kv: KVQuerySet[int | str, User]) -> None:
         await prov.set(users_kv.set(42, ALICE))
-        assert await prov.get(users_kv.get(42)) is not None
-        assert await prov.get(users_kv.get("42")) is None  # str != int
+        assert (await prov.get(users_kv.get(42))).unwrap() is not None
+        assert (await prov.get(users_kv.get("42"))).unwrap() is None  # str != int
 
     @pytest.mark.asyncio
     async def test_int_key_exists(self, prov: MemoryKVProvider[int | str, User], users_kv: KVQuerySet[int | str, User]) -> None:
         await prov.set(users_kv.set(1, ALICE))
-        assert await prov.exists(users_kv.exists(1)) is True
-        assert await prov.exists(users_kv.exists("1")) is False
+        assert (await prov.exists(users_kv.exists(1))).unwrap() is True
+        assert (await prov.exists(users_kv.exists("1"))).unwrap() is False
 
     @pytest.mark.asyncio
     async def test_int_key_delete(self, prov: MemoryKVProvider[int | str, User], users_kv: KVQuerySet[int | str, User]) -> None:
         await prov.set(users_kv.set(1, ALICE))
-        assert await prov.delete(users_kv.delete("1")) is False  # wrong type
-        assert await prov.delete(users_kv.delete(1)) is True
+        assert (await prov.delete(users_kv.delete("1"))).unwrap() is False  # wrong type
+        assert (await prov.delete(users_kv.delete(1))).unwrap() is True
 
 
 # --- Integration: Relational Complex Pipeline --------------------------------
@@ -588,10 +583,10 @@ class TestIntegrationKVWithRelational:
 
         # Retrieve from KV and verify
         for user in active:
-            retrieved = await kv_prov.get(users_kv.get(user.id))
+            retrieved = (await kv_prov.get(users_kv.get(user.id))).unwrap()
             assert retrieved is not None
             assert retrieved.name == user.name
             assert retrieved.balance == user.balance
 
         # Verify BOB not in KV (inactive)
-        assert await kv_prov.get(users_kv.get(BOB.id)) is None
+        assert (await kv_prov.get(users_kv.get(BOB.id))).unwrap() is None

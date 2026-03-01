@@ -15,6 +15,8 @@ from typing import Any, Generic, TypeVar
 
 import httpx
 
+from collections.abc import Sequence as SequenceABC
+
 from emergent.wire.axis.query._api import (
     APIQuerySet,
     ListOp,
@@ -22,15 +24,13 @@ from emergent.wire.axis.query._api import (
     CreateOp,
     UpdateOp,
     DeleteOp,
-    FilterMod,
-    OrderMod,
     PageMod,
     CursorMod,
     OffsetMod,
-    SelectMod,
-    SearchMod,
-    IncludeMod,
 )
+from emergent.wire.axis.query._contexts import HTTPAPIContext, HTTPAPICompilable
+from emergent.wire.axis.query._proxy import OrderSpec
+from emergent.wire.compile._core import fold
 from emergent.wire.axis.query._expr import (
     Expr,
     Field,
@@ -303,6 +303,102 @@ def body_filters() -> BodyFilters:
     return BodyFilters()
 
 
+# ─── Order Encoding ─────────────────────────────────────────────────────────
+
+
+class OrderEncoding(ABC):
+    """Base for order encoding strategies."""
+
+    @abstractmethod
+    def encode(self, specs: SequenceABC[OrderSpec]) -> dict[str, Any]:
+        """Encode order specs to request params."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class SortParamEncoding(OrderEncoding):
+    """Encode ordering as comma-separated sort param: ?sort=-balance,name
+
+    Configurable param name and format.
+    """
+    param: str = "sort"
+    desc_prefix: str = "-"
+    asc_prefix: str = ""
+    separator: str = ","
+
+    def encode(self, specs: SequenceABC[OrderSpec]) -> dict[str, Any]:
+        parts: list[str] = []
+        for spec in specs:
+            prefix = self.asc_prefix if spec.ascending else self.desc_prefix
+            parts.append(f"{prefix}{spec.field}")
+        if parts:
+            return {self.param: self.separator.join(parts)}
+        return {}
+
+
+def sort_param(
+    param: str = "sort",
+    desc_prefix: str = "-",
+    asc_prefix: str = "",
+    separator: str = ",",
+) -> SortParamEncoding:
+    """Sort param encoding: ?sort=-balance,name"""
+    return SortParamEncoding(param=param, desc_prefix=desc_prefix, asc_prefix=asc_prefix, separator=separator)
+
+
+# ─── Limit Encoding ─────────────────────────────────────────────────────────
+
+
+class LimitEncoding(ABC):
+    """Base for limit encoding strategies."""
+
+    @abstractmethod
+    def encode(self, count: int) -> dict[str, Any]:
+        """Encode limit to request params."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class LimitParamEncoding(LimitEncoding):
+    """Encode limit as query param: ?limit=50"""
+    param: str = "limit"
+
+    def encode(self, count: int) -> dict[str, Any]:
+        return {self.param: count}
+
+
+def limit_param(param: str = "limit") -> LimitParamEncoding:
+    """Limit param encoding: ?limit=50"""
+    return LimitParamEncoding(param=param)
+
+
+# ─── Select/Fields Encoding ─────────────────────────────────────────────────
+
+
+class SelectEncoding(ABC):
+    """Base for field selection encoding strategies."""
+
+    @abstractmethod
+    def encode(self, fields: SequenceABC[str]) -> dict[str, Any]:
+        """Encode field selection to request params."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class FieldsParamEncoding(SelectEncoding):
+    """Encode field selection as comma-separated param: ?fields=id,name"""
+    param: str = "fields"
+    separator: str = ","
+
+    def encode(self, fields: SequenceABC[str]) -> dict[str, Any]:
+        return {self.param: self.separator.join(fields)}
+
+
+def fields_param(param: str = "fields", separator: str = ",") -> FieldsParamEncoding:
+    """Fields param encoding: ?fields=id,name"""
+    return FieldsParamEncoding(param=param, separator=separator)
+
+
 # ─── Response Parsing ────────────────────────────────────────────────────────
 
 
@@ -335,6 +431,9 @@ class HTTPAPIProvider(Generic[T]):
     pagination: Pagination = field(default_factory=lambda: PageSizePagination())
     auth: Auth | None = None
     filter_encoding: FilterEncoding = field(default_factory=lambda: QueryParamFilters())
+    order_encoding: OrderEncoding = field(default_factory=lambda: SortParamEncoding())
+    limit_encoding: LimitEncoding = field(default_factory=lambda: LimitParamEncoding())
+    select_encoding: SelectEncoding = field(default_factory=lambda: FieldsParamEncoding())
     data_path: str = "data"  # path to data array in response
     total_path: str | None = "total"  # path to total count
     id_field: str = "id"  # field used in URLs
@@ -353,48 +452,30 @@ class HTTPAPIProvider(Generic[T]):
             return results[0] if results else None
         raise ValueError(f"fetch_one requires Get or List op, got {type(query.op)}")
 
+    def _build_http_context(self) -> HTTPAPIContext:
+        """Build HTTP API context with closures over provider config."""
+        return HTTPAPIContext(
+            params={},
+            body=None,
+            encode_filter=lambda expr: self.filter_encoding.encode(expr, self.entity, self.profile),
+            apply_pagination=lambda params, mod: self.pagination.apply(params, mod),
+            is_body_filter=isinstance(self.filter_encoding, BodyFilters),
+            encode_order=self.order_encoding.encode,
+            encode_limit=self.limit_encoding.encode,
+            encode_select=self.select_encoding.encode,
+        )
+
     async def fetch_many(self, query: APIQuerySet[K, T]) -> list[T]:
         """Execute list query, return all results."""
         if not isinstance(query.op, ListOp):
             raise ValueError(f"fetch_many requires List op, got {type(query.op)}")
 
         url = self.base_url
-        params: dict[str, Any] = {}
-        body: dict[str, Any] | None = None
+        ctx = self._build_http_context()
+        fold(query.mods, ctx, HTTPAPICompilable, "compile_http_api")
 
-        # Apply modifiers
-        for mod in query.mods:
-            if isinstance(mod, FilterMod):
-                filter_data = self.filter_encoding.encode(mod.expr, self.entity, self.profile)
-                if isinstance(self.filter_encoding, BodyFilters):
-                    body = body or {}
-                    body.update(filter_data)
-                else:
-                    params.update(filter_data)
-
-            elif isinstance(mod, OrderMod):
-                # Common pattern: ?sort=field or ?sort=-field (desc)
-                sort_parts: list[str] = []
-                for spec in mod.specs:
-                    prefix = "" if spec.ascending else "-"
-                    sort_parts.append(f"{prefix}{spec.field}")
-                if sort_parts:
-                    params["sort"] = ",".join(sort_parts)
-
-            elif isinstance(mod, (PageMod, CursorMod, OffsetMod)):
-                self.pagination.apply(params, mod)
-
-            elif isinstance(mod, SelectMod):
-                params["fields"] = ",".join(mod.fields)
-
-            elif isinstance(mod, SearchMod):
-                params["q"] = mod.query
-
-            elif isinstance(mod, IncludeMod):
-                params["include"] = ",".join(mod.relations)
-
-        method = "POST" if body else "GET"
-        response = await self._request(method, url, params=params, json=body)
+        method = "POST" if ctx.body else "GET"
+        response = await self._request(method, url, params=ctx.params, json=ctx.body)
         data = response.json()
 
         # Extract data array

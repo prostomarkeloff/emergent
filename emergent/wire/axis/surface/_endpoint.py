@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from emergent.ops._graph import Runner
 from emergent.wire.axis.surface._types import Codec, Exposure, Trigger

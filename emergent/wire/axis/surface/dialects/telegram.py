@@ -22,7 +22,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis._capability import (
     TelegrinderHandlerContext,
@@ -30,9 +30,24 @@ from emergent.wire.axis._capability import (
 )
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis.surface.enrichers._base import ScopeEnricher, EnricherNext
+from emergent.wire._telegrinder_compat import (
+    Context as _ContextProto,
+    CallbackQueryCute as _CQCuteProto,
+    API as _APIProto,
+    Update as _UpdateProto,
+)
 
 if TYPE_CHECKING:
     from nodnod import Scope
+
+
+def _unwrap_some(obj: object) -> object | None:
+    """Extract .value from a Some instance typed as object.
+
+    This avoids passing Some[Unknown] directly to getattr, which triggers
+    reportUnknownArgumentType when Some is narrowed from object via isinstance.
+    """
+    return getattr(obj, "value", None)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40,31 +55,38 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _get_callback_query_from_scope(scope: "Scope") -> Any | None:
+def _get_callback_query_from_scope(scope: Scope) -> _CQCuteProto | None:
     """Extract CallbackQueryCute from scope via telegrinder Context.
 
     Returns None if no callback query is available (e.g. message handler).
+    Uses the compat protocol for static typing; at runtime telegrinder's
+    real Context is in scope.
     """
-    from telegrinder.bot.dispatch.context import Context as _Context
-    from telegrinder.bot.cute_types.callback_query import CallbackQueryCute as _CQCute
-
-    ctx_wrapper = scope.get(_Context)
+    ctx_wrapper = scope.get(_ContextProto)
     if ctx_wrapper is None:
         return None
 
-    ctx: _Context = ctx_wrapper.value
+    # nodnod scope.get() returns a wrapper whose .value holds the real object.
+    # The wrapper type is opaque to pyright, so we annotate explicitly.
+    ctx: _ContextProto = ctx_wrapper.value  # type: ignore[assignment]  # nodnod wrapper .value is opaque; real type is telegrinder Context
 
-    cq = ctx.get("callback_query")
+    cq: object | None = ctx.get("callback_query")
     if cq is not None:
-        return cq
+        return cq  # type: ignore[return-value]  # telegrinder stores CallbackQueryCute under this key at runtime
 
-    update_cute = ctx.get("update_cute")
+    update_cute: object | None = ctx.get("update_cute")
     if update_cute is None:
         return None
 
-    incoming = update_cute.incoming_update
-    if isinstance(incoming, _CQCute):
-        return incoming
+    # telegrinder cute types expose incoming_update attribute
+    incoming: object | None = getattr(update_cute, "incoming_update", None)
+    if incoming is None:
+        return None
+
+    # Check at runtime if it's a CallbackQueryCute via class name
+    # (telegrinder is an optional dep so we can't use isinstance)
+    if type(incoming).__name__ == "CallbackQueryCute":
+        return incoming  # type: ignore[return-value]  # runtime-verified CallbackQueryCute instance
 
     return None
 
@@ -109,7 +131,7 @@ class EditMessage(ScopeEnricher):
         """Mark handler for message editing (metadata)."""
         return telegrinder_handler(ctx, edit_message=True)
 
-    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
         response = await call(scope)
 
         cq = _get_callback_query_from_scope(scope)
@@ -120,12 +142,15 @@ class EditMessage(ScopeEnricher):
 
         if isinstance(response, str):
             await cq.edit_text(text=response)
-            return None  # type: ignore[return-value]
+            return None  # type: ignore[return-value]  # enricher returns None to suppress telegrinder's return manager
 
-        if isinstance(response, dict) and "text" in response:
-            text = str(response.pop("text"))
-            await cq.edit_text(text=text, **response)
-            return None  # type: ignore[return-value]
+        if isinstance(response, dict):
+            resp_dict: dict[str, object] = response  # type: ignore[assignment]  # narrowed from generic R; keys are always str in telegram response dicts
+            if "text" in resp_dict:
+                text = str(resp_dict.pop("text"))
+                await cq.edit_text(text=text, **resp_dict)
+                return None  # type: ignore[return-value]  # enricher returns None to suppress telegrinder's return manager
+            return response  # type: ignore[return-value]  # dict without "text" key — pass through unchanged
 
         return response
 
@@ -156,7 +181,7 @@ class AnswerCallback(ScopeEnricher):
             answer_callback_show_alert=self.show_alert,
         )
 
-    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
         response = await call(scope)
 
         cq = _get_callback_query_from_scope(scope)
@@ -250,37 +275,44 @@ class ReplyMessage(ScopeEnricher):
         )
     """
 
-    async def enrich[R](self, call: EnricherNext[R], scope: "Scope") -> R:
-        from kungfu import Some
-        from telegrinder.api import API as _API
-        from telegrinder.types.objects import Update as _Update
-
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
         response = await call(scope)
         if response is None:
-            return None  # type: ignore[return-value]
+            return None  # type: ignore[return-value]  # enricher returns None to suppress telegrinder's return manager
 
         text = str(response)
         if not text:
-            return None  # type: ignore[return-value]
+            return None  # type: ignore[return-value]  # enricher returns None to suppress telegrinder's return manager
 
-        api_wrapper = scope.get(_API)
-        update_wrapper = scope.get(_Update)
+        api_wrapper = scope.get(_APIProto)
+        update_wrapper = scope.get(_UpdateProto)
         if api_wrapper is None or update_wrapper is None:
             return response
 
-        api: _API = api_wrapper.value
-        update: _Update = update_wrapper.value
+        # nodnod wrapper .value is opaque to pyright
+        api: _APIProto = api_wrapper.value  # type: ignore[assignment]  # nodnod wrapper .value is opaque; real type is telegrinder API
+        update: _UpdateProto = update_wrapper.value  # type: ignore[assignment]  # nodnod wrapper .value is opaque; real type is telegrinder Update
 
-        match update.callback_query:
-            case Some(cq):
-                match cq.message:
-                    case Some(msg):
-                        await api.send_message(chat_id=msg.v.chat.id, text=text)
-                        return None  # type: ignore[return-value]
-                    case _:
-                        return response
-            case _:
-                return response
+        cb_query: object = update.callback_query
+        # Extract .value before isinstance narrows to Some[Unknown]
+        cq_value: object | None = _unwrap_some(cb_query)
+        if cq_value is None:
+            return response
+
+        msg_option: object | None = getattr(cq_value, "message", None)
+        if msg_option is None:
+            return response
+
+        msg_value: object | None = _unwrap_some(msg_option)
+        if msg_value is None:
+            return response
+        v: object = getattr(msg_value, "v", msg_value)
+        chat: object | None = getattr(v, "chat", None)
+        chat_id: object | None = getattr(chat, "id", None) if chat is not None else None
+        if chat_id is not None:
+            await api.send_message(chat_id=chat_id, text=text)
+            return None  # type: ignore[return-value]  # enricher returns None to suppress telegrinder's return manager
+        return response
 
 
 __all__ = (

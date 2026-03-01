@@ -31,7 +31,10 @@ from ._ctx import SchemaCtx, QueryCtx, StorageCtx, SurfaceCtx
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet
+    from emergent.wire.axis.surface.capabilities import SurfaceCapability
+
     from derivelib._ctx import OperationHandler
+    from derivelib._effects import DerivationEffect
     from derivelib._errors import DomainError
 
 
@@ -74,6 +77,47 @@ class FullDerivable(
     """Step that touches ALL axes (rare, for cross-cutting concerns)."""
 
     ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TransformableStep — transform-algebra-visible interface
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@runtime_checkable
+class TransformableStep(Protocol):
+    """Step visible to the transform algebra.
+
+    Steps implementing this protocol can be filtered by effect,
+    receive capabilities, and participate in the DerivationT algebra.
+
+    DeriveOp implements this naturally (already has all 3 fields).
+    Custom steps (workflow, methods, TG) opt in by adding effects.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def effects(self) -> tuple[DerivationEffect, ...]: ...
+
+    @property
+    def capabilities(self) -> tuple[SurfaceCapability, ...]: ...
+
+
+def replace_caps[S: TransformableStep](
+    step: S,
+    capabilities: tuple[SurfaceCapability, ...],
+) -> S:
+    """Replace capabilities on any TransformableStep.
+
+    Uses dataclasses.replace() — all TransformableStep implementors
+    are frozen dataclasses, but Python's type system cannot express
+    "Protocol that is also a dataclass" (no Dataclass protocol with
+    replace() support exists).
+    """
+    from dataclasses import replace
+    return replace(step, capabilities=capabilities)  # type: ignore[type-var]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -204,6 +248,9 @@ __all__ = (
     "StorageDerivable",
     "SurfaceDerivable",
     "FullDerivable",
+    # Transform algebra
+    "TransformableStep",
+    "replace_caps",
     # Handler spec
     "HandlerSpec",
     # Provider protocol

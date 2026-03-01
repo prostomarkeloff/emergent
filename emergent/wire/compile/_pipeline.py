@@ -92,8 +92,15 @@ def compile_pipeline(ctx: object, axes: Axes) -> CompiledPipeline:
         ec = coercion.compiler.compile(request_type, axes)
         coerce_model = coercion.assemble(request_type, ec)
 
+    execute_fn: Callable[..., Any] | None = getattr(ctx, "execute", None)
+    if execute_fn is None:
+        raise TypeError(
+            f"WrapContext {type(ctx).__qualname__} has no 'execute' attribute — "
+            f"cannot build CompiledPipeline"
+        )
+
     return CompiledPipeline(
-        execute=getattr(ctx, "execute", None),
+        execute=execute_fn,
         extractor=getattr(ctx, "extractor", None),
         coerce_model=coerce_model,
         coercion=coercion,

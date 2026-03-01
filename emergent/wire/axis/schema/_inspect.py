@@ -47,6 +47,7 @@ from typing import (
     Annotated,
     Any,
     Protocol,
+    TypeGuard,
     Union,
     get_args,
     get_origin,
@@ -164,7 +165,22 @@ def _to_capability(ann: object) -> SchemaAxisCapability | None:
     return None
 
 
-def extract_capabilities(annotations: list[Any]) -> tuple[SchemaAxisCapability, ...]:
+def _is_tuple(ann: object) -> TypeGuard[tuple[object, ...]]:
+    """Check if annotation is a tuple (pattern of capabilities)."""
+    return isinstance(ann, tuple)
+
+
+def _extract_from_pattern(
+    pattern: tuple[object, ...], out: list[SchemaAxisCapability]
+) -> None:
+    """Extract capabilities from a pattern tuple into the output list."""
+    for item in pattern:
+        cap = _to_capability(item)
+        if cap is not None:
+            out.append(cap)
+
+
+def extract_capabilities(annotations: Sequence[object]) -> tuple[SchemaAxisCapability, ...]:
     """Extract SchemaAxisCapability instances from annotations.
 
     Supports both class and instance forms:
@@ -178,12 +194,9 @@ def extract_capabilities(annotations: list[Any]) -> tuple[SchemaAxisCapability, 
         cap = _to_capability(ann)
         if cap is not None:
             capabilities.append(cap)
-        elif isinstance(ann, tuple):
+        elif _is_tuple(ann):
             # Pattern — tuple of capabilities
-            for item in ann:  # type: ignore[union-attr]
-                cap = _to_capability(item)
-                if cap is not None:
-                    capabilities.append(cap)
+            _extract_from_pattern(ann, capabilities)
 
     return tuple(capabilities)
 

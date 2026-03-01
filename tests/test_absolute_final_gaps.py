@@ -322,6 +322,10 @@ class TestGenerateFinalGaps:
         assert issubclass(result, DataNode)
         assert result.__name__ == "MyReqNode"
 
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("telegrinder"),
+        reason="telegrinder not installed",
+    )
     def test_to_datanode_from_context_creates_node(self) -> None:
         """Lines 303-307: make_compose closure in to_datanode_from_context."""
         from emergent.wire.compile._generate import to_datanode_from_context

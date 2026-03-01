@@ -12,7 +12,8 @@ Target compilation via WrapPhase — same pattern as schema compilation:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import types
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 import fastapi
@@ -40,7 +41,6 @@ from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 from emergent.wire.compile._core import Axes, fold
 from emergent.wire.compile._target import CodecBinding, TargetCompiler
 from emergent.wire.compile._pipeline import (
-    CompiledPipeline,
     compile_pipeline,
     execute_with_pipeline,
 )
@@ -52,7 +52,6 @@ from emergent.wire.compile._capabilities import (
 )
 from emergent.wire.axis._capability import FastAPIRouteContext, CoercionSpec
 from emergent.wire.compile._execute import (
-    execute_rrc_unified,
     execute_immediate_unified,
 )
 from emergent.wire.compile._stateful import (
@@ -126,20 +125,27 @@ class FastAPIFormExtractor:
         return {**dict(await request.form()), **dict(request.path_params)}
 
 
-# Pre-built extraction constants
-EXTRACT_FORM = None  # lazy init below
-EXTRACT_JSON = None
-EXTRACT_QUERY = None
+# Pre-built extraction constants — initialized lazily to avoid circular imports.
+# Use init_fastapi_extraction_constants() to lazily populate these.
+_extract_form: object | None = None
+_extract_json: object | None = None
+_extract_query: object | None = None
 
 
-def _init_fastapi_extraction_constants() -> None:
+def init_fastapi_extraction_constants() -> None:
     """Initialize extraction constants (for use in capabilities)."""
-    global EXTRACT_FORM, EXTRACT_JSON, EXTRACT_QUERY
+    global _extract_form, _extract_json, _extract_query
     from emergent.wire.axis.surface.capabilities._pipeline import Extraction
 
-    EXTRACT_FORM = Extraction(fastapi=FastAPIFormExtractor())
-    EXTRACT_JSON = Extraction(fastapi=FastAPIJsonExtractor())
-    EXTRACT_QUERY = Extraction(fastapi=FastAPIQueryExtractor())
+    _extract_form = Extraction(fastapi=FastAPIFormExtractor())
+    _extract_json = Extraction(fastapi=FastAPIJsonExtractor())
+    _extract_query = Extraction(fastapi=FastAPIQueryExtractor())
+
+
+# Public aliases for backward-compat (read-only; call _init first)
+EXTRACT_FORM = _extract_form
+EXTRACT_JSON = _extract_json
+EXTRACT_QUERY = _extract_query
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -168,7 +174,7 @@ class FastAPIWrapContext:
 
     # From codec (via from_codec):
     request_type: type | None = None
-    response_type: type | None = None
+    response_type: type | types.UnionType | None = None
     execute: Callable[..., Any] | None = None
 
     # From trigger/framework defaults (via from_codec):
@@ -259,7 +265,7 @@ class FastAPIRoute:
     """
 
     endpoint: Any
-    response_model: type | None = None
+    response_model: type | types.UnionType | None = None
     openapi_extra: dict[str, Any] | None = None
 
 
@@ -310,17 +316,21 @@ async def _stateful_execute(
         raise RuntimeError("fastapi.Request not found in scope")
     request = req_wrapper.value
 
-    layer = scope._parent_ref if hasattr(scope, "_parent_ref") else None
-
     # 1. Compose key_node → store key
     key_scope = scope.create_child("stateful-key")
     async with key_scope:
         key_scope.inject(fastapi.Request, request)
         composer = Composer.create(key_scope, codec.agent_cls)
-        success, key_value = await composer.compose(codec.key_node)
+        # codec.key_node is bare `type` (no type parameter), so compose()
+        # returns tuple[bool, Unknown | str]. We only need str conversion.
+        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # key_node is unparameterized type; we widen Unknown to object
+            codec.key_node,
+        )
+        success = compose_result[0]
+        key_result = compose_result[1]
         if not success:
-            raise RuntimeError(f"Session key resolution failed: {key_value}")
-        store_key = str(key_value)
+            raise RuntimeError(f"Session key resolution failed: {key_result}")
+        store_key = str(key_result)
 
     # 2. Load state
     state = await load_state(codec, store_key)
@@ -404,9 +414,23 @@ def _default_extractor(trigger: HTTPRouteTrigger) -> FastAPIExtractor:
 
 
 def _default_coercion() -> CoercionSpec:
-    """Default Pydantic coercion."""
-    from emergent.wire.compile._generate import _pydantic_coercion
-    return _pydantic_coercion()
+    """Default Pydantic coercion — inline construction to avoid private import."""
+    from emergent.wire.compile._phase import SchemaCompiler, PYDANTIC_PHASE, EntityCompilation
+    from emergent.wire.compile._generate import assemble_pydantic
+
+    def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
+        instance = model(**raw)
+        return instance.model_dump()  # type: ignore[no-any-return] # Pydantic BaseModel.model_dump has no stub returning dict
+
+    def _assemble(cls: type, ec: object) -> type:
+        assert isinstance(ec, EntityCompilation)
+        return assemble_pydantic(cls, ec)
+
+    return CoercionSpec(
+        compiler=SchemaCompiler(phases=(PYDANTIC_PHASE,)),
+        assemble=_assemble,
+        validate=_pydantic_validate,
+    )
 
 
 def _validation_error_type() -> type:
@@ -816,10 +840,12 @@ def fastapi_compile(
         fapi.add_middleware(middleware_cls, **kwargs)
 
     for router in app_ctx.routers:
+        # routers stored as object in FastAPIAppContext to avoid fastapi import in axis layer
+        assert isinstance(router, fastapi.routing.APIRouter)
         fapi.include_router(router)
 
     # 3. Exception handlers
-    for exc_trigger, _, exc_route in EXCEPTION_COMPILER.scan_and_wrap(app, base_axes):
+    for _exc_trigger, _, exc_route in EXCEPTION_COMPILER.scan_and_wrap(app, base_axes):
         async def _exc_handler(
             request: fastapi.Request,
             exc: Exception,
@@ -861,6 +887,8 @@ def _wrap_for_stack(
     compiler: TargetCompiler[HTTPRouteTrigger],
 ) -> FastAPIRoute:
     """Find the right binding and wrap handler for stack compilation."""
+    if compiler.assemble is None:
+        raise ValueError("Compiler has no assemble function")
     for binding in compiler.bindings:
         if isinstance(handler.codec, binding.codec_type):
             ctx = binding.from_codec(handler.codec, trigger)
@@ -942,6 +970,7 @@ __all__ = (
     "is_pydantic_model",
     "build_rrc_openapi_extra",
     "FASTAPI_COMPILER",
+    "init_fastapi_extraction_constants",
 )
 
 

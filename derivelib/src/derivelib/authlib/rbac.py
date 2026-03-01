@@ -16,7 +16,7 @@ authorize_ops() = DerivationT that maps per-operation role requirements.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from nodnod import Scope
@@ -109,18 +109,18 @@ def authorize_ops(
             lambda u: u.roles,
         ))
     """
-    from derivelib.axes.surface import DeriveOp
+    from derivelib._protocols import TransformableStep, replace_caps
 
     def transform(steps: tuple[Step, ...]) -> tuple[Step, ...]:
         result: list[Step] = []
         for s in steps:
-            if isinstance(s, DeriveOp) and s.name in role_map:
+            if isinstance(s, TransformableStep) and s.name in role_map:
                 enricher = RequireRole(
                     identity_type,
                     frozenset({role_map[s.name]}),
                     role_getter,
                 )
-                result.append(replace(s, capabilities=(*s.capabilities, enricher)))
+                result.append(replace_caps(s, (*s.capabilities, enricher)))
             else:
                 result.append(s)
         return tuple(result)

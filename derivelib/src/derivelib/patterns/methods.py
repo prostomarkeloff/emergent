@@ -69,12 +69,15 @@ from derivelib import (
     exposure,
 )
 from derivelib._derivation import DerivationT
+from derivelib._dialect import Op, TriggerGen
+from derivelib._effects import DerivationEffect
 from derivelib._errors import DomainError
 from derivelib.axes.schema import inspect_entity
 
 F = TypeVar("F", bound=Callable[..., object])
 
 TRIGGER_ENTRIES_ATTR = "__trigger_entries__"
+OP_ENTRIES_ATTR = "__op_entry__"
 
 
 # --- trigger entry: one decorator = one entry ---
@@ -88,6 +91,18 @@ class _TriggerEntry:
     capabilities: tuple[SurfaceCapability, ...]
     description: str | None = None
     order: int = 100
+
+
+# --- op entry: transport-agnostic operation metadata ---
+
+
+@dataclass(frozen=True, slots=True)
+class _OpEntry:
+    """Transport-agnostic operation metadata attached by @op."""
+
+    name: str
+    effects: tuple[DerivationEffect, ...] = ()
+    capabilities: tuple[SurfaceCapability, ...] = ()
 
 
 # --- base decorator ---
@@ -133,6 +148,41 @@ def method(
         entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
         entries.append(entry)
         setattr(fn, TRIGGER_ENTRIES_ATTR, entries)
+        return fn
+
+    return cast(Callable[[F], F], decorator)
+
+
+# --- transport-agnostic op decorator ---
+
+
+def op(
+    name: str | None = None,
+    *,
+    effects: tuple[DerivationEffect, ...] = (),
+    caps: tuple[SurfaceCapability, ...] = (),
+) -> Callable[[F], F]:
+    """Mark a method as a transport-agnostic operation.
+
+    Stores metadata (name, effects, capabilities) on the function.
+    The actual trigger is assigned at compile time by ``MethodDialect``'s
+    ``TriggerGen``.
+
+    Can coexist with ``@post``/``@command`` — ``MethodsPattern`` reads effects
+    from ``@op`` even when using explicit triggers.
+
+        @classmethod
+        @op("Create", effects=(Creates(),))
+        async def create(cls, ...) -> Result[Order, DomainError]: ...
+    """
+
+    def decorator(fn: F) -> F:
+        entry = _OpEntry(
+            name=name or fn.__name__,
+            effects=effects,
+            capabilities=caps,
+        )
+        setattr(fn, OP_ENTRIES_ATTR, entry)
         return fn
 
     return cast(Callable[[F], F], decorator)
@@ -244,6 +294,8 @@ class ExposeMethod:
     Capabilities = pattern-level + decorator-level, merged at compile time.
     Errors pass through the converter and are handled by capabilities
     (e.g. ErrorTransform + ProblemResponse).
+
+    Satisfies TransformableStep — visible to effect-based transforms.
     """
 
     service: type
@@ -253,6 +305,11 @@ class ExposeMethod:
     suffix: str
     description: str | None = None
     order: int = 100
+    effects: tuple[DerivationEffect, ...] = ()
+
+    @property
+    def name(self) -> str:
+        return f"{self.service.__name__}.{self.method_name}"
 
     def derive_surface[EntityT](self, ctx: SurfaceCtx[EntityT]) -> SurfaceCtx[EntityT]:
         method_fn = getattr(self.service, self.method_name)
@@ -342,7 +399,7 @@ class MethodsPattern:
         # or may fail at import time (e.g. Python 3.14+ asyncio changes).
         _delegate_imports: tuple[str, type, type] | None = None
         try:
-            from derivelib.patterns.tg.methods import (
+            from teleflow.methods import (
                 DELEGATE_ENTRIES_ATTR,
                 ExposeDelegateMethod,
                 _DelegateEntry,
@@ -361,6 +418,10 @@ class MethodsPattern:
             # Unwrap classmethod/staticmethod to find trigger entries
             fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
 
+            # Read @op entry for effects (used by both trigger and MethodDialect paths)
+            op_entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
+            op_effects = op_entry.effects if op_entry is not None else ()
+
             # Standard trigger entries → ExposeMethod (RRC codec)
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             for i, entry in enumerate(entries):
@@ -374,6 +435,7 @@ class MethodsPattern:
                         suffix=suffix,
                         description=entry.description,
                         order=entry.order,
+                        effects=op_effects,
                     )
                 )
 
@@ -396,6 +458,125 @@ class MethodsPattern:
         return tuple(steps)
 
 
+# --- stub Op for MethodDialect's TriggerGen dispatch ---
+
+
+@dataclass(frozen=True, slots=True)
+class _NullTemplate:
+    """Sentinel — never called. Exists only to satisfy Op's required field."""
+
+    def build(self, spec: object) -> object:
+        raise RuntimeError("_NullTemplate should never be called")
+
+
+def _stub_op(name: str, effects: tuple[DerivationEffect, ...]) -> Op:
+    """Create a minimal Op for TriggerGen dispatch. Only .name and .effects matter."""
+    from derivelib._project import NoFields, OkResponse
+
+    return Op(
+        name=name,
+        input_proj=NoFields(),
+        output=OkResponse(),
+        handler_template=_NullTemplate(),
+        effects=effects,
+    )
+
+
+# --- transport-agnostic method dialect ---
+
+
+@dataclass(frozen=True, slots=True)
+class MethodDialect:
+    """Scan class for @op-decorated methods, assign triggers via TriggerGen.
+
+    Like ``MethodsPattern`` but transport-agnostic: methods describe WHAT
+    (name, effects) via ``@op``, the ``TriggerGen`` decides WHERE (trigger).
+
+    ``@op`` name controls route generation:
+
+    - Well-known names (``Create``, ``Get``, ``List``, ``Update``, ``Delete``)
+      map to standard REST routes via ``HTTPTriggers``.
+    - Custom names become ``POST /base/{name_lower}``.
+    - Override via ``HTTPTriggers(routes={...})`` for full control.
+
+    ::
+
+        @derive(MethodDialect(triggers=HTTPTriggers("/api/orders"), capabilities=ERROR_CAPS))
+        @dataclass
+        class OrderService:
+            @classmethod
+            @op("Create", effects=(Creates(),))
+            async def create(cls, customer: str) -> Result[Order, DomainError]: ...
+
+            @classmethod
+            @op("Get", effects=(Read(),))
+            async def get_order(cls, id: int) -> Result[Order, DomainError]: ...
+
+            @classmethod
+            @op("Submit", effects=(Mutation(),))
+            async def submit(cls, id: int) -> Result[Order, DomainError]: ...
+
+        # Produces:
+        #   POST /api/orders           (Create → REST default)
+        #   GET  /api/orders/{id}      (Get → REST default)
+        #   POST /api/orders/submit    (Submit → unknown → POST fallback)
+
+    Multi-target — same service on HTTP + CLI::
+
+        @derive(
+            MethodDialect(triggers=HTTPTriggers("/api/orders"), capabilities=ERROR_CAPS),
+            MethodDialect(triggers=CLITriggers("order")),
+        )
+
+    Composable via .chain()::
+
+        MethodDialect(triggers=HTTPTriggers("/api"), capabilities=ERROR_CAPS).chain(
+            readonly(),
+            add_capability(AuthCap(), Mutation),
+        )
+    """
+
+    triggers: TriggerGen
+    capabilities: tuple[SurfaceCapability, ...] = ()
+
+    def chain(self, *transforms: DerivationT) -> ChainedPattern:
+        """Chain DerivationT transforms after compile."""
+        from derivelib._dialect import ChainedPattern
+
+        return ChainedPattern(self, transforms)
+
+    def compile(self, entity: type) -> Derivation:
+        steps: list[Step] = [inspect_entity()]
+        for method_name in dir(entity):
+            if method_name.startswith("_"):
+                continue
+            raw = inspect.getattr_static(entity, method_name, None)
+            if raw is None:
+                continue
+            fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
+
+            entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
+            if entry is None:
+                continue
+
+            stub = _stub_op(entry.name, entry.effects)
+            trigger = self.triggers(entity, stub)
+            if trigger is None:
+                continue
+
+            steps.append(
+                ExposeMethod(
+                    service=entity,
+                    method_name=method_name,
+                    trigger=trigger,
+                    capabilities=(*self.capabilities, *entry.capabilities),
+                    suffix="",
+                    effects=entry.effects,
+                )
+            )
+        return tuple(steps)
+
+
 # Lazy import to avoid circular dependency at module level
 from derivelib._dialect import ChainedPattern as ChainedPattern  # noqa: E402, F401
 
@@ -406,8 +587,9 @@ methods = MethodsPattern(capabilities=ERROR_CAPS)
 
 
 __all__ = (
-    # Base decorator
+    # Decorators
     "method",
+    "op",
     # HTTP aliases
     "post",
     "get",
@@ -418,7 +600,8 @@ __all__ = (
     "command",
     # Step
     "ExposeMethod",
-    # Pattern
+    # Patterns
     "MethodsPattern",
+    "MethodDialect",
     "methods",
 )

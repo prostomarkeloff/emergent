@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, TypeVar, Protocol, Generic, runtime_checkable
 
+from emergent._types import Result
 from emergent.wire.axis.query._relational import RelationalQuerySet
 from emergent.wire.axis.query._kv import KVQuerySet
 from emergent.wire.axis.query._api import APIQuerySet
@@ -23,6 +24,7 @@ from emergent.wire.axis.query._sql import SQLRelationalQuerySet
 T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
+E = TypeVar("E")
 
 
 # ─── Relational Provider ──────────────────────────────────────────────────────
@@ -123,34 +125,39 @@ class SQLRelationalProvider(MutatingRelationalProvider[T], Protocol[T]):
 
 
 @runtime_checkable
-class KVProvider(Protocol[K, V]):
+class KVProvider(Protocol[K, V, E]):
     """Provider for KVQuerySet.
 
-    Implements key-value operations.
-    K = key type, V = value type.
+    Implements key-value operations with Result return types.
+    K = key type, V = value type, E = error type.
+
+    Memory providers use E=Never (can't fail).
+    External providers use concrete error types.
+
+    Aligned with storage/_kv.py Result pattern.
     """
 
-    async def get(self, query: KVQuerySet[K, V]) -> V | None:
+    async def get(self, query: KVQuerySet[K, V]) -> Result[V | None, E]:
         """Get value by key."""
         ...
 
-    async def set(self, query: KVQuerySet[K, V]) -> None:
+    async def set(self, query: KVQuerySet[K, V]) -> Result[None, E]:
         """Set value."""
         ...
 
-    async def delete(self, query: KVQuerySet[K, V]) -> bool:
+    async def delete(self, query: KVQuerySet[K, V]) -> Result[bool, E]:
         """Delete by key. Returns True if existed."""
         ...
 
-    async def exists(self, query: KVQuerySet[K, V]) -> bool:
+    async def exists(self, query: KVQuerySet[K, V]) -> Result[bool, E]:
         """Check if key exists."""
         ...
 
-    async def scan(self, query: KVQuerySet[K, V]) -> list[V]:
+    async def scan(self, query: KVQuerySet[K, V]) -> Result[list[V], E]:
         """Scan by pattern."""
         ...
 
-    async def keys(self, query: KVQuerySet[K, V]) -> list[K]:
+    async def keys(self, query: KVQuerySet[K, V]) -> Result[list[K], E]:
         """Get keys by pattern."""
         ...
 

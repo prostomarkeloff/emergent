@@ -62,6 +62,7 @@ from emergent.wire.axis.query._expr import Expr
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import CursorResult
+    from sqlalchemy.sql.elements import ColumnElement
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,13 +167,36 @@ class BoundSQLAlchemyStore[T]:
     def model(self) -> type[DeclarativeBase]:
         return self._compiled.model
 
+    def _identity_field_name(self) -> str:
+        """Get identity field name, raising if not found."""
+        name = self._compiled.identity_field
+        if name is None:
+            msg = f"No identity field found on {self._compiled.entity.__name__}"
+            raise RuntimeError(msg)
+        return name
+
+    @staticmethod
+    def _as_where(clause: object) -> ColumnElement[bool]:
+        """Convert compile_expr result (typed as object) to SA ColumnElement[bool].
+
+        compile_expr returns `object` to avoid coupling the compilation module to SA.
+        At runtime this is always a ColumnElement[bool] — safe to narrow via isinstance.
+        """
+        from sqlalchemy.sql.elements import ColumnElement as CE
+
+        if not isinstance(clause, CE):
+            msg = f"Expected ColumnElement, got {type(clause)}"
+            raise TypeError(msg)
+        return clause  # type: ignore[return-value]  # ColumnElement → ColumnElement[bool]: isinstance narrows to raw ColumnElement, not generic form
+
     # ─── KV Operations ────────────────────────────────────────────────────────
 
     async def get(self, key: object) -> Result[Option[T], StorageError]:
         """Get entity by primary key."""
         try:
+            id_field = self._identity_field_name()
             stmt = select(self._compiled.model).where(
-                getattr(self._compiled.model, self._compiled.identity_field) == key
+                getattr(self._compiled.model, id_field) == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -199,8 +223,9 @@ class BoundSQLAlchemyStore[T]:
     async def delete(self, key: object) -> Result[bool, StorageError]:
         """Delete entity by primary key. Returns True if existed."""
         try:
+            id_field = self._identity_field_name()
             stmt = select(self._compiled.model).where(
-                getattr(self._compiled.model, self._compiled.identity_field) == key
+                getattr(self._compiled.model, id_field) == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -217,8 +242,9 @@ class BoundSQLAlchemyStore[T]:
     async def exists(self, key: object) -> Result[bool, StorageError]:
         """Check if entity exists by primary key."""
         try:
+            id_field = self._identity_field_name()
             stmt = select(func.count()).select_from(self._compiled.model).where(
-                getattr(self._compiled.model, self._compiled.identity_field) == key
+                getattr(self._compiled.model, id_field) == key
             )
             result = await self._session.execute(stmt)
             count_val: int = result.scalar_one()
@@ -236,7 +262,7 @@ class BoundSQLAlchemyStore[T]:
         """Find all entities matching predicate."""
         try:
             expr = build_expr(self._compiled.entity, predicate)
-            where_clause = compile_expr(expr, self._compiled)
+            where_clause = self._as_where(compile_expr(expr, self._compiled))
 
             stmt = select(self._compiled.model).where(where_clause)
             result = await self._session.execute(stmt)
@@ -255,7 +281,7 @@ class BoundSQLAlchemyStore[T]:
         """Find single entity matching predicate."""
         try:
             expr = build_expr(self._compiled.entity, predicate)
-            where_clause = compile_expr(expr, self._compiled)
+            where_clause = self._as_where(compile_expr(expr, self._compiled))
 
             stmt = select(self._compiled.model).where(where_clause).limit(1)
             result = await self._session.execute(stmt)
@@ -279,7 +305,7 @@ class BoundSQLAlchemyStore[T]:
 
             if predicate is not None:
                 expr = build_expr(self._compiled.entity, predicate)
-                where_clause = compile_expr(expr, self._compiled)
+                where_clause = self._as_where(compile_expr(expr, self._compiled))
                 stmt = stmt.where(where_clause)
 
             result = await self._session.execute(stmt)
@@ -296,7 +322,7 @@ class BoundSQLAlchemyStore[T]:
         """Delete all entities matching predicate. Returns count."""
         try:
             expr = build_expr(self._compiled.entity, predicate)
-            where_clause = compile_expr(expr, self._compiled)
+            where_clause = self._as_where(compile_expr(expr, self._compiled))
 
             stmt = delete(self._compiled.model).where(where_clause)
             cursor: CursorResult[tuple[object, ...]] = await self._session.execute(stmt)  # type: ignore[assignment]

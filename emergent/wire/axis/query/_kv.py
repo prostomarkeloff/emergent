@@ -10,13 +10,17 @@ For Redis, in-memory KV stores, simple caches.
     await provider.delete(users.delete("alice"))
 
     # Scan
-    await provider.fetch_many(users.scan("user:*"))
+    await provider.scan(users.scan("user:*"))
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
+from fnmatch import fnmatch
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._contexts import MemoryKVContext, HTTPKVContext
 
 
 K = TypeVar("K")
@@ -31,6 +35,15 @@ class KVGet(Generic[K]):
     """Get by key."""
     key: K
 
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.result = ctx.store.get(self.key)
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "GET"
+        ctx.path = ctx.encode_key(self.key)
+        return ctx
+
 
 @dataclass(frozen=True, slots=True)
 class KVSet(Generic[K, T]):
@@ -39,11 +52,31 @@ class KVSet(Generic[K, T]):
     value: T
     ttl: int | None = None  # seconds
 
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.store[self.key] = self.value
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "PUT"
+        ctx.path = ctx.encode_key(self.key)
+        ctx.body = ctx.encode_value(self.value, self.ttl)
+        return ctx
+
 
 @dataclass(frozen=True, slots=True)
 class KVDelete(Generic[K]):
     """Delete by key."""
     key: K
+
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.result = self.key in ctx.store
+        ctx.store.pop(self.key, None)
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "DELETE"
+        ctx.path = ctx.encode_key(self.key)
+        return ctx
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,17 +84,44 @@ class Exists(Generic[K]):
     """Check key exists."""
     key: K
 
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.result = self.key in ctx.store
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "HEAD"
+        ctx.path = ctx.encode_key(self.key)
+        return ctx
+
 
 @dataclass(frozen=True, slots=True)
 class Scan:
     """Scan by pattern."""
     pattern: str
 
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.result = [v for k, v in ctx.store.items() if fnmatch(str(k), self.pattern)]
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "GET"
+        ctx.params = ctx.encode_pattern(self.pattern)
+        return ctx
+
 
 @dataclass(frozen=True, slots=True)
 class Keys:
     """Get all keys matching pattern."""
     pattern: str
+
+    def compile_memory_kv(self, ctx: MemoryKVContext) -> MemoryKVContext:
+        ctx.result = [k for k in ctx.store if fnmatch(str(k), self.pattern)]
+        return ctx
+
+    def compile_http_kv(self, ctx: HTTPKVContext) -> HTTPKVContext:
+        ctx.method = "GET"
+        ctx.params = ctx.encode_pattern(self.pattern)
+        return ctx
 
 
 # Union type
@@ -138,6 +198,13 @@ class KVQuerySet(Generic[K, T]):
             users.keys("user:*")
         """
         return KVQuerySet(entity=self.entity, key_fn=self.key_fn, op=Keys(pattern))
+
+    # ─── Introspection ─────────────────────────────────────────────────────
+
+    @property
+    def ops(self) -> tuple[KVOp, ...]:
+        """Pipeline ops for fold compilation. Uniform access with RelationalQuerySet/APIQuerySet."""
+        return (self.op,) if self.op is not None else ()
 
     # ─── Convenience ──────────────────────────────────────────────────────
 

@@ -18,7 +18,9 @@ from typing import Any, Callable, Generic, TypeVar
 
 K = TypeVar("K")
 V = TypeVar("V")
+E = TypeVar("E")
 
+from emergent._types import Result
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import EntityProxy, FieldProxy, OrderSpec
 from emergent.wire.axis.query._relational import RelationalQuerySet, relational
@@ -286,17 +288,18 @@ def relational_store(
 # ─── KV Store ─────────────────────────────────────────────────────────────────
 
 
-class KVStore(Generic[K, V]):
+class KVStore(Generic[K, V, E]):
     """KV QuerySet + Provider bundled.
 
-    K = key type, V = value type.
+    K = key type, V = value type, E = error type.
+    Passes through Result from provider.
 
     Usage:
         cache = kv_store(User, key=lambda u: u.id, provider=redis)
 
-        user = await cache.get("alice")
-        await cache.set("alice", user)
-        await cache.delete("alice")
+        result = await cache.get("alice")  # Result[V | None, E]
+        await cache.set("alice", user)     # Result[None, E]
+        await cache.delete("alice")        # Result[bool, E]
     """
 
     __slots__ = ("_entity", "_key_fn", "_provider")
@@ -305,7 +308,7 @@ class KVStore(Generic[K, V]):
         self,
         entity: type[V],
         key_fn: Callable[[V], K],
-        provider: KVProvider[K, V],
+        provider: KVProvider[K, V, E],
     ) -> None:
         self._entity = entity
         self._key_fn = key_fn
@@ -317,37 +320,37 @@ class KVStore(Generic[K, V]):
 
     # ─── KV Operations ────────────────────────────────────────────────────
 
-    async def get(self, key: K) -> V | None:
+    async def get(self, key: K) -> Result[V | None, E]:
         """Get by key."""
         q = kv(self._entity, self._key_fn).get(key)
         return await self._provider.get(q)
 
-    async def set(self, key: K, value: V, ttl: int | None = None) -> None:
+    async def set(self, key: K, value: V, ttl: int | None = None) -> Result[None, E]:
         """Set value."""
         q = kv(self._entity, self._key_fn).set(key, value, ttl)
-        await self._provider.set(q)
+        return await self._provider.set(q)
 
-    async def put(self, entity: V, ttl: int | None = None) -> None:
+    async def put(self, entity: V, ttl: int | None = None) -> Result[None, E]:
         """Set using entity's key."""
         key = self._key_fn(entity)
-        await self.set(key, entity, ttl)
+        return await self.set(key, entity, ttl)
 
-    async def delete(self, key: K) -> bool:
+    async def delete(self, key: K) -> Result[bool, E]:
         """Delete by key."""
         q = kv(self._entity, self._key_fn).delete(key)
         return await self._provider.delete(q)
 
-    async def exists(self, key: K) -> bool:
+    async def exists(self, key: K) -> Result[bool, E]:
         """Check if key exists."""
         q = kv(self._entity, self._key_fn).exists(key)
         return await self._provider.exists(q)
 
-    async def scan(self, pattern: str) -> list[V]:
+    async def scan(self, pattern: str) -> Result[list[V], E]:
         """Scan by pattern."""
         q = kv(self._entity, self._key_fn).scan(pattern)
         return await self._provider.scan(q)
 
-    async def keys(self, pattern: str = "*") -> list[K]:
+    async def keys(self, pattern: str = "*") -> Result[list[K], E]:
         """Get keys by pattern."""
         q = kv(self._entity, self._key_fn).keys(pattern)
         return await self._provider.keys(q)
@@ -356,13 +359,13 @@ class KVStore(Generic[K, V]):
 def kv_store(
     entity: type[V],
     key: Callable[[V], K],
-    provider: KVProvider[K, V],
-) -> KVStore[K, V]:
+    provider: KVProvider[K, V, E],
+) -> KVStore[K, V, E]:
     """Create KV store.
 
     Usage:
         cache = kv_store(User, key=lambda u: u.id, provider=redis)
-        user = await cache.get("alice")
+        result = await cache.get("alice")  # Result[V | None, E]
     """
     return KVStore(entity, key, provider)
 

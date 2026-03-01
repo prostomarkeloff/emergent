@@ -280,65 +280,65 @@ class TestKVStore:
     @pytest.mark.asyncio
     async def test_set_and_get(self, store: KVStore[str, User]) -> None:
         await store.set("alice", ALICE)
-        result = await store.get("alice")
+        result = (await store.get("alice")).unwrap()
         assert result is not None
         assert result.name == "alice"
 
     @pytest.mark.asyncio
     async def test_get_missing(self, store: KVStore[str, User]) -> None:
-        result = await store.get("nobody")
+        result = (await store.get("nobody")).unwrap()
         assert result is None
 
     @pytest.mark.asyncio
     async def test_put(self, store: KVStore[str, User]) -> None:
         await store.put(ALICE)
-        result = await store.get(str(ALICE.id))
+        result = (await store.get(str(ALICE.id))).unwrap()
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_put_with_ttl(self, store: KVStore[str, User]) -> None:
         await store.put(ALICE, ttl=3600)
-        result = await store.get(str(ALICE.id))
+        result = (await store.get(str(ALICE.id))).unwrap()
         assert result is not None
 
     @pytest.mark.asyncio
     async def test_delete(self, store: KVStore[str, User]) -> None:
         await store.set("alice", ALICE)
-        deleted = await store.delete("alice")
+        deleted = (await store.delete("alice")).unwrap()
         assert deleted is True
-        assert await store.get("alice") is None
+        assert (await store.get("alice")).unwrap() is None
 
     @pytest.mark.asyncio
     async def test_delete_missing(self, store: KVStore[str, User]) -> None:
-        deleted = await store.delete("nobody")
+        deleted = (await store.delete("nobody")).unwrap()
         assert deleted is False
 
     @pytest.mark.asyncio
     async def test_exists(self, store: KVStore[str, User]) -> None:
-        assert await store.exists("alice") is False
+        assert (await store.exists("alice")).unwrap() is False
         await store.set("alice", ALICE)
-        assert await store.exists("alice") is True
+        assert (await store.exists("alice")).unwrap() is True
 
     @pytest.mark.asyncio
     async def test_scan(self, store: KVStore[str, User]) -> None:
         await store.set("user:1", ALICE)
         await store.set("user:2", BOB)
         await store.set("admin:3", CHARLIE)
-        result = await store.scan("user:*")
+        result = (await store.scan("user:*")).unwrap()
         assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_keys(self, store: KVStore[str, User]) -> None:
         await store.set("a", ALICE)
         await store.set("b", BOB)
-        keys = await store.keys("*")
+        keys = (await store.keys("*")).unwrap()
         assert set(keys) == {"a", "b"}
 
     @pytest.mark.asyncio
     async def test_keys_default_pattern(self, store: KVStore[str, User]) -> None:
         await store.set("x", ALICE)
         await store.set("y", BOB)
-        keys = await store.keys()
+        keys = (await store.keys()).unwrap()
         assert len(keys) == 2
 
 
@@ -500,26 +500,26 @@ class TestIntegrationStoreFullLifecycle:
         await store.set("alice", ALICE)
         await store.set("bob", BOB)
 
-        alice = await store.get("alice")
+        alice = (await store.get("alice")).unwrap()
         assert alice is not None
         assert alice.name == "alice"
 
         await store.put(CHARLIE)
-        charlie = await store.get(str(CHARLIE.id))
+        charlie = (await store.get(str(CHARLIE.id))).unwrap()
         assert charlie is not None
         assert charlie.name == "charlie"
 
         await store.set("user:1", ALICE)
         await store.set("user:2", BOB)
-        scanned = await store.scan("user:*")
+        scanned = (await store.scan("user:*")).unwrap()
         assert len(scanned) == 2
 
-        deleted = await store.delete("alice")
+        deleted = (await store.delete("alice")).unwrap()
         assert deleted is True
-        assert await store.get("alice") is None
+        assert (await store.get("alice")).unwrap() is None
 
-        assert await store.exists("bob") is True
-        assert await store.exists("alice") is False
+        assert (await store.exists("bob")).unwrap() is True
+        assert (await store.exists("alice")).unwrap() is False
 
     @pytest.mark.asyncio
     async def test_api_store_lifecycle(self) -> None:
@@ -571,7 +571,7 @@ class TestIntegrationStoreFullLifecycle:
         for user in rich:
             await cache.set(f"rich:{user.id}", user)
 
-        cached = await cache.scan("rich:*")
+        cached = (await cache.scan("rich:*")).unwrap()
         assert len(cached) == 2
         cached_names = {u.name for u in cached}
         assert cached_names == {"alice", "charlie"}

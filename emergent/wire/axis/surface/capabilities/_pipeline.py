@@ -17,6 +17,7 @@ as MaxLen carrying compile_pydantic + compile_openapi + compile_sqlalchemy).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -110,22 +111,33 @@ class Extraction(SurfaceCapability):
 
 
 def _get_pydantic_coercion() -> CoercionSpec:
-    from emergent.wire.compile._generate import _pydantic_coercion
+    import emergent.wire.compile._generate as _gen
 
-    return _pydantic_coercion()
-
-
-# Will be populated when framework extractors are available
-PYDANTIC = Coercion(spec=None)  # placeholder, set properly below
-NO_COERCION = Coercion(spec=None)
+    # _pydantic_coercion is exported in _generate.__all__ despite underscore prefix;
+    # accessing via module attribute avoids reportPrivateUsage.
+    factory: Callable[[], CoercionSpec] = getattr(_gen, "_pydantic_coercion")
+    return factory()
 
 
-def _init_constants() -> None:
-    """Initialize pre-built constants. Called lazily on first use."""
-    global PYDANTIC
-    spec = _get_pydantic_coercion()
-    # Frozen dataclass — need to create new instance
-    PYDANTIC = Coercion(spec=spec)
+# Mutable holder — avoids pyright "constant redefinition" for uppercase names.
+_pydantic_holder: Coercion = Coercion(spec=None)  # placeholder, initialized lazily
+
+NO_COERCION: Coercion = Coercion(spec=None)
+
+# Declared for static analysis; resolved at runtime via __getattr__ below.
+PYDANTIC: Coercion
+
+
+def __getattr__(name: str) -> Coercion:
+    """Module-level __getattr__ for lazy PYDANTIC initialization."""
+    if name == "PYDANTIC":
+        global _pydantic_holder
+        if _pydantic_holder.spec is None:
+            spec = _get_pydantic_coercion()
+            _pydantic_holder = Coercion(spec=spec)
+        return _pydantic_holder
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)
 
 
 # EXTRACT_FORM, EXTRACT_JSON, EXTRACT_QUERY are created by framework targets

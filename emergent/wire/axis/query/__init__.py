@@ -60,6 +60,10 @@ from emergent.wire.axis.query._expr import (
     JsonExtract,
     JsonContains,
     JsonHasKey,
+    # Expr fold
+    ExprHandler,
+    fold_expr,
+    ExprDialect,
 )
 
 # Proxy (for building expressions from lambdas)
@@ -83,6 +87,9 @@ from emergent.wire.axis.query._aggregate import (
     ArrayAgg,
     StringAgg,
     AggregateExpr,
+    # Aggregate fold
+    AggHandler,
+    fold_aggregate,
 )
 
 # Relational QuerySet
@@ -207,6 +214,38 @@ from emergent.wire.axis.query.providers import (
     MemoryAPIListResult,
 )
 
+# Contexts + Protocols — self-compiling query ops
+from emergent.wire.axis.query._contexts import (
+    MemoryQueryContext,
+    SAQueryContext,
+    MemoryAPIContext,
+    HTTPAPIContext,
+    MemoryKVContext,
+    HTTPKVContext,
+    MemoryQueryCompilable,
+    SAQueryCompilable,
+    MemoryAPICompilable,
+    HTTPAPICompilable,
+    MemoryKVCompilable,
+    HTTPKVCompilable,
+    QueryPhase,
+    MEMORY_RELATIONAL,
+    SA_RELATIONAL,
+    MEMORY_API,
+    HTTP_API,
+    MEMORY_KV,
+    HTTP_KV,
+    # QueryCompiler — free algebra on free algebras
+    QueryCompilation,
+    QueryCompiler,
+    MEMORY_RELATIONAL_COMPILER,
+    SA_COMPILER,
+    MEMORY_API_COMPILER,
+    HTTP_COMPILER,
+    MEMORY_KV_COMPILER,
+    HTTP_KV_COMPILER,
+)
+
 # Coercion — Expr AST transform for storage coercion
 from emergent.wire.axis.query._coerce import (
     ExprCoercer,
@@ -278,6 +317,10 @@ __all__ = (
     "ArrayContains", "ArrayAny", "ArrayAll", "ArrayOverlap",
     # Expressions — JSON
     "JsonExtract", "JsonContains", "JsonHasKey",
+    # Expr fold
+    "ExprHandler",
+    "fold_expr",
+    "ExprDialect",
     # Proxy
     "FieldProxy",
     "JsonFieldProxy",
@@ -290,6 +333,9 @@ __all__ = (
     "Count", "Sum", "Avg", "Min", "Max",
     "ArrayAgg", "StringAgg",
     "AggregateExpr",
+    # Aggregate fold
+    "AggHandler",
+    "fold_aggregate",
     # Relational
     "RelationalQuerySet",
     "relational",
@@ -367,6 +413,36 @@ __all__ = (
     "flatten_or",
     "unflatten_and",
     "unflatten_or",
+    # Contexts + Protocols
+    "MemoryQueryContext",
+    "SAQueryContext",
+    "MemoryAPIContext",
+    "HTTPAPIContext",
+    "MemoryKVContext",
+    "HTTPKVContext",
+    "MemoryQueryCompilable",
+    "SAQueryCompilable",
+    "MemoryAPICompilable",
+    "HTTPAPICompilable",
+    "MemoryKVCompilable",
+    "HTTPKVCompilable",
+    # QueryPhase
+    "QueryPhase",
+    "MEMORY_RELATIONAL",
+    "SA_RELATIONAL",
+    "MEMORY_API",
+    "HTTP_API",
+    "MEMORY_KV",
+    "HTTP_KV",
+    # QueryCompiler
+    "QueryCompilation",
+    "QueryCompiler",
+    "MEMORY_RELATIONAL_COMPILER",
+    "SA_COMPILER",
+    "MEMORY_API_COMPILER",
+    "HTTP_COMPILER",
+    "MEMORY_KV_COMPILER",
+    "HTTP_KV_COMPILER",
     # Coercion
     "ExprCoercer",
     # Fold layer

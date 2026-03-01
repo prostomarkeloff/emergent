@@ -27,21 +27,18 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, TypeGuard
 
 from emergent.wire.axis.query._api import (
     CreateOp,
     CursorMod,
     DeleteOp,
-    FilterMod,
     GetOp,
     IncludeMod,
     ListOp,
     OffsetMod,
-    OrderMod,
     PageMod,
     SearchMod,
-    SelectMod,
     UpdateOp,
 )
 from emergent.wire.axis.query._kv import (
@@ -179,9 +176,14 @@ def _format_entry(entry: dict[str, Any]) -> str:
     return f"{op_name}: {parts}"
 
 
-def _format_value(v: Any) -> str:
+def _is_sequence(v: object) -> TypeGuard[Sequence[object]]:
+    """TypeGuard: narrow object to Sequence[object] without Unknown propagation."""
+    return isinstance(v, (list, tuple))
+
+
+def _format_value(v: object) -> str:
     """Format a dict value for human-readable output."""
-    if isinstance(v, (list, tuple)):
+    if _is_sequence(v):
         return ", ".join(str(x) for x in v)
     return str(v)
 
@@ -333,7 +335,7 @@ def _explain_delete_op(op: DeleteOp[Any]) -> dict[str, Any]:
     return {"op": "Delete", "id": repr(op.id)}
 
 
-def _explain_filter_mod(op: FilterMod) -> dict[str, Any]:
+def _explain_filter_mod(op: Filter) -> dict[str, Any]:
     return {
         "op": "Filter",
         "expr": str(op.expr),
@@ -341,7 +343,7 @@ def _explain_filter_mod(op: FilterMod) -> dict[str, Any]:
     }
 
 
-def _explain_order_mod(op: OrderMod) -> dict[str, Any]:
+def _explain_order_mod(op: OrderBy) -> dict[str, Any]:
     return {
         "op": "OrderBy",
         "specs": [
@@ -362,7 +364,7 @@ def _explain_offset_mod(op: OffsetMod) -> dict[str, Any]:
     return {"op": "Offset", "offset": op.offset, "limit": op.limit}
 
 
-def _explain_select_mod(op: SelectMod) -> dict[str, Any]:
+def _explain_select_mod(op: Select) -> dict[str, Any]:
     return {"op": "Select", "fields": list(op.fields)}
 
 
@@ -380,12 +382,12 @@ API_EXPLAIN: Mapping[type, ExplainHandler] = {
     CreateOp: _explain_create_op,
     UpdateOp: _explain_update_op,
     DeleteOp: _explain_delete_op,
-    FilterMod: _explain_filter_mod,
-    OrderMod: _explain_order_mod,
+    Filter: _explain_filter_mod,
+    OrderBy: _explain_order_mod,
     PageMod: _explain_page_mod,
     CursorMod: _explain_cursor_mod,
     OffsetMod: _explain_offset_mod,
-    SelectMod: _explain_select_mod,
+    Select: _explain_select_mod,
     SearchMod: _explain_search_mod,
     IncludeMod: _explain_include_mod,
 }
