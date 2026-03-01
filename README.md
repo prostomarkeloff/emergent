@@ -10,7 +10,7 @@
 
 </div>
 
-A type-algebraic framework where your code is pure domain meaning and compilation produces the rest — HTTP, CLI, Telegram, OpenAPI, Pydantic validation, SQL, RFC 7807 errors. All from the shape of your types.
+A type-algebraic framework where your code is pure domain meaning and compilation produces the rest — HTTP, CLI, Telegram, OpenAPI, Pydantic validation, SQL, RFC 7807 errors. All from the shape of your types. Ships with **derivelib** — an algebraic derivation layer over wire's 4-axis IR.
 
 ```python
 @derive(http_crud("/users", provider_node=Users))
@@ -86,28 +86,43 @@ emergent's IR reads itself. Every axis has an `explain` system — structured di
 ```python
 explain_schema(User)
 # === User ===
-#   [SchemaName("users")]
+#   [SchemaName('users')]
 #
 #   id (int):
 #     [Identity]
+#
 #   email (str):
 #     [Unique, MaxLen(255)]
-#     cli: Help("Email address")
-#     openapi: Description("User email"), Format("email")
-#     sql: Index("idx_email")
-#   ...
+#     cli: Help('Email address')
+#     openapi: Description('User email'), Format('email')
+#     sql: Index('idx_email')
 
 explain_application(app)
-# === Application (3 endpoints, 1 global cap) ===
-#   global: CORS(origins=('*',))
+# === Application (3 endpoints) ===
 #
 #   Endpoint #1 (2 exposures):
 #     [POST /api/v1/players] RequestResponseCodec
 #       request: RegisterRequest, response: RegisterResponse
 #     [register (cli)] RequestResponseCodec
+#       request: RegisterRequest, response: RegisterResponse
 
-explain_full(User, Bounty, Transaction)
-# 3-layer trace: schema → derivation → materialized surface
+explain_full(User)  # derivelib: 3-layer trace
+# === User (full trace) ===
+#
+#   Schema: 3 fields (1 identity)
+#     id (int) [Identity]
+#     name (str)
+#     email (str) [Unique]
+#
+#   Derivation: 1 pattern
+#     Pattern #1: Dialect (11 steps), provider=Users
+#       steps: InspectEntity → RequireIdentity → BindProvider → ...
+#       ops: List, Get, Create, Update, Patch, Delete
+#
+#   Surface: 6 exposures across 1 endpoint
+#     GET /api/users [ListUserRequest → ListUserResponse]
+#     GET /api/users/{id} [GetUserRequest → GetUserResponse]
+#     ...
 ```
 
 Schema, query, storage, surface, compilation trace, derivation pipeline — all explainable. No execution, no side effects. The program describes itself from its own IR.
@@ -258,7 +273,7 @@ A story-driven, 26-chapter walkthrough — from first API to handing your codeba
 
 ## Where we are
 
-emergent is young — started January 2026, three months in. emergent + derivelib already run in production. The core architecture (IR model, compilers, capabilities, verify, explain) is stable. What's still growing: the ecosystem, the stdlib, the number of built-in targets and dialects. Breaking changes happen, but we keep them well-motivated.
+emergent is young — started January 2026, three months in. Already runs in production. The core architecture (IR model, compilers, capabilities, verify, explain, derivelib) is stable. What's still growing: the ecosystem, the stdlib, the number of built-in targets and dialects. Breaking changes happen, but we keep them well-motivated.
 
 ---
 
@@ -267,8 +282,7 @@ emergent is young — started January 2026, three months in. emergent + deriveli
 | Layer | What |
 |---|---|
 | [deployme.py](https://github.com/prostomarkeloff/deployme.py) | Application → infrastructure (compose, k8s) |
-| emergent | ops, wire, saga, cache, graph, idempotency, verify |
-| derivelib | algebraic derivation over wire's 4-axis IR |
+| emergent + derivelib | ops, wire, saga, cache, graph, idempotency, verify, algebraic derivation |
 | [nodnod](https://github.com/timoniq/nodnod) | dependency graphs |
 | [combinators.py](https://github.com/prostomarkeloff/combinators.py) | retry, timeout, fallback |
 | [kungfu](https://github.com/timoniq/kungfu) | Result, Option |
