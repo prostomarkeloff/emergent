@@ -149,9 +149,9 @@ The agent doesn't write adapter layers. It adds a trigger. One endpoint, multipl
 uv add git+https://github.com/prostomarkeloff/emergent.git
 ```
 
-**Learn:** The [tutorial](tutorial/00-intro.md) is 26 chapters, story-driven, from first API to handing your codebase to a coding agent.
+**Learn:** The [tutorial](tutorial/00-intro.md) is 27 chapters, story-driven, from first API to handing your codebase to a coding agent.
 
-**Set up your agent:** Chapter 26 has a [copy-paste CLAUDE.md](tutorial/26-handing-it-to-the-machine.md) — drop it in your project root and your coding agent is configured with every import path, every pattern, every rule.
+**Set up your agent:** Chapter 27 has a [copy-paste CLAUDE.md](tutorial/27-handing-it-to-the-machine.md) — drop it in your project root and your coding agent is configured with every import path, every pattern, every rule.
 
 
 ---

@@ -80,4 +80,4 @@ And self-description for free. Because everything is data, everything can be exp
 
 ---
 
-**Next:** [The Sweet Spot →](25-llm-sweet-spot.md)
+**Next:** [Verify and Explain →](25-verify-and-explain.md)

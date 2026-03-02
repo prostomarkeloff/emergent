@@ -59,6 +59,32 @@ Adding soft delete to an entity. A cross-cutting concern that touches reads, wri
 
 The `soft_delete` transform rewrites the Delete handler to set a timestamp. It adds a filter to all Read queries. It's expressed as data — you can call `explain()` and see exactly what it did. The agent doesn't need to know about query managers, middleware, or admin classes. There's one place to look, one thing to change, one way to verify.
 
+## What the human actually does
+
+The agent writes the CRUD. The agent adds pagination. The agent chains transforms. The agent compiles to three targets. This is the boring part — mechanical, repetitive, structurally predictable. The agent is better at it than you are, because it never forgets an import or misspells a field name.
+
+So what's left for you?
+
+**Writing verifications.** The domain rules that no agent can infer from syntax. "Sensitive fields must be encrypted." "Price fields can't be negative." "A user can't be both suspended and admin." "Every mutation endpoint must have auth." "Limit without OrderBy is non-deterministic." These are the edge cases, the business invariants, the things that make your system correct instead of merely functional.
+
+This is the interesting part. The part that requires understanding the domain, not the framework. And emergent makes this the *primary* authoring surface for humans — on every axis:
+
+```python
+# The agent wrote the CRUD, the schema, the transforms, the queries.
+# You write the rules that catch real bugs:
+
+# Schema axis — field-level contradictions
+SECURITY_PHASE = CompilationPhase(SecurityVerifyCtx, SecurityVerifyCompilable, ...)
+MY_VERIFY = (*VERIFY_PHASES, SECURITY_PHASE)
+verify_raising(*all_entities, phases=MY_VERIFY)
+
+# Query axis — operation-level contradictions
+ctx = QUERY_VERIFY.fold(query.ops, QueryVerifyCtx())
+assert not ctx.check(), ctx.check()
+```
+
+The agent produces the derivation and the queries. You produce the verification — on schemas AND on queries. The agent can even run your verify phases as part of its workflow — your custom checks catch the agent's mistakes at compile time, before anything runs. The boring part is automated. The interesting part — the edge cases, the domain knowledge, the "this should never happen" rules — that's yours.
+
 ## Why this is inevitable
 
 Over 40% of production code is already AI-authored. That number only goes up. And coding agents don't just *write* code — they *maintain* it. They add features. They fix bugs. They refactor. Maintenance requires understanding. Understanding requires traceability.
@@ -83,4 +109,4 @@ The gap between these two — expressiveness and tractability — is where most 
 
 ---
 
-**Next:** [Handing It to the Machine →](26-handing-it-to-the-machine.md)
+**Next:** [Handing It to the Machine →](27-handing-it-to-the-machine.md)

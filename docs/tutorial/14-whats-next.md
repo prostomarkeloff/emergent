@@ -27,7 +27,7 @@ The tutorial continues with advanced topics — the wire internals, the engine t
 | **VI — Scope, DI & Ops** | [17](17-ops-and-runners.md), [18](18-scope-and-di.md) | Operations, runners, auto-parallelization, dependency injection |
 | **VII — Middleware & Storage** | [19](19-enrichers.md), [20](20-storage.md) | Runtime enrichers, KV/queue/pubsub/lock/counter patterns |
 | **VIII — Compilation & The Full Picture** | [21](21-compilation.md), [22](22-stateful-codecs.md), [23](23-roulette.md), [24](24-design.md) | The fold primitive, stateful codecs, full multi-target walkthrough, design philosophy |
-| **IX — The Thesis** | [25](25-llm-sweet-spot.md), [26](26-handing-it-to-the-machine.md) | Why emergent is LLM-tractable, agent workflows, and a ready-to-use CLAUDE.md |
+| **IX — Verify, Explain & The Thesis** | [25](25-verify-and-explain.md), [26](26-llm-sweet-spot.md), [27](27-handing-it-to-the-machine.md) | Verification, self-description, LLM-tractability, agent workflows, and a ready-to-use CLAUDE.md |
 
 ## The reference docs
 

@@ -31,17 +31,23 @@ emergent also ships with `emergent-platform-ai-guide.md` — a complete referenc
 
 ## The verify-before-run loop
 
-Here's emergent's secret weapon for agent workflows: everything is inspectable before it executes.
+Here's emergent's secret weapon for agent workflows: everything is inspectable and verifiable before it executes.
 
 The pipeline has natural checkpoints:
 
 1. **Assemble** — build frozen dataclasses (pure data, no side effects)
-2. **Inspect** — call `explain_entity(User)` to see the derivation steps, triggers, field specs
-3. **Compile** — `fastapi.compile(app)` is pure and traceable
-4. **Inspect again** — `explain(axes)` after `Axes.traced()` shows every fold step
-5. **Run** — only now do side effects happen
+2. **Verify** — `verify_raising(*entities)` catches contradictions immediately
+3. **Inspect** — call `explain_entity(User)` to see the derivation steps, triggers, field specs
+4. **Compile** — `fastapi.compile(app)` is pure and traceable
+5. **Inspect again** — `explain(axes)` after `Axes.traced()` shows every fold step
+6. **Run** — only now do side effects happen
 
-Every step between "agent writes code" and "server starts" is transparent. The agent can check its own work at each point. If something looks wrong in `explain_entity()`, fix the dataclass — don't debug a running server.
+The agent must adopt `verify` into its workflow. After every change, verify. This isn't optional — it's the agent's primary safety net. Your custom verification phases (see [Chapter 25](25-verify-and-explain.md)) catch domain-specific mistakes that no generic linter ever could.
+
+```python
+from emergent.wire.verify import verify_raising
+verify_raising(User, Product, Order)  # fails fast on contradictions
+```
 
 ```python
 from derivelib import explain_entity
@@ -59,7 +65,7 @@ print(explain(axes))
 # Shows: every capability, every fold step, every context change
 ```
 
-No "write 200 lines and pray." Write, inspect, compile, inspect, run.
+No "write 200 lines and pray." Write, verify, inspect, compile, inspect, run.
 
 ## Tasks that just work
 
@@ -264,15 +270,19 @@ app = application().mount(ep)
 
 ## Verification Workflow
 
-Always follow this loop — inspect before you run:
+Always follow this loop — verify and inspect before you run:
 
 1. Assemble frozen dataclasses (no side effects)
-2. `explain_entity(User)` — inspect derivation steps
-3. `fastapi.compile(app)` — pure, no side effects
-4. `explain(axes)` after `Axes.traced()` — inspect compilation
-5. Run tests / start server
+2. `verify_raising(*entities)` — catch contradictions at compile time
+3. `explain_entity(User)` — inspect derivation steps
+4. `fastapi.compile(app)` — pure, no side effects
+5. `explain(axes)` after `Axes.traced()` — inspect compilation
+6. Run tests / start server
 
 ```python
+from emergent.wire.verify import verify_raising
+verify_raising(User, Product, Order)  # MUST run after every change
+
 from derivelib import explain_entity
 print(explain_entity(User))
 
