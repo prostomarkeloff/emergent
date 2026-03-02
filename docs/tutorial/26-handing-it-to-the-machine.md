@@ -106,7 +106,12 @@ def test_user_has_pagination():
 
 def test_app_has_expected_endpoints():
     data = application_dict(app)
-    paths = [e["path"] for e in data["endpoints"]]
+    paths = [
+        exp["trigger"]["path"]
+        for ep in data["endpoints"]
+        for exp in ep["exposures"]
+        if exp["trigger"].get("type") == "HTTPRouteTrigger"
+    ]
     assert "/users" in paths
 ```
 

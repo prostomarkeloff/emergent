@@ -108,7 +108,7 @@ Some useful ones at a glance:
 | `without_ops(PATCH, UPDATE)` | Drop specific ops |
 | `only_ops(LIST, GET)` | Keep only these |
 | `add_capability(cap, Mutation)` | Attach a capability to mutations |
-| `swap_handler("List", MyHandler())` | Replace a handler template |
+| `swap_handler(LIST, MyHandler())` | Replace a handler template |
 | `project_response(exclude=("secret",))` | Strip fields from responses |
 
 The key insight: transforms operate on *descriptions*, not code. They rewrite the derivation data before materialization. That's why they're powerful — you're not monkey-patching handlers, you're reshaping what gets generated in the first place.

@@ -114,7 +114,7 @@ The `stateful()` builder connects everything:
 from emergent.wire.axis.surface.codecs import stateful
 
 endpoint(runner).expose(
-    TGTrigger(...),
+    TelegrinderTrigger(...),
     stateful(RegistrationFlow, UserResponse).key(ChatId).build(),
 )
 ```

@@ -80,10 +80,11 @@ Two ways to use a custom template:
 
 ```python
 from derivelib.transforms import swap_handler
+from derivelib.patterns.crud import UPDATE
 
 @derive(
     http_crud("/items", provider_node=Items)
-        .chain(swap_handler("Update", IncrementField(field="stock")))
+        .chain(swap_handler(UPDATE, IncrementField(field="stock")))
 )
 @dataclass
 class Item:

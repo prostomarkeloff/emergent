@@ -65,23 +65,23 @@ Vanilla FastAPI. No emergent. No wire. No `@derive`.
 
 ```python
 # bridge.py
-from emergent.wire.bridge import AddTrigger, WrapAsDelegate, IsolateGlobal
-from emergent.wire.bridge.bridgers import fastapi
-from emergent.wire.bridge._core import ExtractedHandler
+from emergent.wire.bridge import build_application, Extracted, WrapAsDelegate, IsolateGlobal
+from emergent.wire.bridge.bridgers import AddTrigger
+from emergent.wire.bridge._types import RouteData
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.compile.targets import cli
 
 from legacy_app import app as fastapi_app
 
 
-def build_cli_trigger(handler: ExtractedHandler[object, ..., object]) -> CLITrigger:
+def build_cli_trigger(handler: Extracted[RouteData]) -> CLITrigger:
     name = handler.name or "unknown"
     parts = name.split("_")
     cli_name = f"{parts[1]}-{parts[0]}" if len(parts) == 2 else name.replace("_", "-")
     return CLITrigger(command=cli_name, description=handler.description or name)
 
 
-wire_app = fastapi.extract(
+wire_app = build_application(
     fastapi_app,
     capabilities=(
         WrapAsDelegate(),
