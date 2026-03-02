@@ -56,7 +56,7 @@ class Account:
 
 verify_raising(Account)
 # VerificationError: Verification failed:
-#   balance: Min(0) > Max(-1)
+#   balance: Min(0.0) > Max(-1.0)
 ```
 
 For softer handling, use `verify` and inspect the issues:
@@ -447,19 +447,15 @@ from emergent.wire.verify import verify
 issues = verify(Account)
 assert not issues, f"Contradictions found: {issues}"
 
-# 3. Agent inspects the structure
-from emergent.wire.axis.schema._explain import schema_dict
-data = schema_dict(Account)
-# Agent can programmatically check: "does email have Sensitive?"
+# 3. Agent inspects the structure — type-safe, no string matching
+from emergent.wire.axis.schema._inspect import inspect_type
+fields = inspect_type(Account)
 sensitive_fields = [
-    f["name"] for f in data["fields"]
-    if any(c["type"] == "Sensitive" for c in f.get("universal", []))
+    name for name, info in fields.items()
+    if info.has(Sensitive)
 ]
-
-# 4. Agent inspects the application topology
-from emergent.wire.axis.surface._explain import application_dict
-app_data = application_dict(app)
-# Agent can check: "are all mutation endpoints authenticated?"
+# Agent checks capability presence via .has(), .get(), .get_all()
+# info.get(Min) returns the typed Min instance — access .value directly
 
 # 5. Agent compiles with tracing
 from emergent.wire.compile import Axes
@@ -471,37 +467,33 @@ print(explain(axes))  # full compilation audit trail
 
 The dict layer is the key. Human-readable output is for terminal display. The dict layer is for programmatic inspection — agents parse it, check invariants, make decisions. It's the same data, two projections.
 
-Write tests that use both:
+Write tests that use both — type-safe, no string matching:
 
 ```python
+from emergent.wire.axis.schema._inspect import inspect_type
+from emergent.wire.axis.schema import Sensitive, Identity
+from emergent.wire.verify import verify, Severity
+
 def test_no_contradictions():
     issues = verify(Account, Product, Order)
     errors = [i for i in issues if i.severity is Severity.ERROR]
-    assert not errors, f"Verification errors: {errors}"
+    assert not errors
 
 def test_sensitive_fields_are_encrypted():
-    """Custom invariant — enforced via test, not built-in phase."""
-    data = schema_dict(Account)
-    for field in data["fields"]:
-        caps = {c["type"] for c in field.get("universal", [])}
-        if "Sensitive" in caps:
-            assert "Encrypted" in caps, (
-                f"{field['name']} is Sensitive but not Encrypted"
-            )
+    """Type-safe capability check via FieldInfo.has()."""
+    fields = inspect_type(Account)
+    for name, info in fields.items():
+        if info.has(Sensitive):
+            assert info.has(Encrypted), f"{name} is Sensitive but not Encrypted"
 
-def test_all_mutations_have_auth():
-    data = application_dict(app)
-    for ep in data["endpoints"]:
-        for exp in ep["exposures"]:
-            trigger = exp["trigger"]
-            if trigger.get("method") in ("POST", "PUT", "DELETE", "PATCH"):
-                cap_types = {c["type"] for c in exp.get("capabilities", [])}
-                assert "BearerAuth" in cap_types, (
-                    f"{trigger.get('path')} has no auth"
-                )
+def test_all_fields_with_identity_are_not_nullable():
+    fields = inspect_type(Account)
+    for name, info in fields.items():
+        if info.has(Identity):
+            assert not info.is_optional, f"{name} is Identity but nullable"
 ```
 
-The agent writes these tests. The agent runs them. The agent verifies its own work — at the semantic level, not by parsing HTTP responses. Write, verify, explain, compile, test. No "write 200 lines and pray."
+No strings. `FieldInfo.has(Sensitive)` dispatches on the actual type. `info.get(Min)` returns the typed capability instance — you can inspect `.value` directly. The agent writes these tests, runs them, verifies its own work at the type level. Write, verify, explain, compile, test.
 
 ---
 
