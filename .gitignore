@@ -23,6 +23,7 @@ _telegrinder_clone
 .data
 .claude
 emergent_research
+llmify
 
 deployme.py
 _sematest

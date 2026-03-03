@@ -105,7 +105,7 @@ class TestMaterialize:
     def test_empty_returns_empty_endpoint(self) -> None:
         ctx = fold_derive((), User)
         endpoint = materialize(ctx)
-        assert endpoint.exposures == []
+        assert endpoint.exposures == ()
 
     def test_with_crud_pattern(self) -> None:
         from derivelib.patterns.crud import http_crud

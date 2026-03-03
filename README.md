@@ -58,6 +58,8 @@ One place. Every concern — validation, CLI help text, OpenAPI description, SQL
 
 This is **locality by construction**, and it's what makes emergent work for humans and machines alike.
 
+> **[The entire framework is one function.](docs/essence.md)** Compilation, verification, explanation, LLM verification, query execution, derivation, semantic macros — all are the same `fold` applied to different data. Everything else is consequences.
+
 ---
 
 ## Why this matters now

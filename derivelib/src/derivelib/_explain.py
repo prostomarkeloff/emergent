@@ -151,7 +151,7 @@ def _effect_repr(effect: object) -> str:
         for f in fields:
             val = getattr(effect, f.name)
             if val != f.default:
-                parts.append(repr(val))
+                parts.append(f"{f.name}={val!r}")
         if parts:
             return f"{name}({', '.join(parts)})"
     return name
