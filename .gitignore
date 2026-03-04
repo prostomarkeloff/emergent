@@ -24,6 +24,7 @@ _telegrinder_clone
 .claude
 emergent_research
 llmify
+mmkr
 
 deployme.py
 _sematest
