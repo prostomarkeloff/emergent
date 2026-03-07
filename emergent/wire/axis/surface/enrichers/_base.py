@@ -47,7 +47,63 @@ class ScopeEnricher(SurfaceCapability, Protocol):
         return replace(ctx, enrichers=(*ctx.enrichers, self))
 
 
+@runtime_checkable
+class FastAPIEnrichable(SurfaceCapability, Protocol):
+    """FastAPI-specific enricher — KNOWS fastapi.Request is in scope."""
+
+    async def enrich_fastapi[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        ...
+
+    def compile_handler_runtime(self, ctx: "HandlerRuntimeContext") -> "HandlerRuntimeContext":
+        """Default: add self to enrichers tuple."""
+        from dataclasses import replace
+        return replace(ctx, enrichers=(*ctx.enrichers, self))
+
+
+@runtime_checkable
+class CLIEnrichable(SurfaceCapability, Protocol):
+    """CLI-specific enricher — KNOWS argparse.Namespace is in scope."""
+
+    async def enrich_cli[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        ...
+
+    def compile_handler_runtime(self, ctx: "HandlerRuntimeContext") -> "HandlerRuntimeContext":
+        """Default: add self to enrichers tuple."""
+        from dataclasses import replace
+        return replace(ctx, enrichers=(*ctx.enrichers, self))
+
+
+@runtime_checkable
+class TelegrinderEnrichable(SurfaceCapability, Protocol):
+    """Telegrinder-specific enricher."""
+
+    async def enrich_telegrinder[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        ...
+
+    def compile_handler_runtime(self, ctx: "HandlerRuntimeContext") -> "HandlerRuntimeContext":
+        """Default: add self to enrichers tuple."""
+        from dataclasses import replace
+        return replace(ctx, enrichers=(*ctx.enrichers, self))
+
+
+@runtime_checkable
+class DjangoEnrichable(SurfaceCapability, Protocol):
+    """Django-specific enricher."""
+
+    async def enrich_django[R](self, call: EnricherNext[R], scope: "Scope") -> R:
+        ...
+
+    def compile_handler_runtime(self, ctx: "HandlerRuntimeContext") -> "HandlerRuntimeContext":
+        """Default: add self to enrichers tuple."""
+        from dataclasses import replace
+        return replace(ctx, enrichers=(*ctx.enrichers, self))
+
+
 __all__ = (
     "ScopeEnricher",
     "EnricherNext",
+    "FastAPIEnrichable",
+    "CLIEnrichable",
+    "TelegrinderEnrichable",
+    "DjangoEnrichable",
 )

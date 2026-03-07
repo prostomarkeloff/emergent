@@ -27,6 +27,7 @@ async def execute_rrc(
     handler: Handler[RequestResponseCodec],
     request: Any,
     scope: Scope,
+    target: str | None = None,
 ) -> Any:
     """Universal RRC execution pipeline.
 
@@ -56,7 +57,7 @@ async def execute_rrc(
 
     # Chain and execute
     if enrichers:
-        wrapped = chain_enrichers(enrichers, core_handler)
+        wrapped = chain_enrichers(enrichers, core_handler, target=target)
         return await wrapped(scope)
     else:
         return await core_handler(scope)

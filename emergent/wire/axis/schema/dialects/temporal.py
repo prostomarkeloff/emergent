@@ -28,8 +28,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaCapability
+
+if TYPE_CHECKING:
+    from emergent.wire.derive._ctx import DeriveCtx
 from emergent.wire.axis._capability import (
     SQLAlchemyTableContext,
     PydanticModelContext,
@@ -243,6 +247,18 @@ class Timestamps(TemporalCapability):
             server_default=func.now(), onupdate=func.now(),
         ))
 
+    def compile_derive_modify(self, ctx: "DeriveCtx") -> "DeriveCtx":  # type: ignore[type-arg]
+        """Replace Create/Update handlers with timestamp-aware versions."""
+        from emergent.wire.derive._effects import Creates, Updates
+        from emergent.wire.derive._handler import TimestampInsert, TimestampUpdate
+
+        exclude = frozenset({self.created_field, self.updated_field})
+        ctx = ctx.replace_handler(Creates, TimestampInsert(self.created_field, self.updated_field))
+        ctx = ctx.replace_handler(Updates, TimestampUpdate(self.updated_field))
+        ctx = ctx.exclude_fields(Creates, exclude)
+        ctx = ctx.exclude_fields(Updates, exclude)
+        return ctx
+
 
 # ============================================================================
 # Soft Delete
@@ -259,6 +275,7 @@ class SoftDelete(TemporalCapability):
     Compiles to:
     - SQLAlchemy: DateTime column, nullable
     - Query modifier: WHERE deleted_at IS NULL
+    - Derive: replaces Delete handler with SoftDeleteMark, filters base_query
     """
 
     field_name: str = "deleted_at"
@@ -270,6 +287,16 @@ class SoftDelete(TemporalCapability):
         return sqlalchemy_table(ctx, add_column=ExtraColumnSpec(
             self.field_name, DateTime,
         ))
+
+    def compile_derive_modify(self, ctx: "DeriveCtx") -> "DeriveCtx":  # type: ignore[type-arg]
+        """Replace Delete handler with SoftDeleteMark, filter base_query."""
+        from emergent.wire.derive._effects import Deletes
+        from emergent.wire.derive._handler import SoftDeleteMark
+
+        field = self.field_name
+        ctx = ctx.replace_handler(Deletes, SoftDeleteMark(field))
+        ctx = ctx.filter_query(lambda e, _f=field: getattr(e, _f).is_null())
+        return ctx
 
 
 # ============================================================================

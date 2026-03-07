@@ -626,6 +626,7 @@ class TestWrapStatefulTelegrindInnerHandler:
                     format_response: Callable[[str], str] | None,
                     axes: Axes | None,
                     parent_scope: Scope | None,
+                    target: str | None = None,
                 ) -> tuple[str, bool]:
                     """Fake execute_stateful_unified that calls inject_scope to cover line 528."""
                     # Call inject_scope to cover the closure at line 527-528

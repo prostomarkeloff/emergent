@@ -138,6 +138,7 @@ async def execute_with_pipeline(
     handler: Handler[Any],
     axes: Axes,
     raw_request: object,
+    target: str | None = None,
 ) -> object:
     """Shared: scope → inject → extract → coerce → enrichers → execute.
 
@@ -197,7 +198,7 @@ async def execute_with_pipeline(
                 return await compiled.execute(handler, s, get_value)
 
             if rt_ctx.enrichers:
-                return await chain_enrichers(rt_ctx.enrichers, core)(scope)
+                return await chain_enrichers(rt_ctx.enrichers, core, target=target)(scope)
             return await core(scope)
     except Exception:
         logger.exception("Pipeline execution failed for %s", type(handler.codec).__name__)

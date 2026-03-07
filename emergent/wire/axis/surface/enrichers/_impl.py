@@ -48,25 +48,44 @@ V = TypeVar("V")
 def chain_enrichers[R](
     enrichers: tuple[ScopeEnricher, ...],
     handler: EnricherNext[R],
+    target: str | None = None,
 ) -> EnricherNext[R]:
     """Chain enrichers around handler.
 
     Builds middleware stack: e1(e2(e3(handler)))
     First enricher in tuple is outermost (runs first).
+
+    When target is provided (e.g. "fastapi", "cli", "telegrinder"),
+    prefers target-specific enrich method (enrich_fastapi, enrich_cli, etc.)
+    over universal enrich(). Falls back to enrich() if no target method exists.
     """
     result: EnricherNext[R] = handler
     for enricher in reversed(enrichers):
-        result = _make_enricher_wrapper(enricher, result)
+        result = _make_enricher_wrapper(enricher, result, target)
     return result
+
+
+def _resolve_enrich(
+    enricher: ScopeEnricher,
+    target: str | None,
+) -> Callable[..., Any]:
+    """Pick enrich method: target-specific > universal fallback."""
+    if target is not None:
+        method = getattr(enricher, f"enrich_{target}", None)
+        if method is not None:
+            return method
+    return enricher.enrich
 
 
 def _make_enricher_wrapper[R](
     enricher: ScopeEnricher,
     next_handler: EnricherNext[R],
+    target: str | None = None,
 ) -> EnricherNext[R]:
     """Create wrapper closure for enricher."""
+    enrich_fn = _resolve_enrich(enricher, target)
     async def wrapper(scope: Scope) -> R:
-        return await enricher.enrich(next_handler, scope)
+        return await enrich_fn(next_handler, scope)
     return wrapper
 
 
@@ -74,9 +93,10 @@ async def execute_with_enrichers[R](
     enrichers: tuple[ScopeEnricher, ...],
     handler: EnricherNext[R],
     scope: Scope,
+    target: str | None = None,
 ) -> R:
     """Execute handler with enrichers."""
-    wrapped = chain_enrichers(enrichers, handler)
+    wrapped = chain_enrichers(enrichers, handler, target=target)
     return await wrapped(scope)
 
 

@@ -13,6 +13,10 @@
 from emergent.wire.axis.surface.enrichers._base import (
     ScopeEnricher,
     EnricherNext,
+    FastAPIEnrichable,
+    CLIEnrichable,
+    TelegrinderEnrichable,
+    DjangoEnrichable,
 )
 
 from emergent.wire.axis.surface.enrichers._impl import (
@@ -42,6 +46,11 @@ __all__ = (
     # Protocol
     "ScopeEnricher",
     "EnricherNext",
+    # Target-specific protocols
+    "FastAPIEnrichable",
+    "CLIEnrichable",
+    "TelegrinderEnrichable",
+    "DjangoEnrichable",
     # Execution
     "chain_enrichers",
     "execute_with_enrichers",

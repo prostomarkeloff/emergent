@@ -89,6 +89,7 @@ async def execute_stateful_done(
     handler: Handler[StatefulCodec],
     state: Any,
     scope: Scope,
+    target: str | None = None,
 ) -> Any:
     """Execute when stateful flow is Done.
 
@@ -129,7 +130,7 @@ async def execute_stateful_done(
 
     # Chain enrichers and execute
     if enrichers:
-        wrapped = chain_enrichers(enrichers, core_handler)
+        wrapped = chain_enrichers(enrichers, core_handler, target=target)
         return await wrapped(scope)
     else:
         return await core_handler(scope)

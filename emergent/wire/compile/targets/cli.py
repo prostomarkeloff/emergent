@@ -108,6 +108,7 @@ async def _rrc_execute_cli(
         axes=Axes.default(),
         get_value=get_value or (lambda name: getattr(ns, name, None) if ns else None),
         inject_scope=lambda s: s.inject(argparse.Namespace, ns) if ns else None,
+        target="cli",
     )
 
 
@@ -643,6 +644,7 @@ def typed_rrc_from_codec_cli(
             axes=Axes.default(),
             get_value=typed_get,
             inject_scope=lambda s: s.inject(argparse.Namespace, ns),
+            target="cli",
         )
 
     return CLIWrapContext(

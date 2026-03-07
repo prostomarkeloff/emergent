@@ -85,6 +85,7 @@ async def execute_rrc_unified(
     inject_scope: ScopeInjector,
     agent_cls: type[Agent] | None = None,
     format_response: ResponseFormatter | None = None,
+    target: str | None = None,
 ) -> Any:
     """Unified RRC execution — same for all frameworks.
 
@@ -136,7 +137,7 @@ async def execute_rrc_unified(
             scope.inject(req_cls, request)
 
             # 4. Execute with enrichers
-            response = await execute_rrc(handler, request, scope)
+            response = await execute_rrc(handler, request, scope, target=target)
     except Exception:
         logger.exception("RRC execution failed for %s", req_cls.__name__)
         raise
@@ -164,6 +165,7 @@ async def execute_stateful_unified(
     format_response: ResponseFormatter | None = None,
     axes: Axes | None = None,
     parent_scope: Scope | None = None,
+    target: str | None = None,
 ) -> tuple[Any, bool]:
     """Unified stateful turn execution.
 
@@ -224,7 +226,7 @@ async def execute_stateful_unified(
             result = inject_scope(done_scope)
             if result is not None and hasattr(result, "__await__"):
                 await result
-            final = await execute_stateful_done(handler, new_state, done_scope)
+            final = await execute_stateful_done(handler, new_state, done_scope, target=target)
 
         await delete_state(codec, store_key)
     except Exception:
@@ -293,6 +295,7 @@ async def execute_delegate_unified(
     agent_cls: type[Agent] | None = None,
     format_response: ResponseFormatter | None = None,
     axes: Axes | None = None,
+    target: str | None = None,
 ) -> Any:
     """Unified delegate execution — compose dialect works by default.
 
@@ -345,7 +348,7 @@ async def execute_delegate_unified(
 
             # 3. Execute with enrichers
             if enrichers:
-                response = await chain_enrichers(enrichers, core)(scope)
+                response = await chain_enrichers(enrichers, core, target=target)(scope)
             else:
                 response = await core(scope)
     except Exception:

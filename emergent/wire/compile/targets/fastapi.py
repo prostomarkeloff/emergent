@@ -398,6 +398,7 @@ async def _delegate_execute(
     return await execute_delegate_unified(
         handler=handler,
         inject_scope=inject_scope,
+        target="fastapi",
     )
 
 
@@ -511,7 +512,7 @@ def assemble_fastapi_route(
     # Codecs that don't (Immediate) get a simple no-arg route.
     if ctx.extractor is not None or ctx.inject_type is not type(None):
         async def _route(request: fastapi.Request) -> Any:
-            return await execute_with_pipeline(compiled, handler, axes, request)
+            return await execute_with_pipeline(compiled, handler, axes, request, target="fastapi")
 
         _route.__annotations__ = {
             "request": fastapi.Request,
@@ -520,7 +521,7 @@ def assemble_fastapi_route(
         endpoint = _route
     else:
         async def _simple_route() -> Any:
-            return await execute_with_pipeline(compiled, handler, axes, None)
+            return await execute_with_pipeline(compiled, handler, axes, None, target="fastapi")
 
         endpoint = _simple_route
 

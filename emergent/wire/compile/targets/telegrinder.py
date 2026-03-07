@@ -533,6 +533,7 @@ def wrap_rrc_telegrinder(
             get_value=lambda name: ctx.get(name),
             inject_scope=inject_scope,
             format_response=_format_tg_response,
+            target="telegrinder",
         )
 
     # Rule preparation: enhance Command rules with generated Arguments
@@ -631,6 +632,7 @@ def wrap_stateful_telegrinder(
                 format_response=_format_tg_response,
                 axes=axes,
                 parent_scope=scope,
+                target="telegrinder",
             )
         return response
 
@@ -682,6 +684,7 @@ def wrap_delegate_telegrinder(
             handler=handler,
             inject_scope=inject_scope,
             axes=axes,
+            target="telegrinder",
         )
 
     return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
