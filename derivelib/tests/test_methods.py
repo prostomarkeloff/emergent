@@ -12,10 +12,8 @@ from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
 from derivelib._derive import derive, derive_endpoints
-from derivelib._errors import DomainError
-from derivelib.axes.surface import DeriveOp
+from derivelib import DomainError
 from derivelib.patterns.methods import (
-    ExposeMethod,
     MethodsPattern,
     TRIGGER_ENTRIES_ATTR,
     command,
@@ -27,12 +25,6 @@ from derivelib.patterns.methods import (
     post,
     put,
 )
-
-from .conftest import User
-
-
-class _Node:
-    pass
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -80,24 +72,6 @@ class TestClassmethod:
         entries = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
         assert len(entries) == 2
 
-    def test_classmethod_pattern_compile(self) -> None:
-        @dataclass
-        class SVC:
-            @classmethod
-            @post("/api/create")
-            async def create(cls) -> Result[int, DomainError]:
-                return Ok(1)
-
-            @classmethod
-            @get("/api/list")
-            async def list_all(cls) -> Result[list, DomainError]:
-                return Ok([])
-
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 2
-
 
 class TestStaticmethod:
     def test_staticmethod_preserved(self) -> None:
@@ -123,19 +97,6 @@ class TestStaticmethod:
         fn = raw.__func__
         entries = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
         assert len(entries) == 1
-
-    def test_staticmethod_pattern_compile(self) -> None:
-        @dataclass
-        class SVC:
-            @staticmethod
-            @post("/api/health")
-            async def health() -> Result[str, DomainError]:
-                return Ok("ok")
-
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 1
 
 
 class TestPlainMethod:
@@ -258,52 +219,49 @@ class TestCommandAlias:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MethodsPattern
+# MethodsPattern — end-to-end via derive_endpoints
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 class TestMethodsPattern:
-    def test_compile_finds_classmethod(self) -> None:
+    def test_single_method(self) -> None:
         @dataclass
         class SVC:
+            id: Annotated[int, Identity]
+
             @classmethod
             @post("/api/create")
             async def create(cls) -> Result[int, DomainError]:
                 return Ok(1)
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 1
+        endpoints = derive_endpoints(SVC, methods)
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 1
 
-    def test_compile_finds_staticmethod(self) -> None:
+    def test_two_methods(self) -> None:
         @dataclass
         class SVC:
-            @staticmethod
-            @post("/api/health")
-            async def health() -> Result[str, DomainError]:
-                return Ok("ok")
+            id: Annotated[int, Identity]
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 1
-
-    def test_compile_finds_plain(self) -> None:
-        @dataclass
-        class SVC:
-            @post("/api/do")
-            async def do_thing(self) -> Result[int, DomainError]:
+            @classmethod
+            @post("/api/create")
+            async def create(cls) -> Result[int, DomainError]:
                 return Ok(1)
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 1
+            @classmethod
+            @get("/api/list")
+            async def list_all(cls) -> Result[list, DomainError]:
+                return Ok([])
 
-    def test_compile_all_three_conventions(self) -> None:
+        endpoints = derive_endpoints(SVC, methods)
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 2
+
+    def test_all_three_conventions(self) -> None:
         @dataclass
         class SVC:
+            id: Annotated[int, Identity]
+
             @classmethod
             @post("/api/create")
             async def create(cls) -> Result[int, DomainError]:
@@ -318,14 +276,15 @@ class TestMethodsPattern:
             async def do_thing(self, x: int) -> Result[int, DomainError]:
                 return Ok(x)
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 3
+        endpoints = derive_endpoints(SVC, methods)
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 3
 
     def test_skips_private_methods(self) -> None:
         @dataclass
         class SVC:
+            id: Annotated[int, Identity]
+
             @classmethod
             @post("/api/create")
             async def create(cls) -> Result[int, DomainError]:
@@ -334,24 +293,24 @@ class TestMethodsPattern:
             async def _internal(self) -> None:
                 pass
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 1
+        endpoints = derive_endpoints(SVC, methods)
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 1
 
     def test_multiple_triggers_per_method(self) -> None:
         @dataclass
         class SVC:
+            id: Annotated[int, Identity]
+
             @classmethod
             @post("/api/create")
             @command("create")
             async def create(cls) -> Result[int, DomainError]:
                 return Ok(1)
 
-        pattern = MethodsPattern()
-        steps = pattern.compile(SVC)
-        expose_steps = [s for s in steps if isinstance(s, ExposeMethod)]
-        assert len(expose_steps) == 2
+        endpoints = derive_endpoints(SVC, methods)
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 2
 
     def test_default_methods_has_error_caps(self) -> None:
         assert len(methods.capabilities) > 0
@@ -374,8 +333,8 @@ class TestMethodsEndToEnd:
                 return Ok(1)
 
         endpoints = derive_endpoints(SVC, methods)
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) > 0
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total > 0
 
     def test_staticmethod_compile_to_endpoints(self) -> None:
         @dataclass
@@ -388,21 +347,8 @@ class TestMethodsEndToEnd:
                 return Ok("ok")
 
         endpoints = derive_endpoints(SVC, methods)
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) > 0
-
-    def test_plain_method_compile_to_endpoints(self) -> None:
-        @dataclass
-        class SVC:
-            id: Annotated[int, Identity]
-
-            @post("/api/do")
-            async def do_thing(self, x: int) -> Result[int, DomainError]:
-                return Ok(x)
-
-        endpoints = derive_endpoints(SVC, methods)
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) > 0
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total > 0
 
     def test_mixed_conventions_compile(self) -> None:
         @dataclass
@@ -424,5 +370,5 @@ class TestMethodsEndToEnd:
                 return Ok(x)
 
         endpoints = derive_endpoints(SVC, methods)
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) == 3
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 3

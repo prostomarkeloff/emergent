@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet
     from emergent.wire.derive._ctx import OperationHandler
+    from emergent.wire.derive._opspec import Op
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,6 +80,21 @@ class HandlerTemplate(Protocol):
     """
 
     def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[object, DomainError]": ...
+
+
+@runtime_checkable
+class DescriptiveTemplate(HandlerTemplate, Protocol):
+    """HandlerTemplate that self-describes its default Op contract.
+
+    Enables passing handler instances directly as ops:
+
+        http_crud('/users', Users, ops=(FetchMany(), InsertNew(), DeleteOne()))
+
+    Each handler knows its default name, input projection, output spec,
+    and effects — no separate Op() wrapper needed for standard cases.
+    """
+
+    def op_defaults(self) -> "Op": ...
 
 
 class WrapperFn(Protocol):
@@ -134,6 +150,13 @@ class FetchMany:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Pageable, Read, Sortable
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import ListResponse, NoFields
+
+        return Op("List", NoFields(), ListResponse(), self, effects=(Read(), Pageable(), Sortable()))
+
 
 @dataclass(frozen=True, slots=True)
 class FetchOneById:
@@ -157,6 +180,13 @@ class FetchOneById:
             return Ok(existing)
 
         return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Cacheable, Idempotent, Read
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import EntityResponse, IdOnly
+
+        return Op("Get", IdOnly(), EntityResponse(), self, effects=(Read(), Idempotent(), Cacheable()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +218,13 @@ class InsertNew:
             return Ok(result)
 
         return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Creates
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import EntityResponse, NonId
+
+        return Op("Create", NonId(), EntityResponse(), self, effects=(Creates(),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +261,13 @@ class UpdateExisting:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Idempotent, Updates
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import AllFields, EntityResponse
+
+        return Op("Update", AllFields(), EntityResponse(), self, effects=(Updates(), Idempotent()))
+
 
 @dataclass(frozen=True, slots=True)
 class DeleteOne:
@@ -248,6 +292,13 @@ class DeleteOne:
             return Ok(existing)
 
         return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Deletes, Idempotent
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import IdOnly, OkResponse
+
+        return Op("Delete", IdOnly(), OkResponse(), self, effects=(Deletes(), Idempotent()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -283,6 +334,13 @@ class PaginatedFetchMany:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Pageable, Read, Sortable
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import NoFields, PaginatedResponse
+
+        return Op("List", NoFields(), PaginatedResponse(), self, effects=(Read(), Pageable(), Sortable()))
+
 
 @dataclass(frozen=True, slots=True)
 class CachedFetchOneById:
@@ -297,7 +355,12 @@ class CachedFetchOneById:
         async def handler(op: HasProvider[EntityT]) -> Result[EntityT, DomainError]:
             cache_key = f"{entity_name}:{identity_values(op, id_names)}"
 
-            cache = getattr(op, "cache")
+            cache = getattr(op, "cache", None)
+            if cache is None:
+                raise RuntimeError(
+                    f"CachedFetchOneById requires 'cache' on the op type for {entity_name}. "
+                    f"Add a cache provider node to the entity's capabilities."
+                )
             cached_val: EntityT | None = await cache.get(cache_key)
             if cached_val is not None:
                 return Ok(cached_val)
@@ -315,6 +378,13 @@ class CachedFetchOneById:
             return Ok(existing)
 
         return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Cacheable, Idempotent, Read
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import EntityResponse, IdOnly
+
+        return Op("Get", IdOnly(), EntityResponse(), self, effects=(Read(), Idempotent(), Cacheable()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +423,16 @@ class PatchExisting:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Idempotent, Updates
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import EntityResponse, IdOnly, MergeProjection, OptionalNonId
+
+        return Op(
+            "Patch", MergeProjection(IdOnly(), OptionalNonId()), EntityResponse(), self,
+            effects=(Updates(), Idempotent()),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SortedFetchMany:
@@ -381,6 +461,13 @@ class SortedFetchMany:
             return Ok(items)
 
         return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Read, Sortable
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import ListResponse, NoFields
+
+        return Op("List", NoFields(), ListResponse(), self, effects=(Read(), Sortable()))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -430,6 +517,13 @@ class ExistsById:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Idempotent, Read
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import BoolResponse, IdOnly
+
+        return Op("Exists", IdOnly(), BoolResponse(), self, effects=(Read(), Idempotent()))
+
 
 @dataclass(frozen=True, slots=True)
 class CountAll:
@@ -446,10 +540,53 @@ class CountAll:
 
         return handler
 
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Read
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import CountResponse, NoFields
+
+        return Op("Count", NoFields(), CountResponse(), self, effects=(Read(),))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Temporal Handler Templates
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class UpsertExisting:
+    """Handler: find by identity — if exists update, else insert."""
+
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[EntityT, DomainError]":
+        entity = spec.entity
+        id_names = spec.identity_names
+        non_id_names = list(spec.non_identity_names)
+        base = spec.base_query
+
+        async def handler(op: HasProvider[EntityT]) -> Result[EntityT, DomainError]:
+            assert base is not None
+            existing = await op.provider.fetch_one(
+                filter_by_identity(base, op, id_names)
+            )
+            entity_data = {f: getattr(op, f) for f in non_id_names if hasattr(op, f)}
+            for name in id_names:
+                entity_data[name] = getattr(op, name)
+
+            new_entity = entity(**entity_data)
+            if existing is not None:
+                result = await op.provider.update(new_entity)
+            else:
+                result = await op.provider.insert(new_entity)
+            return Ok(result)
+
+        return handler
+
+    def op_defaults(self) -> "Op":
+        from emergent.wire.derive._effects import Creates, Idempotent, Updates
+        from emergent.wire.derive._opspec import Op
+        from emergent.wire.derive._project import AllFields, EntityResponse
+
+        return Op("Upsert", AllFields(), EntityResponse(), self, effects=(Creates(), Updates(), Idempotent()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +730,7 @@ __all__ = (
     "HandlerSpec",
     "HasProvider",
     "HandlerTemplate",
+    "DescriptiveTemplate",
     "WrapperFn",
     "WrappedTemplate",
     "wrap_template",
@@ -605,6 +743,7 @@ __all__ = (
     "CachedFetchOneById",
     "PatchExisting",
     "SortedFetchMany",
+    "UpsertExisting",
     "SetField",
     "ExistsById",
     "CountAll",

@@ -1,9 +1,9 @@
-"""Pattern Derivation — entity + pattern → wire Application.
+"""Pattern Derivation — proxy to emergent.wire.derive.
 
-v4: deps removed. Infrastructure dependencies resolved via compose.Node
-    (nodnod node composition at runtime). Pattern.compile() takes only entity.
+DEPRECATED: Use emergent.wire.derive directly.
+derivelib will be removed in emergent 1.0.0.
 
-    from derivelib import derive, derive_application
+    from derivelib import derive, build_application_from_decorated
     from derivelib.patterns import http_crud
 
     @derive(http_crud("/api/users", provider_node=UserProvider))
@@ -17,93 +17,35 @@ v4: deps removed. Infrastructure dependencies resolved via compose.Node
 
 from __future__ import annotations
 
-from typing import Callable, Protocol, TypeVar, runtime_checkable
+from typing import TypeVar
 
-from emergent.wire.axis.surface import (
-    Exposure,
-    Endpoint,
-    Application,
-    application,
-    empty_runner,
+from emergent.wire.axis.schema._universal import (
+    SchemaCapability,
+    get_schema_meta,
+    schema_meta,
 )
-
-from ._derivation import Derivation
-from ._fold import fold_derive, materialize
+from emergent.wire.axis.surface import (
+    Application,
+    Endpoint,
+    application,
+)
+from emergent.wire.derive._compile import compile_derive
+from emergent.wire.derive._materialize import materialize
 
 T = TypeVar("T")
 
-type ExposureT = Callable[[Exposure], Exposure]
-
-
-def _compose(*fns: ExposureT) -> ExposureT:
-    """Chain ExposureT transforms left-to-right."""
-
-    def composed(exp: Exposure) -> Exposure:
-        for fn in fns:
-            exp = fn(exp)
-        return exp
-
-    return composed
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pattern Protocol
+# Derive Decorator — proxies to @schema_meta
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-@runtime_checkable
-class Pattern(Protocol):
-    """Pattern protocol — entity → derivation steps.
-
-    compile() returns a Derivation (tuple of steps), NOT an Endpoint.
-    The steps are folded by fold_derive, then materialized to Endpoint.
-
-    Infrastructure dependencies (providers, backends) are resolved
-    at runtime via compose.Node on generated request types — no deps parameter.
-
-    Example:
-        @dataclass
-        class MyCRUDDialect:
-            provider_node: type
-
-            def compile(self, entity: type) -> Derivation:
-                return (
-                    inspect_entity(),
-                    require_identity(),
-                    bind_provider(self.provider_node),
-                    *crud_exposures(http_triggers("/api/users")),
-                )
-    """
-
-    def compile(self, entity: type) -> Derivation:
-        """Compile pattern into derivation steps."""
-        ...
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Derive Decorator — stores patterns, returns original class
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-DERIVE_PATTERNS_KEY = "__derive_patterns__"
-DERIVE_EXPOSURES_KEY = "__derive_exposures__"
-DERIVE_DERIVATIONS_KEY = "__derive_derivations__"
 
 
 def derive(
-    *args: Pattern | Exposure | ExposureT,
-) -> Callable[[type[T]], type[T]]:
-    """Decorator to attach patterns, exposures, and derivations to a type.
+    *args: SchemaCapability,
+) -> type[T] | type:
+    """Decorator to attach capabilities to a type.
 
-    Patterns are stored but NOT compiled — they get compiled at
-    derive_application time with deps.
-
-    Accepts:
-        Pattern[D]  — compiled to Derivation at build time
-        Exposure    — direct exposures (added to empty endpoint)
-        ExposureT   — post-processing transform on materialized exposures
-
-    Returns the ORIGINAL CLASS unchanged — User is still usable as User.
+    Proxies to @schema_meta() from emergent.wire.derive.
 
     Example:
         @derive(http_crud("/api/users"))
@@ -111,61 +53,41 @@ def derive(
         class User:
             id: int
             email: str
-
-        # User is still a regular class!
-        user = User(id=1, email="alice@example.com")
     """
-
-    def decorator(cls: type[T]) -> type[T]:
-        patterns: list[Pattern] = []
-        exposures: list[Exposure] = []
-        derivations: list[ExposureT] = []
-
-        for arg in args:
-            if isinstance(arg, Exposure):
-                exposures.append(arg)
-            elif isinstance(arg, Pattern):
-                patterns.append(arg)
-            elif callable(arg):
-                # Derivation (ExposureT)
-                derivations.append(arg)
-
-        setattr(cls, DERIVE_PATTERNS_KEY, tuple(patterns))
-        setattr(cls, DERIVE_EXPOSURES_KEY, tuple(exposures))
-        setattr(cls, DERIVE_DERIVATIONS_KEY, tuple(derivations))
-        return cls
-
-    return decorator
+    return schema_meta(*args)
 
 
-def get_patterns(entity: type) -> tuple[Pattern, ...]:
-    """Get patterns attached to an entity by @derive."""
-    return getattr(entity, DERIVE_PATTERNS_KEY, ())
+def get_patterns(entity: type) -> tuple[SchemaCapability, ...]:
+    """Get capabilities attached to an entity by @derive."""
+    return get_schema_meta(entity)
 
 
-def get_exposures(entity: type) -> tuple[Exposure, ...]:
-    """Get direct exposures attached to an entity by @derive."""
-    return getattr(entity, DERIVE_EXPOSURES_KEY, ())
+def get_exposures(entity: type) -> tuple[object, ...]:
+    """Get direct exposures attached to an entity.
+
+    In the proxy implementation, always returns empty tuple.
+    Use emergent.wire.derive directly for advanced exposure control.
+    """
+    return ()
 
 
-def get_derivations(entity: type) -> tuple[ExposureT, ...]:
-    """Get derivations attached to an entity by @derive."""
-    return getattr(entity, DERIVE_DERIVATIONS_KEY, ())
+def get_derivations(entity: type) -> tuple[object, ...]:
+    """Get derivations attached to an entity.
+
+    In the proxy implementation, always returns empty tuple.
+    Use emergent.wire.derive directly for advanced derivation control.
+    """
+    return ()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Internal: Compile pattern → Endpoint via fold
+# Compilation: compile_derive + materialize
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _compile_pattern[EntityT](
-    entity: type[EntityT],
-    pattern: Pattern,
-) -> Endpoint:
-    """Compile a single pattern through fold_derive + materialize."""
-    derivation = pattern.compile(entity)
-    ctx = fold_derive(derivation, entity)
-    return materialize(ctx)
+def _compile_entity(entity: type) -> list[Endpoint]:
+    """Compile entity via wire.derive's compile_derive."""
+    return [materialize(ctx) for ctx in compile_derive(entity)]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -174,11 +96,9 @@ def _compile_pattern[EntityT](
 
 
 def derive_application(
-    *pairs: tuple[type, Pattern],
+    *pairs: tuple[type, SchemaCapability],
 ) -> list[Endpoint]:
-    """Compile entity-pattern pairs.
-
-    Pipeline: Pattern.compile() → Derivation → fold_derive → materialize → Endpoint
+    """Compile entity-capability pairs.
 
     Example:
         endpoints = derive_application(
@@ -186,16 +106,17 @@ def derive_application(
         )
     """
     result: list[Endpoint] = []
-    for entity, pattern in pairs:
-        result.append(_compile_pattern(entity, pattern))
+    for entity, cap in pairs:
+        schema_meta(cap)(entity)
+        result.extend(_compile_entity(entity))
     return result
 
 
 def derive_endpoints(
     entity: type,
-    *patterns: Pattern,
+    *patterns: SchemaCapability,
 ) -> list[Endpoint]:
-    """Compile patterns for a single entity.
+    """Compile capabilities for a single entity.
 
     Example:
         endpoints = derive_endpoints(
@@ -203,21 +124,19 @@ def derive_endpoints(
             http_crud("/api/users", provider_node=UserProvider),
         )
     """
-    result: list[Endpoint] = []
-    for pattern in patterns:
-        result.append(_compile_pattern(entity, pattern))
-    return result
+    schema_meta(*patterns)(entity)
+    return _compile_entity(entity)
 
 
 def derive_from_decorated(
     *entities: type,
-    patterns: tuple[type[Pattern], ...] | None = None,
+    patterns: tuple[type, ...] | None = None,
 ) -> list[Endpoint]:
-    """Compile patterns from @derive decorated entities.
+    """Compile capabilities from @derive decorated entities.
 
     Args:
         *entities: Entity classes decorated with @derive
-        patterns: Optional tuple of pattern types to compile. If None, compile ALL patterns.
+        patterns: Ignored in proxy (kept for signature compatibility)
 
     Example:
         @derive(http_crud("/api/users", provider_node=UserProvider))
@@ -228,38 +147,7 @@ def derive_from_decorated(
     """
     result: list[Endpoint] = []
     for entity in entities:
-        all_patterns = get_patterns(entity)
-        direct_exposures = get_exposures(entity)
-        derivations = get_derivations(entity)
-
-        # Filter patterns if requested
-        if patterns is not None:
-            selected_patterns = tuple(
-                p for p in all_patterns
-                if any(isinstance(p, pattern_type) for pattern_type in patterns)
-            )
-        else:
-            selected_patterns = all_patterns
-
-        for pattern in selected_patterns:
-            endpoint = _compile_pattern(entity, pattern)
-
-            # Apply ExposureT derivations to materialized exposures
-            if derivations:
-                transform = _compose(*derivations)
-                new_exposures = [transform(e) for e in endpoint.exposures]
-                endpoint = Endpoint(runner=endpoint.runner, exposures=new_exposures)
-
-            result.append(endpoint)
-
-        # Handle direct exposures (without runner)
-        if direct_exposures:
-            exposures = list(direct_exposures)
-            if derivations:
-                transform = _compose(*derivations)
-                exposures = [transform(e) for e in exposures]
-            result.append(Endpoint(runner=empty_runner(), exposures=exposures))
-
+        result.extend(_compile_entity(entity))
     return result
 
 
@@ -277,30 +165,31 @@ def _endpoints_to_app(endpoints: list[Endpoint]) -> Application:
 
 
 def build_application(
-    *pairs: tuple[type, Pattern],
+    *pairs: tuple[type, SchemaCapability],
 ) -> Application:
-    """Build Application from entity-pattern pairs.
+    """Build Application from entity-capability pairs.
 
     Example:
         app = build_application(
             (User, http_crud("/api/users", provider_node=UserProvider)),
         )
-        fastapi_app = fastapi.compile(app)
     """
     return _endpoints_to_app(derive_application(*pairs))
 
 
 def build_endpoint(
     entity: type,
-    pattern: Pattern,
+    pattern: SchemaCapability,
 ) -> Endpoint:
-    """Build single Endpoint from entity + pattern."""
-    return _compile_pattern(entity, pattern)
+    """Build single Endpoint from entity + capability."""
+    schema_meta(pattern)(entity)
+    endpoints = _compile_entity(entity)
+    return endpoints[0]
 
 
 def build_application_from_decorated(
     *entities: type,
-    patterns: tuple[type[Pattern], ...] | None = None,
+    patterns: tuple[type, ...] | None = None,
 ) -> Application:
     """Build Application from @derive decorated entities.
 
@@ -318,8 +207,6 @@ def build_application_from_decorated(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 __all__ = (
-    # Pattern Protocol
-    "Pattern",
     # Decorator
     "derive",
     # Accessors
@@ -334,8 +221,4 @@ __all__ = (
     "build_application",
     "build_endpoint",
     "build_application_from_decorated",
-    # Keys (internal)
-    "DERIVE_PATTERNS_KEY",
-    "DERIVE_EXPOSURES_KEY",
-    "DERIVE_DERIVATIONS_KEY",
 )

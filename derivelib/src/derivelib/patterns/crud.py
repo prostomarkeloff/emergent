@@ -1,10 +1,7 @@
-"""CRUD dialect — built on generic dialect infrastructure.
+"""CRUD pattern — proxy to emergent.wire.derive.
 
-CRUD = 6 Ops (List, Get, Create, Update, Patch, Delete) + error transforms.
-Transport-agnostic — use http_crud(), cli_crud(), or dialect() with custom triggers.
-
-CRUD is NOT special. It's 6 Op descriptors with CRUD-specific handler templates.
-Anyone can build their own dialect the same way.
+DEPRECATED: Use emergent.wire.derive directly.
+derivelib will be removed in emergent 1.0.0.
 
     from derivelib.patterns.crud import http_crud, LIST, GET
 
@@ -13,49 +10,41 @@ Anyone can build their own dialect the same way.
     class User:
         id: Annotated[int, Identity]
         name: str
-
-    # Read-only:
-    @derive(http_crud("/api/users", provider_node=UserProvider, ops=(LIST, GET)))
 """
 
 from __future__ import annotations
 
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
-
-from derivelib._dialect import (
-    CLITriggers,
-    Dialect,
-    HTTPTriggers,
-    Op,
-    TriggerGen,
-    dialect,
+from emergent.wire.derive._crud import (
+    ALL_CRUD_OPS,
+    CREATE,
+    CRUD,
+    DELETE,
+    GET,
+    LIST,
+    MUTATION_CRUD_OPS,
+    PATCH,
+    READ_CRUD_OPS,
+    UPDATE,
 )
-from derivelib._effects import Cacheable, Creates, Deletes, Idempotent, Pageable, Read, Sortable, Updates
-from derivelib._project import (
-    all_fields,
-    entity_response,
-    id_only,
-    list_response,
-    merge,
-    no_fields,
-    non_id,
-    ok_response,
-    optional_non_id,
+from emergent.wire.derive._crud import (
+    crud as _wire_crud,
+    http_crud as _wire_http_crud,
+    cli_crud as _wire_cli_crud,
 )
-
-# Re-exports from extracted modules (backward compatibility)
-from derivelib._errors import (  # noqa: F401
+from emergent.wire.derive._error_caps import (
+    ERROR_CAPS,
+    ErrorTransform as CRUDErrorTransform,
+    ProblemResponse,
+)
+from emergent.wire.derive._errors import (
     AlreadyExists,
-    DomainError as CRUDError,  # Deprecated: use DomainError from derivelib directly
+    DomainError as CRUDError,
     InvalidData,
     NotFound,
     ProblemDetail,
 )
-from derivelib._query_helpers import (  # noqa: F401
-    filter_by_identity as filter_by_identity,
-    identity_values as identity_values,
-)
-from derivelib._handler_templates import (  # noqa: F401
+from emergent.wire.derive._handler import (
     CachedFetchOneById,
     DeleteOne,
     FetchMany,
@@ -65,57 +54,26 @@ from derivelib._handler_templates import (  # noqa: F401
     PatchExisting,
     UpdateExisting,
 )
+from emergent.wire.derive._opspec import Op
 
-# Error transform capabilities — extracted to _error_caps.py, re-exported for backward compat
-from derivelib._error_caps import ErrorTransform as CRUDErrorTransform, ProblemResponse, ERROR_CAPS  # noqa: F401
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CRUD Ops — transport-agnostic operation descriptors
-# ═══════════════════════════════════════════════════════════════════════════════
-
-LIST = Op("List", no_fields(), list_response(), FetchMany(), effects=(Read(), Pageable(), Sortable()))
-GET = Op("Get", id_only(), entity_response(), FetchOneById(), effects=(Read(), Idempotent(), Cacheable()))
-CREATE = Op("Create", non_id(), entity_response(), InsertNew(), effects=(Creates(),))
-UPDATE = Op("Update", all_fields(), entity_response(), UpdateExisting(), effects=(Updates(), Idempotent()))
-PATCH = Op("Patch", merge(id_only(), optional_non_id()), entity_response(), PatchExisting(), effects=(Updates(), Idempotent()))
-DELETE = Op("Delete", id_only(), ok_response(), DeleteOne(), effects=(Deletes(), Idempotent()))
-
-ALL_CRUD_OPS = (LIST, GET, CREATE, UPDATE, PATCH, DELETE)
-MUTATION_CRUD_OPS = (CREATE, UPDATE, PATCH, DELETE)
-READ_CRUD_OPS = (LIST, GET)
+from derivelib._compat import ChainableCapability
 
 CRUD_ERROR_CAPS = ERROR_CAPS
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CRUD Dialect — thin wrapper around dialect()
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 def crud(
-    triggers: TriggerGen,
+    triggers: object,
     provider_node: type,
     *caps: SurfaceCapability,
     ops: tuple[Op, ...] | None = None,
-) -> Dialect:
-    """CRUD dialect = standard ops + error transforms.
+) -> ChainableCapability:
+    """CRUD pattern with .chain() support.
 
         crud(HTTPTriggers("/api/users"), UserProvider)
-        crud(CLITriggers("user"), UserProvider)
         crud(HTTPTriggers("/api/users"), UserProvider, ops=(LIST, GET))
     """
-    return dialect(
-        *(ops or ALL_CRUD_OPS),
-        triggers=triggers,
-        provider_node=provider_node,
-        capabilities=(*caps, *CRUD_ERROR_CAPS),
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Presets
-# ═══════════════════════════════════════════════════════════════════════════════
+    inner = _wire_crud(triggers, provider_node, *caps, ops=ops)
+    return ChainableCapability(inner=inner)
 
 
 def http_crud(
@@ -123,9 +81,10 @@ def http_crud(
     provider_node: type,
     *caps: SurfaceCapability,
     ops: tuple[Op, ...] | None = None,
-) -> Dialect:
-    """HTTP CRUD dialect."""
-    return crud(HTTPTriggers(base_path), provider_node, *caps, ops=ops)
+) -> ChainableCapability:
+    """HTTP CRUD pattern with .chain() support."""
+    inner = _wire_http_crud(base_path, provider_node, *caps, ops=ops)
+    return ChainableCapability(inner=inner)
 
 
 def cli_crud(
@@ -133,14 +92,11 @@ def cli_crud(
     provider_node: type,
     *caps: SurfaceCapability,
     ops: tuple[Op, ...] | None = None,
-) -> Dialect:
-    """CLI CRUD dialect."""
-    return crud(CLITriggers(prefix), provider_node, *caps, ops=ops)
+) -> ChainableCapability:
+    """CLI CRUD pattern with .chain() support."""
+    inner = _wire_cli_crud(prefix, provider_node, *caps, ops=ops)
+    return ChainableCapability(inner=inner)
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Exports
-# ═══════════════════════════════════════════════════════════════════════════════
 
 __all__ = (
     # CRUD Ops (the building blocks)

@@ -36,6 +36,7 @@ DEFAULT_REST_ROUTES: dict[str, RouteSpec] = {
     "Update": ("PUT", True),
     "Patch": ("PATCH", True),
     "Delete": ("DELETE", True),
+    "Upsert": ("PUT", False),
 }
 
 

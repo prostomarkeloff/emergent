@@ -1,6 +1,6 @@
 # Your First API
 
-We're building a product catalog. The whole thing. It will take about 20 lines.
+We're building a product catalog. The whole thing. It will take about 25 lines.
 
 ```python
 # catalog.py
@@ -9,20 +9,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
+from nodnod import scalar_node
+
+from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId
+from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
-from derivelib import derive, build_application_from_decorated, memory_node
-from derivelib.patterns.crud import http_crud
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud
 
-Products = memory_node()
 
-@derive(http_crud("/products", provider_node=Products))
+@scalar_node
+class Products:
+    @classmethod
+    def __compose__(cls) -> MutatingRelationalProvider:
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
+
+
+@schema_meta(http_crud("/products", Products))
 @dataclass
 class Product:
     id: Annotated[int, Identity]
     name: str
     price: float
 
-app = build_application_from_decorated(Product)
+
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(Product)])
 
 from emergent.wire.compile import targets
 fastapi_app = targets.fastapi.compile(app)
@@ -77,29 +89,30 @@ Six endpoints. Validation. RFC 7807 errors. OpenAPI at `/docs`. Let's understand
 
 ## Pulling apart the magic
 
-**`Annotated[int, Identity]`** — this marker says "this field is the primary key." It's how derivelib knows which fields go into a GET request (identity only), which into a CREATE request (everything *except* identity), and how to look up entities. If you forget it, you get a clear error at derivation time, not a mystery at runtime.
+**`Annotated[int, Identity]`** — this marker says "this field is the primary key." It's how the derivation knows which fields go into a GET request (identity only), which into a CREATE request (everything *except* identity), and how to look up entities. If you forget it, you get a clear error at derivation time, not a mystery at runtime.
 
-**`memory_node()`** — a nodnod node wrapping an in-memory relational provider. Think of it as a list pretending to be a database. For prototyping it's instant; in production you'd swap in SQLAlchemy.
+**`@scalar_node` + `MemoryRelationalProvider`** — a nodnod node wrapping an in-memory relational provider. Think of it as a list pretending to be a database. For prototyping it's instant; in production you'd swap in SQLAlchemy.
 
-**`http_crud("/products", provider_node=Products)`** — a *pattern*. It bundles 6 operation descriptors (List, Get, Create, Update, Patch, Delete) with HTTP triggers (`GET /products`, `POST /products`, etc.). It knows nothing about your specific entity yet — it's a recipe, not a meal.
+**`http_crud("/products", Products)`** — a *capability*. It's a `SchemaCapability` implementing `DeriveGeneratable`. It bundles 6 operation descriptors (List, Get, Create, Update, Patch, Delete) with HTTP triggers (`GET /products`, `POST /products`, etc.). It knows nothing about your specific entity yet — it's a recipe, not a meal.
 
-**`@derive(...)`** — attaches the pattern to your class. Nothing generates yet. It's stored, waiting.
+**`@schema_meta(...)`** — attaches the capability to your class as schema metadata. Nothing generates yet. It's stored, waiting.
 
-**`build_application_from_decorated(Product)`** — *now* it runs. For each decorated class:
+**`compile_derive(Product)`** — *now* it runs. Three-phase compilation:
 
-1. Inspect fields (schema axis) — discover `id`, `name`, `price`
-2. Find the identity field — `id`
-3. Bind the provider (query axis) — `Products`
-4. Generate one spec per CRUD operation (surface axis)
-5. Materialize concrete request types, response types, handlers
-6. Assemble into a wire `Application`
+1. **Phase 1 (Generate):** CRUD reads the entity schema — discovers `id`, `name`, `price`, finds the identity field (`id`), binds the provider, generates one `OpSpec` per CRUD operation
+2. **Phase 2 (Modify):** any `DeriveModifiable` capabilities transform the specs (none here)
+3. **Phase 3 (Augment):** any `DeriveAugmentable` capabilities run post-modification (none here)
 
-**`targets.fastapi.compile(app)`** — the Application is target-independent. This projects it to FastAPI: route functions, Pydantic models, framework registration.
+Returns `list[DeriveCtx]` — one context per generator group.
+
+**`materialize(ctx)`** — converts `DeriveCtx` into a wire `Endpoint` with concrete request types, response types, handlers, and exposures.
+
+**`application().mount(...)` + `targets.fastapi.compile(app)`** — the Application is target-independent. FastAPI is one projection. CLI is another. Telegram is another.
 
 That last point matters. The Application isn't a FastAPI app. It's an intermediate representation. FastAPI is one projection. CLI is another. Telegram is another. But we'll get to that.
 
 ---
 
-For now, stare at those 20 lines. Think about how many lines the FastAPI equivalent would be. Think about how many of those lines were *plumbing*. We just deleted all of them.
+For now, stare at those 25 lines. Think about how many lines the FastAPI equivalent would be. Think about how many of those lines were *plumbing*. We just deleted all of them.
 
 **Next:** [Domain Logic →](02-domain-logic.md)

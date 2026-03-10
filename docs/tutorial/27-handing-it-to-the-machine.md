@@ -1,6 +1,6 @@
 # Handing It to the Machine
 
-You open Claude Code. You type: "add pagination and auth to the users API." You go make coffee. When you come back, it's done. One `.chain()` call added. Tests pass. No hallucinated middleware. No phantom signal handlers. No changes to files the agent shouldn't have touched.
+You open Claude Code. You type: "add pagination and auth to the users API." You go make coffee. When you come back, it's done. One capability added to `@schema_meta`. Tests pass. No hallucinated middleware. No phantom signal handlers. No changes to files the agent shouldn't have touched.
 
 This isn't hypothetical. It's what actually happens when a coding agent meets an emergent codebase. This chapter is about why — and how to make it work even better.
 
@@ -11,10 +11,10 @@ This isn't hypothetical. It's what actually happens when a coding agent meets an
 When a coding agent opens your emergent project, it reads one entity and knows everything:
 
 ```python
-@derive(
-    http_crud("/users", provider_node=Users)
-    .chain(paginated(50))
-    .chain(sorted_list())
+@schema_meta(
+    http_crud("/users", Users),
+    Paginated(50),
+    Sorted(),
 )
 @dataclass
 class User:
@@ -25,9 +25,7 @@ class User:
 
 CRUD at `/users`. Paginated. Sorted. Provider is `Users`. Identity field is `id`. Name is max 100 chars. Email is unique. That's everything. No routing file to check. No serializer to find. No middleware to trace. No mixin to unravel. One decorator. One dataclass. Complete picture.
 
-The agent doesn't need to build a mental model of your architecture. The architecture is *right there*, in the syntax. The `@derive` decorator isn't hiding behavior — it's declaring it. The `Annotated` types aren't metadata hints — they're the actual compilation inputs. What you see is what the compiler sees.
-
-emergent also ships with `emergent-platform-ai-guide.md` — a complete reference document with every import path, every pattern, every common recipe. Put it in your repo root. Agents pick it up automatically.
+The agent doesn't need to build a mental model of your architecture. The architecture is *right there*, in the syntax. The `@schema_meta` decorator isn't hiding behavior — it's declaring it. The `Annotated` types aren't metadata hints — they're the actual compilation inputs. What you see is what the compiler sees.
 
 ## The verify-before-run loop
 
@@ -38,7 +36,7 @@ The pipeline has natural checkpoints:
 1. **Assemble** — build frozen dataclasses (pure data, no side effects)
 2. **Verify** — `verify_raising(*entities)` catches contradictions immediately
 3. **Inspect** — call `explain_entity(User)` to see the derivation steps, triggers, field specs
-4. **Compile** — `fastapi.compile(app)` is pure and traceable
+4. **Compile** — `compile_derive(User)` + `materialize(ctx)` + `targets.fastapi.compile(app)` is pure and traceable
 5. **Inspect again** — `explain(axes)` after `Axes.traced()` shows every fold step
 6. **Run** — only now do side effects happen
 
@@ -50,7 +48,7 @@ verify_raising(User, Product, Order)  # fails fast on contradictions
 ```
 
 ```python
-from derivelib import explain_entity
+from emergent.wire.derive import explain_entity
 print(explain_entity(User))
 # Shows: schema fields, derivation steps, generated endpoints, triggers
 ```
@@ -71,13 +69,13 @@ No "write 200 lines and pray." Write, verify, inspect, compile, inspect, run.
 
 These prompts produce correct results on first try, consistently:
 
-**"Add soft delete to Users."** The agent adds `.chain(soft_delete(field="deleted_at"))` to the `@derive` decorator and adds `deleted_at: datetime | None = None` to the dataclass. One file. Two lines.
+**"Add soft delete to Users."** The agent adds `SoftDelete(field="deleted_at")` to `@schema_meta` and adds `deleted_at: datetime | None = None` to the dataclass. One file. Two lines.
 
-**"Make the API read-only."** `.chain(readonly())`. Done.
+**"Make the API read-only."** Add `Readonly()` to `@schema_meta`. Done.
 
-**"Add rate limiting to mutations only."** `.chain(add_capability(RateLimit(policy=...), Mutation))`. The `Mutation` effect targets only write operations. Read endpoints are untouched.
+**"Add rate limiting to mutations only."** Add `EffectRateLimited(policy=...)` to `@schema_meta`. The transform targets only mutation effects. Read endpoints are untouched.
 
-**"Create a CLI version of this API."** The agent adds `cli_crud("user", provider_node=Users)` to `@derive` and calls `cli.compile(app)`. Same entity, new target. No adapter code.
+**"Create a CLI version of this API."** The agent adds `cli_crud("user", Users)` to `@schema_meta` and calls `cli.compile(app)`. Same entity, new target. No adapter code.
 
 **"Add a new entity Product with standard CRUD."** The agent copies the User pattern, changes the fields. No routing to configure, no serializer to write, no viewset to register. The pattern is the configuration.
 
@@ -87,9 +85,9 @@ Why do these work? Each task is a **single local change**. The agent reads one f
 
 Not everything is one-shot. Be honest about when to help:
 
-**Custom handler templates.** Building a new `SubmitAndProcess` or `SoftDeleteMark` template requires understanding the `HandlerSpec` protocol. Tell the agent: "look at `derivelib/examples/task_queue.py` for an example of a custom handler template."
+**Custom handler templates.** Building a new `SubmitAndProcess` or `SoftDeleteMark` template requires understanding the `HandlerSpec` protocol. Tell the agent: "look at examples for a custom handler template."
 
-**New compilation targets.** Writing a GraphQL compiler or a gRPC target means understanding fold and phases. Point the agent at `docs/compiler-deep-dive.md`.
+**New compilation targets.** Writing a GraphQL compiler or a gRPC target means understanding fold and phases. Point the agent at the compilation docs.
 
 **Complex stateful codecs.** Multi-turn Telegram flows with branching state are genuinely hard. The agent will write a `__transition__` method, but review the state transition logic — that's domain logic, not framework plumbing.
 
@@ -121,8 +119,6 @@ def test_app_has_expected_endpoints():
     assert "/users" in paths
 ```
 
-**Put the AI guide in your repo.** Drop `emergent-platform-ai-guide.md` at the project root. It has a complete import map — Section 11 lists every import path in the platform. The agent doesn't hallucinate imports when the correct ones are in context.
-
 **Run tests after every change.** `uv run python -m pytest tests/ -x -q`. The agent should do this automatically. Fast tests + local changes = tight feedback loop.
 
 **Use the levels.** If the agent is struggling with a Level 3 task (custom dialect), check if Level 2 (CRUD + methods) does what you need. Simpler tasks have simpler prompts.
@@ -151,12 +147,12 @@ uv run python -m pytest tests/test_X.py # Single file
 
 ```
 frozen dataclasses (ops / capabilities / steps)
-    → fold (isinstance-based protocol dispatch)
-    → context accumulation
-    → compile to target artifact
+    -> fold (isinstance-based protocol dispatch)
+    -> context accumulation
+    -> compile to target artifact
 ```
 
-Same pattern at every layer. derivelib: Entity → Application. wire: Application → FastAPI/CLI/TG. Always frozen data in, compiled artifact out.
+Same pattern at every layer. derive: Entity -> DeriveCtx -> Endpoint. wire: Application -> FastAPI/CLI/TG. Always frozen data in, compiled artifact out.
 
 ## How To Add a CRUD Entity
 
@@ -166,24 +162,25 @@ from typing import Annotated
 from nodnod import scalar_node
 from emergent.wire.axis.schema import Identity, MaxLen, Unique
 from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
-from emergent.wire.axis.query._provider import SequenceNextId
-from derivelib import derive, build_application_from_decorated
-from derivelib.patterns import http_crud
+from emergent.wire.axis.query import SequenceNextId, MutatingRelationalProvider
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud
 
 @scalar_node
 class Users:
     @classmethod
-    def __compose__(cls):
+    def __compose__(cls) -> MutatingRelationalProvider:
         return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
 
-@derive(http_crud("/users", provider_node=Users))
+@schema_meta(http_crud("/users", Users))
 @dataclass
 class User:
     id: Annotated[int, Identity]
     name: Annotated[str, MaxLen(100)]
     email: Annotated[str, Unique]
 
-app = build_application_from_decorated(User)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(User)])
 
 from emergent.wire.compile.targets import fastapi
 fastapi_app = fastapi.compile(app)
@@ -191,23 +188,26 @@ fastapi_app = fastapi.compile(app)
 
 ## How To Add Features to an Existing Entity
 
-All via `.chain()` on the pattern — one line each:
+All via capabilities in `@schema_meta(...)` — one line each:
 
 ```python
-from derivelib.transforms import readonly, paginated, sorted_list, add_capability, project_response
-from emergent.wire.axis.schema.dialects.temporal import SoftDelete, Timestamps
-from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.derive import (
+    Paginated, Sorted, Readonly, ProjectResponse,
+    SoftDelete, Timestamped, WithoutDelete,
+)
 
-# Paginate:      http_crud(...).chain(paginated(50))
-# Sort:          http_crud(...).chain(sorted_list())
-# Read-only:     http_crud(...).chain(readonly())
-# Auth on mutations: http_crud(...).chain(add_capability(BearerAuth.jwt(), Mutation))
-# Hide fields:   http_crud(...).chain(project_response(exclude=("secret",)))
-# Stack them:    http_crud(...).chain(paginated(50), sorted_list(), readonly())
+# Paginate:        @schema_meta(http_crud(..., Users), Paginated(50))
+# Sort:            @schema_meta(http_crud(..., Users), Sorted())
+# Read-only:       @schema_meta(http_crud(..., Users), Readonly())
+# Hide fields:     @schema_meta(http_crud(..., Users), ProjectResponse(exclude=("secret",)))
+# Stack them:      @schema_meta(http_crud(..., Users), Paginated(50), Sorted(), Readonly())
 
-# Soft delete + timestamps (add fields + @schema_meta):
-@schema_meta(SoftDelete("deleted_at"), Timestamps("created_at", "updated_at"))
-@derive(http_crud("/users", provider_node=Users))
+# Soft delete + timestamps:
+@schema_meta(
+    http_crud("/users", Users),
+    SoftDelete(field="deleted_at"),
+    Timestamped(created="created_at", updated="updated_at"),
+)
 @dataclass
 class User:
     id: Annotated[int, Identity]
@@ -220,11 +220,11 @@ class User:
 ## How To Add a CLI Target
 
 ```python
-from derivelib.patterns import cli_crud
+from emergent.wire.derive import cli_crud
 
-@derive(
-    http_crud("/users", provider_node=Users),
-    cli_crud("user", provider_node=Users),
+@schema_meta(
+    http_crud("/users", Users),
+    cli_crud("user", Users),
 )
 @dataclass
 class User: ...
@@ -236,10 +236,10 @@ cli_parser = cli_target.compile(app, prog="myapp")
 ## How To Add Hand-Written Methods
 
 ```python
-from derivelib.patterns.methods import methods, post, get, command
+from emergent.wire.derive.patterns.methods import Methods, post, get, command
 from kungfu import Result, Ok, Error
 
-@derive(http_crud("/bounties", provider_node=Board), methods)
+@schema_meta(http_crud("/bounties", Board), Methods())
 @dataclass
 class Bounty:
     id: Annotated[int, Identity]
@@ -275,7 +275,7 @@ Always follow this loop — verify and inspect before you run:
 1. Assemble frozen dataclasses (no side effects)
 2. `verify_raising(*entities)` — catch contradictions at compile time
 3. `explain_entity(User)` — inspect derivation steps
-4. `fastapi.compile(app)` — pure, no side effects
+4. `compile_derive(User)` + `materialize(ctx)` — pure, no side effects
 5. `explain(axes)` after `Axes.traced()` — inspect compilation
 6. Run tests / start server
 
@@ -283,7 +283,7 @@ Always follow this loop — verify and inspect before you run:
 from emergent.wire.verify import verify_raising
 verify_raising(User, Product, Order)  # MUST run after every change
 
-from derivelib import explain_entity
+from emergent.wire.derive import explain_entity
 print(explain_entity(User))
 
 from emergent.wire.compile import Axes
@@ -321,13 +321,18 @@ print(explain(axes))
 ## Key Imports
 
 ```python
-# derivelib core
-from derivelib import derive, build_application_from_decorated
-from derivelib.patterns import http_crud, cli_crud, nested_http_crud
-from derivelib.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE
-from derivelib.patterns.methods import methods, post, get, put, delete, command
-from derivelib.transforms import readonly, paginated, sorted_list, add_capability, project_response
-from derivelib import explain_entity
+# Core derive
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.derive import compile_derive, materialize
+from emergent.wire.derive import http_crud, cli_crud
+from emergent.wire.derive._crud import LIST, GET, CREATE, UPDATE, PATCH, DELETE
+from emergent.wire.derive.patterns.methods import Methods, post, get, put, delete, command
+from emergent.wire.derive.patterns.nested import nested_http_crud
+from emergent.wire.derive import (
+    Paginated, Sorted, Readonly, ProjectResponse,
+    SoftDelete, Timestamped, WithoutDelete, Filtered, Searchable,
+)
+from emergent.wire.derive import explain_entity
 
 # Schema
 from emergent.wire.axis.schema import Identity, Unique, Nullable, ReadOnly, Sensitive
@@ -335,9 +340,8 @@ from emergent.wire.axis.schema import Min, Max, MinLen, MaxLen, Pattern, OneOf, 
 from emergent.wire.axis.schema.dialects import cli, openapi, sql, tg, compose
 
 # Query + providers
-from emergent.wire.axis.query import relational, relational_store
+from emergent.wire.axis.query import relational, MutatingRelationalProvider, SequenceNextId
 from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
-from emergent.wire.axis.query._provider import SequenceNextId, UuidNextId
 
 # Wire surface
 from emergent.wire.axis.surface import endpoint, application
@@ -353,7 +357,7 @@ from emergent.wire.compile.targets import fastapi, cli as cli_target
 from kungfu import Result, Ok, Error
 
 # Effects
-from derivelib import Read, Mutation, Creates, Updates, Deletes
+from emergent.wire.derive._effects import Read, Mutation, Creates, Updates, Deletes
 
 # Provider node
 from nodnod import scalar_node
@@ -363,11 +367,11 @@ from nodnod import scalar_node
 
 | Task | Level | Pattern |
 |------|-------|---------|
-| Standard CRUD | 1 | `@derive(http_crud(...))` |
-| CRUD + domain methods | 2 | `@derive(http_crud(...), methods)` |
-| All hand-written endpoints | 3 | `@derive(methods)` |
+| Standard CRUD | 1 | `@schema_meta(http_crud(...))` |
+| CRUD + domain methods | 2 | `@schema_meta(http_crud(...), Methods())` |
+| All hand-written endpoints | 3 | `@schema_meta(Methods())` |
 | Multi-target, custom wiring | 4 | `endpoint().expose()` |
-| Custom business pattern | any | `dialect(...)` |
+| Custom business pattern | any | Custom `DeriveGeneratable` |
 ````
 
 ---

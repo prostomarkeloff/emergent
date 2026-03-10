@@ -308,7 +308,7 @@ class PaginatedResponse:
             ("page_size", int),
         ]
 
-        def _paginated_ok(cls: type, data: Mapping[str, int | Sequence[int]] | Sequence[int]) -> HasAnnotations:
+        def _paginated_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -356,7 +356,7 @@ class EmptyResponse:
     """Response = empty (204 No Content semantics)."""
 
     def resolve[EntityT](self, ctx: DeriveCtx[EntityT]) -> ResolvedResponse:
-        field_specs: list[FieldSpec] = [("success", bool, True)]
+        field_specs: list[FieldSpec] = []
         converter = _result_converter(
             ok=lambda cls, _: cls(),
             error=lambda _cls, err: err,
@@ -376,7 +376,7 @@ class CursorPaginatedResponse:
             ("has_more", bool),
         ]
 
-        def _cursor_ok(cls: type, data: Mapping[str, str | bool | Sequence[str] | None] | Sequence[str]) -> HasAnnotations:
+        def _cursor_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),

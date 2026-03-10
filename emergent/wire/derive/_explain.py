@@ -172,8 +172,8 @@ def explain_entity(entity: type) -> str:
     """Compile and explain an entity."""
     from emergent.wire.derive._compile import compile_derive
 
-    ctx = compile_derive(entity)
-    return explain_derive(ctx)
+    ctxs = compile_derive(entity)
+    return "\n\n".join(explain_derive(ctx) for ctx in ctxs)
 
 
 __all__ = (

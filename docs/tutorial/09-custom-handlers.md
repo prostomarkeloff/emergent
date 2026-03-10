@@ -21,17 +21,15 @@ from typing import Annotated
 from kungfu import Error, Ok, Result
 
 from emergent.wire.axis.schema import Identity
-
-from derivelib import (
-    derive, build_application_from_decorated, memory_node,
-    HandlerSpec, id_only, entity_response,
-    fetch_by_identity, Op, NotFound,
-)
-from derivelib._ctx import OperationHandler
-from derivelib._errors import DomainError
-from derivelib._effects import Mutation
-from derivelib._protocols import HasProvider
-from derivelib.patterns.crud import http_crud
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud
+from emergent.wire.derive._handler import HandlerSpec
+from emergent.wire.derive._ctx import OperationHandler
+from emergent.wire.derive._effects import DomainError, Mutation
+from emergent.wire.derive._opspec import Op
+from emergent.wire.derive._project import id_only, entity_response
+from emergent.wire.derive._query_helpers import fetch_by_identity, NotFound
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +44,7 @@ class IncrementField:
         id_names = spec.identity_names
         field, param = self.field, self.increment_param
 
-        async def handler(op: HasProvider[E]) -> Result[E, DomainError]:
+        async def handler(op: object) -> Result[E, DomainError]:
             # Fetch
             obj = await fetch_by_identity(op.provider, entity_cls, op, id_names)
             if obj is None:
@@ -76,28 +74,12 @@ That's it. `IncrementField` is a frozen dataclass (defunctionalized — it's dat
 
 Two ways to use a custom template:
 
-**Option A — swap into existing CRUD:**
+**Option A — define a new Op and include it in CRUD:**
 
 ```python
-from derivelib.transforms import swap_handler
-from derivelib.patterns.crud import UPDATE
+from dataclasses import replace
+from emergent.wire.derive._crud import UPDATE
 
-@derive(
-    http_crud("/items", provider_node=Items)
-        .chain(swap_handler(UPDATE, IncrementField(field="stock")))
-)
-@dataclass
-class Item:
-    id: Annotated[int, Identity]
-    name: str
-    stock: int = 0
-```
-
-This replaces the Update handler with your increment logic. The PUT endpoint now increments instead of replacing.
-
-**Option B — define a new Op:**
-
-```python
 RESTOCK = Op(
     "Restock",
     id_only(),
@@ -106,9 +88,16 @@ RESTOCK = Op(
     extra_request_fields=(("quantity", int),),
     effects=(Mutation(),),
 )
+
+@schema_meta(http_crud("/items", Items, ops=(*ALL_CRUD_OPS, RESTOCK)))
+@dataclass
+class Item:
+    id: Annotated[int, Identity]
+    name: str
+    stock: int = 0
 ```
 
-Then include it alongside the standard CRUD ops or in a custom dialect.
+Then the CRUD endpoints plus your custom Restock endpoint are all generated together.
 
 ## The HandlerSpec
 
@@ -124,7 +113,7 @@ Your template's `build` method receives a `HandlerSpec[E]` with:
 
 And the handler itself receives an `op` — the request object. It always has a `.provider` field (the database access) plus whatever fields the input projection and extra fields specify.
 
-The pattern: fetch → validate → transform → save → return. The template abstracts the *shape* of the operation; the entity-specific details (which field to increment, by how much) are parameters on the frozen dataclass.
+The pattern: fetch -> validate -> transform -> save -> return. The template abstracts the *shape* of the operation; the entity-specific details (which field to increment, by how much) are parameters on the frozen dataclass.
 
 ---
 

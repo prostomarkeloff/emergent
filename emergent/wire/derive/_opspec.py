@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from emergent.wire.axis.surface import Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
@@ -30,8 +31,11 @@ from emergent.wire.derive._codegen import (
 from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
 from emergent.wire.derive._effects import DerivationEffect
 from emergent.wire.derive._errors import DomainError
-from emergent.wire.derive._handler import HandlerSpec, HandlerTemplate
+from emergent.wire.derive._handler import DescriptiveTemplate, HandlerSpec, HandlerTemplate
 from emergent.wire.derive._project import ResponseSpec, response_converter, response_fields
+
+if TYPE_CHECKING:
+    from emergent.wire.derive._trigger import TriggerGen
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -55,8 +59,8 @@ class Op:
     output: ResponseSpec
     handler_template: HandlerTemplate
     capabilities: tuple[SurfaceCapability, ...] = ()
-    extra_op_fields: tuple[tuple[str, type], ...] = ()
-    extra_request_fields: tuple[tuple[str, type], ...] = ()
+    extra_op_fields: tuple[FieldSpec, ...] = ()
+    extra_request_fields: tuple[FieldSpec, ...] = ()
     effects: tuple[DerivationEffect, ...] = ()
     codec_factory: Callable[[type, type], Exposure] | None = None
     scope_fields: tuple[str, ...] = ()
@@ -85,7 +89,7 @@ class OpSpec:
     capabilities: tuple[SurfaceCapability, ...] = ()
     effects: tuple[DerivationEffect, ...] = ()
     codec_factory: Callable[[type, type], Exposure] | None = None
-    extra_op_fields: tuple[tuple[str, type], ...] = ()
+    extra_op_fields: tuple[FieldSpec, ...] = ()
     extra_request_fields: tuple[FieldSpec, ...] = ()
     scope_fields: tuple[str, ...] = ()
     source: str = ""
@@ -153,8 +157,79 @@ def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation
     return op_type, annotated_handler, exposure
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# OpLike — Op | DescriptiveTemplate
+# ═══════════════════════════════════════════════════════════════════════════════
+
+type OpLike = Op | DescriptiveTemplate
+
+
+def normalize_op(item: OpLike) -> Op:
+    """Resolve Op | DescriptiveTemplate -> Op.
+
+    Allows passing handler instances directly as ops:
+
+        normalize_op(FetchMany())  # -> Op("List", NoFields(), ListResponse(), FetchMany(), ...)
+        normalize_op(LIST)         # -> LIST (passthrough)
+    """
+    if isinstance(item, Op):
+        return item
+    return item.op_defaults()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# generate_specs — common OpSpec materialization loop
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def generate_specs[EntityT](
+    ctx: DeriveCtx[EntityT],
+    ops: tuple[OpLike, ...],
+    triggers: "TriggerGen",
+    capabilities: tuple[SurfaceCapability, ...] = (),
+    source: str = "",
+    extra_op_fields: tuple[FieldSpec, ...] = (),
+    extra_request_fields: tuple[FieldSpec, ...] = (),
+) -> DeriveCtx[EntityT]:
+    """Generate OpSpecs from ops + triggers and accumulate into DeriveCtx.
+
+    Extracts the common loop from CRUD, NestedCRUD, TaskQueue, etc.
+    Accepts both Op and DescriptiveTemplate (handler-as-op) via OpLike.
+    """
+    entity_name = ctx.entity.__name__
+    for item in ops:
+        op = normalize_op(item)
+        trigger_result = triggers(ctx.entity, op)
+        if trigger_result is None:
+            continue
+        trigger_list = trigger_result if isinstance(trigger_result, tuple) else (trigger_result,)
+        in_fields = op.input_proj.project(ctx)
+        annotated_fields = ctx.annotated_field_types(only=set(in_fields.keys()))
+        for trigger in trigger_list:
+            ctx = ctx.add_spec(OpSpec(
+                name=op.name,
+                entity_name=entity_name,
+                input_fields=in_fields,
+                request_fields=dict(annotated_fields),
+                response_spec=op.output,
+                handler_template=op.handler_template,
+                trigger=trigger,
+                capabilities=(*capabilities, *op.capabilities),
+                effects=op.effects,
+                codec_factory=op.codec_factory,
+                extra_op_fields=(*extra_op_fields, *op.extra_op_fields),
+                extra_request_fields=(*extra_request_fields, *op.extra_request_fields),
+                scope_fields=op.scope_fields,
+                source=source,
+            ))
+    return ctx
+
+
 __all__ = (
     "Op",
     "OpSpec",
+    "OpLike",
+    "normalize_op",
+    "generate_specs",
     "build_from_spec",
 )

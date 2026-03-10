@@ -435,7 +435,7 @@ This is where both systems converge. An agent's workflow with emergent:
 
 ```python
 # 1. Agent writes/modifies the entity
-@derive(http_crud("/accounts", provider_node=Accounts))
+@schema_meta(http_crud("/accounts", Accounts))
 @dataclass
 class Account:
     id: Annotated[int, Identity]

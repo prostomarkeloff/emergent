@@ -7,14 +7,14 @@ In a typical framework, the agent starts digging. It finds the models. Finds the
 In emergent:
 
 ```python
-@derive(
-    http_crud("/users", provider_node=Users)
-    .chain(readonly())
-    .chain(paginated(50))
+@schema_meta(
+    http_crud("/users", Users),
+    Readonly(),
+    Paginated(50),
 )
 ```
 
-One line per concern. The agent reads the decorator, sees pagination isn't there yet, adds `.chain(paginated(50))`. Done. No signals to discover. No middleware to untangle. No mixins to trace. Everything about this entity — its CRUD, its transforms, its constraints — is right here, on the entity.
+One line per concern. The agent reads the decorator, sees pagination isn't there yet, adds `Paginated(50)`. Done. No signals to discover. No middleware to untangle. No mixins to trace. Everything about this entity — its CRUD, its transforms, its constraints — is right here, on the entity.
 
 That difference isn't cosmetic. It's structural. And it matters more every month.
 
@@ -36,7 +36,7 @@ Four properties. Each one independently supported by formal results in complexit
 
 **Transparency.** Behavior is data, not closures. A `Filter(Gt(Field("balance"), Const(100)))` is a frozen dataclass you can print, serialize, and explain. You can call `explain()` on anything in emergent and get a human-readable description of what it does. Nothing hides in lambda captures or callback registries.
 
-**Compositionality.** Adding a concern means appending to a tuple. `.chain(paginated())` doesn't modify the existing derivation — it concatenates new steps. `.chain(without_delete())` doesn't reach into the CRUD handlers — it rewrites the step list. Each transform reads only the effects it cares about. Concerns don't interfere because they don't share mutable state.
+**Compositionality.** Adding a concern means adding a capability to `@schema_meta(...)`. `Paginated(50)` doesn't modify the existing derivation — it's a separate `DeriveModifiable` that runs in Phase 2. `WithoutDelete()` doesn't reach into the CRUD handlers — it removes specs by effect. Each transform reads only the effects it cares about. Concerns don't interfere because they don't share mutable state.
 
 **Predictability.** `Annotated[str, MaxLen(50), Index()]` and `Annotated[str, Index(), MaxLen(50)]` produce identical results. Order doesn't matter within an axis. New capabilities don't break old compilers — unknown items are silently skipped. There are no surprise side effects from adding a feature, because the frame rule holds by construction: modifying one endpoint cannot affect another.
 
@@ -51,9 +51,9 @@ Adding soft delete to an entity. A cross-cutting concern that touches reads, wri
 **emergent.** The agent reads the `@derive` decorator and adds one transform:
 
 ```python
-@derive(
-    http_crud("/users", provider_node=Users)
-    .chain(soft_delete(field="deleted_at"))
+@schema_meta(
+    http_crud("/users", Users),
+    SoftDelete(field="deleted_at"),
 )
 ```
 

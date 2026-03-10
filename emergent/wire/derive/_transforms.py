@@ -66,11 +66,11 @@ class Paginated(SchemaCapability):
                     response_spec=PaginatedResponse(),
                     extra_op_fields=(
                         *s.extra_op_fields,
-                        ("page", int), ("page_size", int),
+                        ("page", int, 1), ("page_size", int, size),
                     ),
                     extra_request_fields=(
                         *s.extra_request_fields,
-                        ("page", int), ("page_size", int),
+                        ("page", int, 1), ("page_size", int, size),
                     ),
                 )
             new_specs.append(s)
@@ -104,11 +104,11 @@ class Sorted(SchemaCapability):
                     ),
                     extra_op_fields=(
                         *s.extra_op_fields,
-                        ("sort", str), ("order", str),
+                        ("sort", str, sort or ""), ("order", str, order),
                     ),
                     extra_request_fields=(
                         *s.extra_request_fields,
-                        ("sort", str), ("order", str),
+                        ("sort", str, sort or ""), ("order", str, order),
                     ),
                 )
             new_specs.append(s)
@@ -227,7 +227,7 @@ class Filtered(SchemaCapability):
                 continue
 
             filter_params = tuple(
-                (f"filter_{name}", str | None) for name in ffields
+                (f"filter_{name}", str | None, None) for name in ffields
             )
 
             captured_fields = ffields
@@ -326,8 +326,8 @@ class Searchable(SchemaCapability):
 
             s = replace(
                 s,
-                extra_op_fields=(*s.extra_op_fields, ("q", str | None)),
-                extra_request_fields=(*s.extra_request_fields, ("q", str | None)),
+                extra_op_fields=(*s.extra_op_fields, ("q", str | None, None)),
+                extra_request_fields=(*s.extra_request_fields, ("q", str | None, None)),
                 handler_template=WrappedTemplate(
                     inner=s.handler_template,
                     wrapper=_make_wrapper(captured_fields),
@@ -454,6 +454,107 @@ class EffectDeprecated(SchemaCapability):
         return replace(ctx, specs=tuple(new_specs))
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Composed Transforms — wire up existing handlers into higher-level patterns
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class SoftDelete(SchemaCapability):
+    """Replace hard delete with soft-delete (set deleted_at, filter query).
+
+        @schema_meta(http_crud("/api/users", P), SoftDelete())
+    """
+
+    deleted_field: str = "deleted_at"
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._handler import SoftDeleteMark
+
+        field = self.deleted_field
+        ctx = ctx.replace_handler(Deletes, SoftDeleteMark(field))
+        ctx = ctx.filter_query(lambda e, _f=field: getattr(e, _f) is None)
+        return ctx.exclude_fields(Creates, frozenset({field}))
+
+
+@dataclass(frozen=True, slots=True)
+class Timestamped(SchemaCapability):
+    """Auto-set created_at/updated_at on create and update.
+
+        @schema_meta(http_crud("/api/users", P), Timestamped())
+    """
+
+    created_field: str = "created_at"
+    updated_field: str = "updated_at"
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._effects import Creates, Updates
+        from emergent.wire.derive._handler import TimestampInsert, TimestampUpdate
+
+        cf, uf = self.created_field, self.updated_field
+        ctx = ctx.replace_handler(Creates, TimestampInsert(cf, uf))
+        ctx = ctx.replace_handler(Updates, TimestampUpdate(uf))
+        return ctx.exclude_fields(Creates, frozenset({cf, uf}))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Additional Effect-Based Filters
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class WithoutCreate(SchemaCapability):
+    """Remove create operations.
+
+        @schema_meta(http_crud("/api/users", P), WithoutCreate())
+    """
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._effects import Creates
+
+        return ctx.reject_by_effect(Creates)
+
+
+@dataclass(frozen=True, slots=True)
+class CreateOnly(SchemaCapability):
+    """Keep only create operations.
+
+        @schema_meta(http_crud("/api/users", P), CreateOnly())
+    """
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._effects import Creates
+
+        return ctx.select_by_effect(Creates)
+
+
+@dataclass(frozen=True, slots=True)
+class UpdateOnly(SchemaCapability):
+    """Keep only update operations.
+
+        @schema_meta(http_crud("/api/users", P), UpdateOnly())
+    """
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._effects import Updates
+
+        return ctx.select_by_effect(Updates)
+
+
+@dataclass(frozen=True, slots=True)
+class OnlyOps(SchemaCapability):
+    """Keep only operations matching given names.
+
+        @schema_meta(http_crud("/api/users", P), OnlyOps(("List", "Get")))
+    """
+
+    ops: tuple[str, ...]
+
+    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        allowed = frozenset(self.ops)
+        return replace(ctx, specs=tuple(s for s in ctx.specs if s.name in allowed))
+
+
 __all__ = (
     # Query enrichment
     "Paginated",
@@ -462,8 +563,15 @@ __all__ = (
     "Readonly",
     "MutationsOnly",
     "WithoutDelete",
+    "WithoutCreate",
+    "CreateOnly",
+    "UpdateOnly",
+    "OnlyOps",
     # Response projection
     "ProjectResponse",
+    # Composed transforms
+    "SoftDelete",
+    "Timestamped",
     # In-memory filtering & search
     "Filtered",
     "Searchable",

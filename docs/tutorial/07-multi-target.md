@@ -2,7 +2,7 @@
 
 This is the chapter where emergent stops looking like "a nicer way to write FastAPI" and starts looking like something fundamentally different.
 
-Everything so far compiled to HTTP. But the wire `Application` — the thing `build_application_from_decorated()` produces — isn't an HTTP app. It's an intermediate representation. HTTP is one projection. CLI is another. Telegram is another.
+Everything so far compiled to HTTP. But the wire `Application` — the thing `compile_derive` + `materialize` produces — isn't an HTTP app. It's an intermediate representation. HTTP is one projection. CLI is another. Telegram is another.
 
 Watch.
 
@@ -17,17 +17,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
+from nodnod import scalar_node
+
+from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId
+from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
-
-from derivelib import derive, build_application_from_decorated, memory_node
-from derivelib.patterns.crud import http_crud, cli_crud
-
-Store = memory_node()
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud, cli_crud
 
 
-@derive(
-    http_crud("/products", provider_node=Store),
-    cli_crud("product", provider_node=Store),
+@scalar_node
+class Store:
+    @classmethod
+    def __compose__(cls) -> MutatingRelationalProvider:
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
+
+
+@schema_meta(
+    http_crud("/products", Store),
+    cli_crud("product", Store),
 )
 @dataclass
 class Product:
@@ -37,7 +46,7 @@ class Product:
     in_stock: bool = True
 
 
-app = build_application_from_decorated(Product)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(Product)])
 
 from emergent.wire.compile import targets
 from emergent.wire.compile.targets.cli import TYPED_CLI
@@ -73,24 +82,26 @@ uv run python shop.py cli product-list
 # [Product(id=1, name='Laptop', price=999.99, in_stock=True)]
 ```
 
-Same entity. Same provider. Same data. Two completely different interfaces. One `@derive`, two patterns.
+Same entity. Same provider. Same data. Two completely different interfaces. One `@schema_meta`, two capabilities.
 
 ---
 
 ## What happened
 
 ```python
-@derive(
-    http_crud("/products", provider_node=Store),   # HTTP triggers
-    cli_crud("product", provider_node=Store),      # CLI triggers
+@schema_meta(
+    http_crud("/products", Store),   # HTTP triggers
+    cli_crud("product", Store),      # CLI triggers
 )
 ```
 
-Two patterns stacked. Each produces operation descriptors with *different trigger generators*:
+Two `DeriveGeneratable` capabilities stacked. Each produces operation descriptors with *different trigger generators*:
 - `http_crud` uses `HTTPTriggers("/products")` — maps ops to HTTP routes
 - `cli_crud` uses `CLITriggers("product")` — maps ops to CLI commands (`product-create`, `product-list`, `product-get`, ...)
 
-The wire Application ends up with endpoints that have *multiple exposures* — some with HTTP triggers, some with CLI triggers. When you call `targets.fastapi.compile(app)`, the FastAPI compiler scans for `HTTPRouteTrigger` exposures and ignores everything else. When you call `targets.cli.cli_compile(app)`, the CLI compiler scans for `CLITrigger` exposures and ignores everything else.
+Since there are multiple generators, `compile_derive` creates separate `DeriveCtx` for each — one with HTTP endpoints, one with CLI endpoints. `materialize` converts each into a wire `Endpoint`. The application ends up with endpoints that have different trigger types.
+
+When you call `targets.fastapi.compile(app)`, the FastAPI compiler scans for `HTTPRouteTrigger` exposures and ignores everything else. When you call `targets.cli.cli_compile(app)`, the CLI compiler scans for `CLITrigger` exposures and ignores everything else.
 
 Neither compiler knows the other exists. They each project the same IR into their own world.
 
@@ -106,9 +117,9 @@ This is what the architecture docs call "the sheaf." Your application is a globa
    HTTP   CLI    TG     ← fibers
 ```
 
-You don't write adapters. You don't maintain three codebases. You write one description with multiple annotations, and each compiler reads its own. The sync between targets is guaranteed by construction — they derive from the same fields, the same types, the same domain.
+You don't write adapters. You don't maintain three codebases. You write one description with multiple capabilities, and each compiler reads its own. The sync between targets is guaranteed by construction — they derive from the same fields, the same types, the same domain.
 
-Want to add Telegram? Stack a third pattern. The dataclass doesn't change. The domain logic doesn't change. You just add another projection.
+Want to add Telegram? Stack a third capability. The dataclass doesn't change. The domain logic doesn't change. You just add another projection.
 
 ---
 

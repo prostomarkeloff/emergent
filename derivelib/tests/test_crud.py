@@ -1,4 +1,4 @@
-"""Tests for derivelib.patterns.crud — CRUD dialect and presets."""
+"""Tests for derivelib.patterns.crud — CRUD pattern and presets."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ from typing import Annotated
 from emergent.wire.axis.schema import Identity
 
 from derivelib._derive import derive_endpoints, build_application
-from derivelib._effects import Creates, Deletes, Mutation, Read, Updates
-from derivelib.axes.surface import DeriveOp
 from derivelib.patterns.crud import (
     ALL_CRUD_OPS,
     CREATE,
@@ -21,15 +19,19 @@ from derivelib.patterns.crud import (
     READ_CRUD_OPS,
     UPDATE,
     cli_crud,
-    crud,
     http_crud,
 )
-
-from .conftest import User
 
 
 class _Node:
     pass
+
+
+def _make_entity(name: str = "E") -> type:
+    """Fresh entity class per test to avoid capability accumulation."""
+    ns: dict[str, object] = {"__annotations__": {"id": Annotated[int, Identity], "name": str}}
+    cls = type(name, (), ns)
+    return dataclass(cls)
 
 
 class TestCrudOps:
@@ -67,61 +69,32 @@ class TestCrudOps:
 
 
 class TestHttpCrud:
-    def test_compile_produces_derive_ops(self) -> None:
-        pattern = http_crud("/api/users", provider_node=_Node)
-        steps = pattern.compile(User)
-        derive_ops = [s for s in steps if isinstance(s, DeriveOp)]
-        assert len(derive_ops) == 6
+    def test_six_endpoints(self) -> None:
+        E = _make_entity("CrudAll")
+        endpoints = derive_endpoints(E, http_crud("/api/e", provider_node=_Node))
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 6
 
-    def test_compile_with_selected_ops(self) -> None:
-        pattern = http_crud("/api/users", provider_node=_Node, ops=(LIST, GET))
-        steps = pattern.compile(User)
-        derive_ops = [s for s in steps if isinstance(s, DeriveOp)]
-        assert len(derive_ops) == 2
-        names = {op.name for op in derive_ops}
-        assert names == {"List", "Get"}
-
-    def test_endpoints_generated(self) -> None:
-        endpoints = derive_endpoints(
-            User,
-            http_crud("/api/users", provider_node=_Node),
-        )
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) == 6
-
-    def test_endpoints_with_subset(self) -> None:
-        endpoints = derive_endpoints(
-            User,
-            http_crud("/api/users", provider_node=_Node, ops=(LIST, GET, CREATE)),
-        )
-        assert len(endpoints[0].exposures) == 3
+    def test_selected_ops(self) -> None:
+        E = _make_entity("CrudSel")
+        endpoints = derive_endpoints(E, http_crud("/api/e", provider_node=_Node, ops=(LIST, GET)))
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 2
 
 
 class TestCliCrud:
-    def test_compile_produces_derive_ops(self) -> None:
-        pattern = cli_crud("user", provider_node=_Node)
-        steps = pattern.compile(User)
-        derive_ops = [s for s in steps if isinstance(s, DeriveOp)]
-        assert len(derive_ops) == 6
-
-
-class TestCrudFunction:
-    def test_custom_triggers(self) -> None:
-        from derivelib._dialect import HTTPTriggers
-
-        pattern = crud(
-            HTTPTriggers("/custom"),
-            provider_node=_Node,
-        )
-        steps = pattern.compile(User)
-        derive_ops = [s for s in steps if isinstance(s, DeriveOp)]
-        assert len(derive_ops) == 6
+    def test_six_endpoints(self) -> None:
+        E = _make_entity("CliAll")
+        endpoints = derive_endpoints(E, cli_crud("e", provider_node=_Node))
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total == 6
 
 
 class TestCrudEndToEnd:
     def test_build_application(self) -> None:
+        E = _make_entity("CrudE2E")
         app = build_application(
-            (User, http_crud("/api/users", provider_node=_Node)),
+            (E, http_crud("/api/e", provider_node=_Node)),
         )
         assert app is not None
         total_exposures = sum(len(ep.exposures) for ep in app.endpoints)

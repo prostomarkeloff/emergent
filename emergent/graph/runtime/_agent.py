@@ -14,6 +14,7 @@ The scheduling policy IS the compiler — it builds the agent internally.
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import ClassVar
 
 from nodnod.agent.base import Agent
@@ -21,6 +22,7 @@ from nodnod.node import Node
 from nodnod.scope import Scope
 
 from emergent.graph.runtime._policy import RuntimePolicy
+from emergent.graph.runtime._spawnable import Spawnable
 
 
 def _is_gil_enabled() -> bool:
@@ -78,6 +80,36 @@ class RuntimeAgent(Agent):
 
     async def run(self, local_scope: Scope, mapped_scopes: dict[type[Node], Scope]) -> None:
         await self._delegate.run(local_scope, mapped_scopes)
+
+    # --- Spawnable delegation ---
+
+    def spawn(
+        self,
+        nodes: set[type[Node]],
+        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+    ) -> None:
+        """Delegate to inner agent. Raises TypeError if delegate isn't Spawnable."""
+        if not isinstance(self._delegate, Spawnable):
+            raise TypeError(
+                f"Delegate {type(self._delegate).__name__} does not support Spawnable. "
+                f"Use Cooperative or WorkStealing scheduling."
+            )
+        self._delegate.spawn(nodes, mapped_scopes)
+
+    def despawn(self, nodes: set[type[Node]]) -> None:
+        """Delegate to inner agent. Raises TypeError if delegate isn't Spawnable."""
+        if not isinstance(self._delegate, Spawnable):
+            raise TypeError(
+                f"Delegate {type(self._delegate).__name__} does not support Spawnable."
+            )
+        self._delegate.despawn(nodes)
+
+    @property
+    def living_nodes(self) -> frozenset[type[Node]]:
+        """Living nodes from delegate, or empty if not Spawnable."""
+        if not isinstance(self._delegate, Spawnable):
+            return frozenset()
+        return self._delegate.living_nodes
 
 
 __all__ = ("RuntimeAgent",)

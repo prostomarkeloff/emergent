@@ -139,9 +139,9 @@ from derivelib.transforms import project_response
 
 from derivelib.authlib import (
     BearerExtract,
+    LoginOp,
     TokenValidate,
     require_auth,
-    auth_login,
     register_auth_errors,
 )
 
@@ -199,7 +199,7 @@ def _identity_fn(u: User) -> str:
     # Authorized: GET with all fields (requires Bearer token)
     http_crud("/users/me", provider_node=UserStore, ops=(GET,)).chain(auth),
     # Login: public, issues token
-    auth_login(
+    LoginOp(
         "/login",
         provider_node=UserStore,
         sessions=_sessions,

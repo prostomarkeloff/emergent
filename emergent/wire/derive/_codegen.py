@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, make_dataclass
 from typing import TYPE_CHECKING, Callable, Protocol
 
-from kungfu import Ok, Result
+from kungfu import Error, Ok, Result
 
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import OperationHandler
@@ -66,10 +66,10 @@ class ResultConversion:
         match result:
             case Ok(val):
                 return self.ok(cls, val)
-            case _:
+            case Error(err):
                 if self.error is not None:
-                    return self.error(cls, result.value)  # type: ignore[union-attr]
-                return result  # type: ignore[return-value]
+                    return self.error(cls, err)
+                return err  # type: ignore[return-value]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

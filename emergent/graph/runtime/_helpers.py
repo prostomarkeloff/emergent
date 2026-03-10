@@ -27,7 +27,6 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any
 
 import kungfu
 from nodnod.agent.base import Agent
@@ -36,6 +35,9 @@ from nodnod.compose import compose_node
 from nodnod.error import NodeError
 from nodnod.node import Node
 from nodnod.scope import Scope, validate_local_scope_is_linked_to_node_scopes
+from nodnod.value import Value
+
+from emergent.graph.runtime._spawnable import Spawnable
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,13 +94,13 @@ def build_graph_info(nodes: set[type[Node]]) -> GraphInfo:
 
 type NodeExecutor = Callable[
     [type[Node], Scope, Scope],
-    Awaitable[kungfu.Result[Any, NodeError]],
+    Awaitable[kungfu.Result[Value, NodeError]],
 ]
 
 
 async def default_executor(
     node: type[Node], node_scope: Scope, local_scope: Scope
-) -> kungfu.Result[Any, NodeError]:
+) -> kungfu.Result[Value, NodeError]:
     """Default node executor — delegates to nodnod's compose_node."""
     return await compose_node(node, node_scope, local_scope)
 
@@ -110,7 +112,10 @@ class CallbackAgent(Agent):
     (concurrent and sequential), ResultNode wrapping, error propagation.
     The user only provides the NodeExecutor — how to run a single node.
 
-        # Default — identical to EventLoopAgent
+    Implements Spawnable — supports live node management (spawn/despawn)
+    while run() is active.
+
+        # Default — identical to EventLoopAgent behavior
         agent = CallbackAgent.build(nodes)
 
         # Custom — remote execution for some nodes
@@ -120,11 +125,22 @@ class CallbackAgent(Agent):
             return await compose_node(node, node_scope, local_scope)
 
         agent = CallbackAgent.build_with_executor(nodes, my_executor)
+
+        # Spawn/despawn while running
+        agent.spawn({NewNode})
+        agent.despawn({OldNode})
     """
 
     def __init__(self, graph_info: GraphInfo, execute: NodeExecutor) -> None:
         self._graph_info = graph_info
         self._execute = execute
+        # Mutable state — initialized in run(), used by spawn/despawn
+        self._futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]] = {}
+        self._local_scope: Scope | None = None
+        self._mapped_scopes: dict[type[Node], Scope] = {}
+        self._wake: asyncio.Event = asyncio.Event()
+        self._living: set[type[Node]] = set()
+        self._final_nodes: set[type[Node]] = set()
 
     @classmethod
     def build(cls, nodes: set[type[Node]]) -> CallbackAgent:
@@ -142,27 +158,99 @@ class CallbackAgent(Agent):
         if not self._graph_info.all_nodes:
             return
 
-        futures: dict[type[Node], asyncio.Future[kungfu.Result[kungfu.Value, NodeError]]] = {}
-        self._push_futures(local_scope, mapped_scopes, futures)
+        self._local_scope = local_scope
+        self._mapped_scopes = dict(mapped_scopes)
+        self._wake = asyncio.Event()
+        self._living = set(self._graph_info.all_nodes)
+        self._final_nodes = set(self._graph_info.final_nodes)
+        self._futures = {}
 
-        final_futures = [futures[node] for node in self._graph_info.final_nodes]
-        results = await asyncio.gather(*final_futures)
+        self._push_futures_for(self._graph_info, local_scope, mapped_scopes, self._futures)
 
-        for result in results:
-            if kungfu.is_err(result):
-                raise result.error
+        # Wait loop — re-checks after spawn/despawn wakes us
+        while self._final_nodes:
+            self._wake.clear()
+            pending_futs: set[asyncio.Future[kungfu.Result[Value, NodeError]]] = set()
 
-    def _push_futures(
+            for n in list(self._final_nodes):
+                fut = self._futures.get(n)
+                if fut is None:
+                    self._final_nodes.discard(n)
+                    continue
+                if fut.done():
+                    result = fut.result()
+                    if kungfu.is_err(result):
+                        raise result.error
+                    self._final_nodes.discard(n)
+                else:
+                    pending_futs.add(fut)
+
+            if not self._final_nodes:
+                break
+            if not pending_futs:
+                break
+
+            wake_task = asyncio.ensure_future(self._wake.wait())
+            await asyncio.wait(
+                pending_futs | {wake_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not wake_task.done():
+                wake_task.cancel()
+
+    # --- Spawnable implementation ---
+
+    def spawn(
         self,
-        local_scope: Scope,
-        mapped_scopes: dict[type[Node], Scope],
-        futures: dict[type[Node], asyncio.Future[kungfu.Result[kungfu.Value, NodeError]]],
+        nodes: set[type[Node]],
+        mapped_scopes: Mapping[type[Node], Scope] | None = None,
     ) -> None:
-        """Build the asyncio task DAG — same structure as EventLoopAgent."""
+        """Add new nodes to the running agent."""
+        if self._local_scope is None:
+            raise RuntimeError("CallbackAgent.spawn() called before run()")
+        new_info = build_graph_info(nodes)
+        scopes = dict(self._mapped_scopes)
+        if mapped_scopes:
+            scopes.update(mapped_scopes)
+        self._push_futures_for(new_info, self._local_scope, scopes, self._futures)
+        self._living |= set(new_info.all_nodes)
+        self._final_nodes |= nodes
+        self._wake.set()
+
+    def despawn(self, nodes: set[type[Node]]) -> None:
+        """Remove nodes from the running agent. Cancels in-flight futures."""
+        for node in nodes:
+            fut = self._futures.get(node)
+            if fut is not None and not fut.done():
+                fut.cancel()
+            self._living.discard(node)
+            self._final_nodes.discard(node)
+        self._wake.set()
+
+    @property
+    def living_nodes(self) -> frozenset[type[Node]]:
+        return frozenset(self._living)
+
+    # --- Internal ---
+
+    def _push_futures_for(
+        self,
+        graph_info: GraphInfo,
+        local_scope: Scope,
+        mapped_scopes: Mapping[type[Node], Scope],
+        futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]],
+    ) -> None:
+        """Build the asyncio task DAG — same structure as EventLoopAgent.
+
+        Idempotent: skips nodes already in futures dict (safe for incremental spawn).
+        """
         from nodnod.interface.either import Either
         from nodnod.interface.result_node import ResultNode
 
-        for node in self._graph_info.all_nodes:
+        for node in graph_info.all_nodes:
+            if node in futures:
+                continue
+
             node_scope = mapped_scopes.get(node, local_scope)
 
             if issubclass(node, Either):
@@ -176,12 +264,10 @@ class CallbackAgent(Agent):
                     first_future = futures[first_dep]
                     other_deps = node.__either__[1:]
                     futures[node] = asyncio.ensure_future(_sequential_either_coroutine(
-                        first_node=first_dep,
                         first_future=first_future,
                         other_deps=other_deps,
                         futures=futures,
-                        push_fn=self._push_futures,
-                        mapped_scopes=mapped_scopes,
+                        mapped_scopes=dict(mapped_scopes),
                         local_scope=local_scope,
                         execute=self._execute,
                     ))
@@ -199,11 +285,11 @@ class CallbackAgent(Agent):
 
 async def _compose_coroutine(
     node: type[Node],
-    dep_futures: list[asyncio.Future[kungfu.Result[Any, NodeError]]],
+    dep_futures: list[asyncio.Future[kungfu.Result[Value, NodeError]]],
     node_scope: Scope,
     local_scope: Scope,
     execute: NodeExecutor,
-) -> kungfu.Result[Any, NodeError]:
+) -> kungfu.Result[Value, NodeError]:
     for dep_future in dep_futures:
         dep_result = await dep_future
         if kungfu.is_err(dep_result):
@@ -213,11 +299,11 @@ async def _compose_coroutine(
 
 async def _concurrent_either_coroutine(
     node: type[Node],
-    dep_futures: list[asyncio.Future[kungfu.Result[Any, NodeError]]],
+    dep_futures: list[asyncio.Future[kungfu.Result[Value, NodeError]]],
     node_scope: Scope,
     local_scope: Scope,
     execute: NodeExecutor,
-) -> kungfu.Result[Any, NodeError]:
+) -> kungfu.Result[Value, NodeError]:
     results = await asyncio.gather(*dep_futures)
     for dep, result in zip(node.__either__, results):
         if kungfu.is_ok(result):
@@ -226,15 +312,13 @@ async def _concurrent_either_coroutine(
 
 
 async def _sequential_either_coroutine(
-    first_node: type[Node],
-    first_future: asyncio.Future[kungfu.Result[Any, NodeError]],
+    first_future: asyncio.Future[kungfu.Result[Value, NodeError]],
     other_deps: tuple[type[Node], ...],
-    futures: dict[type[Node], asyncio.Future[kungfu.Result[Any, NodeError]]],
-    push_fn: Callable[..., None],
+    futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]],
     mapped_scopes: dict[type[Node], Scope],
     local_scope: Scope,
     execute: NodeExecutor,
-) -> kungfu.Result[Any, NodeError]:
+) -> kungfu.Result[Value, NodeError]:
     result = await first_future
     if kungfu.is_ok(result):
         return result
@@ -250,11 +334,11 @@ async def _sequential_either_coroutine(
 
 async def _result_node_coroutine(
     node: type[Node],
-    dep_futures: list[asyncio.Future[kungfu.Result[Any, NodeError]]],
+    dep_futures: list[asyncio.Future[kungfu.Result[Value, NodeError]]],
     node_scope: Scope,
     local_scope: Scope,
     execute: NodeExecutor,
-) -> kungfu.Result[Any, NodeError]:
+) -> kungfu.Result[Value, NodeError]:
     for dep_future in dep_futures:
         await dep_future
     return await execute(node, node_scope, local_scope)

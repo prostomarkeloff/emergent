@@ -39,8 +39,9 @@ from emergent.wire.derive._handler import (
     InsertNew,
     PatchExisting,
     UpdateExisting,
+    UpsertExisting,
 )
-from emergent.wire.derive._opspec import Op, OpSpec
+from emergent.wire.derive._opspec import Op, OpLike, generate_specs
 from emergent.wire.derive._project import (
     all_fields,
     entity_response,
@@ -53,7 +54,6 @@ from emergent.wire.derive._project import (
     optional_non_id,
 )
 from emergent.wire.derive._query_helpers import provider_field
-from emergent.wire.axis.surface import Trigger
 from emergent.wire.derive._trigger import CLITriggers, HTTPTriggers, TriggerGen
 
 
@@ -67,10 +67,11 @@ CREATE = Op("Create", non_id(), entity_response(), InsertNew(), effects=(Creates
 UPDATE = Op("Update", all_fields(), entity_response(), UpdateExisting(), effects=(Updates(), Idempotent()))
 PATCH = Op("Patch", merge(id_only(), optional_non_id()), entity_response(), PatchExisting(), effects=(Updates(), Idempotent()))
 DELETE = Op("Delete", id_only(), ok_response(), DeleteOne(), effects=(Deletes(), Idempotent()))
+UPSERT = Op("Upsert", all_fields(), entity_response(), UpsertExisting(), effects=(Creates(), Updates(), Idempotent()))
 
-ALL_CRUD_OPS = (LIST, GET, CREATE, UPDATE, PATCH, DELETE)
-MUTATION_CRUD_OPS = (CREATE, UPDATE, PATCH, DELETE)
-READ_CRUD_OPS = (LIST, GET)
+ALL_CRUD_OPS: tuple[OpLike, ...] = (LIST, GET, CREATE, UPDATE, PATCH, DELETE)
+MUTATION_CRUD_OPS: tuple[OpLike, ...] = (CREATE, UPDATE, PATCH, DELETE)
+READ_CRUD_OPS: tuple[OpLike, ...] = (LIST, GET)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -109,14 +110,14 @@ class CRUD(SchemaCapability):
     """CRUD derivation — generates endpoints from entity schema.
 
     Transport-agnostic. Use http_crud()/cli_crud() for convenience.
+    Accepts both Op and DescriptiveTemplate (handler-as-op) via OpLike:
 
-    Implements DeriveGeneratable: compile_derive_generate populates
-    DeriveCtx with OpSpecs, provider_node, and base_query.
+        http_crud('/users', Users, ops=(FetchMany(), InsertNew(), DeleteOne()))
     """
 
     triggers: TriggerGen
     provider_node: type
-    ops: tuple[Op, ...] = ALL_CRUD_OPS
+    ops: tuple[OpLike, ...] = ALL_CRUD_OPS
     capabilities: tuple[SurfaceCapability, ...] = ERROR_CAPS
 
     def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
@@ -126,7 +127,6 @@ class CRUD(SchemaCapability):
                 f"{ctx.entity.__name__} needs Annotated[T, Identity] field for CRUD"
             )
 
-        # Set query axis via strategy
         prov_op_field, prov_req_field = _provider_fields(self.provider_node)
         ctx = replace(
             ctx,
@@ -140,58 +140,29 @@ class CRUD(SchemaCapability):
             ),
         )
 
-        entity_name = ctx.entity.__name__
-        for op in self.ops:
-            trigger_result = self.triggers(ctx.entity, op)
-            if trigger_result is None:
-                continue
-
-            # Normalize: MultiTriggerGen returns tuple, others return single Trigger
-            triggers: tuple[Trigger, ...]
-            if isinstance(trigger_result, tuple):
-                triggers = trigger_result
-            else:
-                triggers = (trigger_result,)
-
-            # Project input fields — FieldProjection.project() takes DeriveCtx directly
-            in_fields = op.input_proj.project(ctx)
-
-            # Annotated fields — preserve capabilities for wire compiler
-            annotated_fields = ctx.annotated_field_types(only=set(in_fields.keys()))
-
-            for trigger in triggers:
-                spec = OpSpec(
-                    name=op.name,
-                    entity_name=entity_name,
-                    input_fields=in_fields,
-                    request_fields=dict(annotated_fields),
-                    response_spec=op.output,
-                    handler_template=op.handler_template,
-                    trigger=trigger,
-                    capabilities=(*self.capabilities, *op.capabilities),
-                    effects=op.effects,
-                    codec_factory=op.codec_factory,
-                    extra_op_fields=(prov_op_field, *op.extra_op_fields),
-                    extra_request_fields=(prov_req_field, *op.extra_request_fields),
-                    scope_fields=op.scope_fields,
-                    source="CRUD",
-                )
-                ctx = ctx.add_spec(spec)
-
-        return ctx
+        return generate_specs(
+            ctx,
+            ops=self.ops,
+            triggers=self.triggers,
+            capabilities=self.capabilities,
+            source="CRUD",
+            extra_op_fields=(prov_op_field,),
+            extra_request_fields=(prov_req_field,),
+        )
 
 
 def crud(
     triggers: TriggerGen,
     provider_node: type,
     *caps: SurfaceCapability,
-    ops: tuple[Op, ...] | None = None,
+    ops: tuple[OpLike, ...] | None = None,
 ) -> CRUD:
     """CRUD capability = standard ops + error transforms.
 
         crud(HTTPTriggers("/api/users"), UserProvider)
         crud(CLITriggers("user"), UserProvider)
         crud(HTTPTriggers("/api/users"), UserProvider, ops=(LIST, GET))
+        crud(HTTPTriggers("/api/users"), UserProvider, ops=(FetchMany(), FetchOneById()))
     """
     return CRUD(
         triggers=triggers,
@@ -205,7 +176,7 @@ def http_crud(
     base_path: str,
     provider_node: type,
     *caps: SurfaceCapability,
-    ops: tuple[Op, ...] | None = None,
+    ops: tuple[OpLike, ...] | None = None,
 ) -> CRUD:
     """HTTP CRUD capability."""
     return crud(HTTPTriggers(base_path), provider_node, *caps, ops=ops)
@@ -215,14 +186,14 @@ def cli_crud(
     prefix: str,
     provider_node: type,
     *caps: SurfaceCapability,
-    ops: tuple[Op, ...] | None = None,
+    ops: tuple[OpLike, ...] | None = None,
 ) -> CRUD:
     """CLI CRUD capability."""
     return crud(CLITriggers(prefix), provider_node, *caps, ops=ops)
 
 
 __all__ = (
-    "LIST", "GET", "CREATE", "UPDATE", "PATCH", "DELETE",
+    "LIST", "GET", "CREATE", "UPDATE", "PATCH", "DELETE", "UPSERT",
     "ALL_CRUD_OPS", "MUTATION_CRUD_OPS", "READ_CRUD_OPS",
     "CRUD",
     "crud",

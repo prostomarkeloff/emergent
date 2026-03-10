@@ -46,7 +46,8 @@ class SchedulingCompilable(Protocol):
     per-node capabilities (like WorkStealingContext / WorkStealingCompilable).
     """
 
-    requires_free_threaded: bool
+    @property
+    def requires_free_threaded(self) -> bool: ...
 
     def build_agent(self, nodes: set[type[Node]]) -> Agent: ...
 
@@ -64,17 +65,19 @@ class GILResolvable(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Cooperative:
-    """Single-thread asyncio.gather scheduling (nodnod EventLoopAgent behavior).
+    """Single-thread asyncio scheduling (CallbackAgent — behavioral equivalent of EventLoopAgent).
 
-    Trivial compiler — ignores all per-node capabilities, delegates to EventLoopAgent.
+    Uses CallbackAgent instead of nodnod's EventLoopAgent because CallbackAgent
+    lives in emergent (modifiable) and supports Spawnable (live node management).
+    Identical DAG execution semantics — same dependency tracking, same error propagation.
     """
 
     requires_free_threaded: bool = False
 
     def build_agent(self, nodes: set[type[Node]]) -> Agent:
-        from nodnod import EventLoopAgent
+        from emergent.graph.runtime._helpers import CallbackAgent
 
-        return EventLoopAgent.build(nodes)
+        return CallbackAgent.build(nodes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,17 +120,21 @@ class WorkStealing:
 
     def build_agent(self, nodes: set[type[Node]]) -> Agent:
         from emergent.wire.compile._core import fold_schema
+        from emergent.graph.runtime._helpers import build_graph_info
         from emergent.graph.runtime._threaded import _WorkStealingAgent
 
+        graph_info = build_graph_info(nodes)
+
         traits: dict[type[Node], WorkStealingContext] = {}
-        for node in nodes:
+        for node in graph_info.all_nodes:
             ctx = fold_schema(
                 node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing"
             )
             if ctx != WorkStealingContext():
                 traits[node] = ctx
 
-        return _WorkStealingAgent.build_with_workers(nodes, self.workers)
+        n_workers = _WorkStealingAgent._resolve_workers(len(graph_info.all_nodes), self.workers)
+        return _WorkStealingAgent(graph_info=graph_info, n_workers=n_workers, traits=traits)
 
 
 @dataclass(frozen=True, slots=True)

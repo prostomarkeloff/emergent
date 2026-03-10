@@ -38,7 +38,7 @@ from emergent.wire.derive._handler import (
     InsertNew,
     UpdateExisting,
 )
-from emergent.wire.derive._opspec import Op, OpSpec
+from emergent.wire.derive._opspec import Op, OpLike, generate_specs
 from emergent.wire.derive._project import (
     all_fields,
     entity_response,
@@ -135,7 +135,6 @@ class NestedCRUD(SchemaCapability):
         child_seg = self.child_segment or ctx.entity.__name__.lower() + "s"
         triggers = NestedHTTPTriggers(self.parent_path, scope, child_seg)
 
-        # Provider fields (shared across all ops)
         from emergent.wire.derive._crud import _provider_fields
 
         prov_op_field, prov_req_field = _provider_fields(self.provider_node)
@@ -152,31 +151,15 @@ class NestedCRUD(SchemaCapability):
             ),
         )
 
-        entity_name = ctx.entity.__name__
-        for op in _scoped_crud_ops(scope, scope_types):
-            trigger = triggers(ctx.entity, op)
-            in_fields = op.input_proj.project(ctx)
-            annotated_fields = ctx.annotated_field_types(only=set(in_fields.keys()))
-
-            spec = OpSpec(
-                name=op.name,
-                entity_name=entity_name,
-                input_fields=in_fields,
-                request_fields=dict(annotated_fields),
-                response_spec=op.output,
-                handler_template=op.handler_template,
-                trigger=trigger,
-                capabilities=(*self.capabilities, *op.capabilities),
-                effects=op.effects,
-                codec_factory=op.codec_factory,
-                extra_op_fields=(prov_op_field, *op.extra_op_fields),
-                extra_request_fields=(prov_req_field, *op.extra_request_fields),
-                scope_fields=op.scope_fields,
-                source="NestedCRUD",
-            )
-            ctx = ctx.add_spec(spec)
-
-        return ctx
+        return generate_specs(
+            ctx,
+            ops=_scoped_crud_ops(scope, scope_types),
+            triggers=triggers,
+            capabilities=self.capabilities,
+            source="NestedCRUD",
+            extra_op_fields=(prov_op_field,),
+            extra_request_fields=(prov_req_field,),
+        )
 
     def _find_fk(self, entity: type) -> tuple[str, type]:
         """Find FK field on child entity that references parent."""

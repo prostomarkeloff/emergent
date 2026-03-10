@@ -15,22 +15,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated
 
+from nodnod import scalar_node
+
+from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId
+from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
-
-from derivelib import (
-    derive, build_application_from_decorated, memory_node,
-    paginated, sorted_list, filtered, searchable,
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import (
+    compile_derive, materialize, http_crud,
+    Paginated, Sorted, Filtered, Searchable,
 )
-from derivelib.patterns.crud import http_crud
 
-Articles = memory_node()
 
-@derive(
-    http_crud("/articles", provider_node=Articles)
-        .chain(paginated(20))
-        .chain(sorted_list())
-        .chain(filtered("author", "published"))
-        .chain(searchable("title", "body"))
+@scalar_node
+class Articles:
+    @classmethod
+    def __compose__(cls) -> MutatingRelationalProvider:
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
+
+
+@schema_meta(
+    http_crud("/articles", Articles),
+    Paginated(20),
+    Sorted(),
+    Filtered("author", "published"),
+    Searchable("title", "body"),
 )
 @dataclass
 class Article:
@@ -40,7 +50,8 @@ class Article:
     author: str
     published: bool = False
 
-app = build_application_from_decorated(Article)
+
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(Article)])
 
 from emergent.wire.compile import targets
 fastapi_app = targets.fastapi.compile(app)
@@ -71,45 +82,46 @@ Four transforms. Four new capabilities. Zero new handlers written.
 
 ---
 
-## How `.chain()` works
+## How transforms work
 
-`.chain(transform)` takes a `DerivationT` — a function that rewrites the derivation tuple — and applies it *after* the pattern compiles but *before* anything materializes into code.
+Transforms are `DeriveModifiable` capabilities — they run in Phase 2 of the three-phase compilation, after generators (Phase 1) have produced OpSpecs but before anything materializes into code.
 
 Think of it like this: `http_crud` produces a description of 6 operations. Each transform reads that description, finds operations it cares about, and modifies them. The modified description then gets compiled into actual endpoints.
 
-**`paginated(20)`** — finds the List operation (it has the `Pageable` effect). Replaces its handler template with `PaginatedFetchMany(page_size=20)`. Adds `page` and `page_size` to the request. Changes the response shape from `{"items": [...]}` to `{"items": [...], "total": N, "page": M, "page_size": K}`.
+**`Paginated(20)`** — finds the List operation (it has the `Pageable` effect). Replaces its handler template with `PaginatedFetchMany(page_size=20)`. Adds `page` and `page_size` to the request. Changes the response shape from `{"items": [...]}` to `{"items": [...], "total": N, "page": M, "page_size": K}`.
 
-**`sorted_list()`** — finds operations with the `Sortable` effect. Adds `sort` and `order` query parameters.
+**`Sorted()`** — finds operations with the `Sortable` effect. Adds `sort` and `order` query parameters.
 
-**`filtered("author", "published")`** — adds `filter_author` and `filter_published` query parameters. Exact match.
+**`Filtered("author", "published")`** — adds `filter_author` and `filter_published` query parameters. Exact match.
 
-**`searchable("title", "body")`** — adds a `q` parameter. Case-insensitive substring search across the named fields.
+**`Searchable("title", "body")`** — adds a `q` parameter. Case-insensitive substring search across the named fields.
 
-Each transform targets operations by their *effects* — semantic tags that describe what an operation does. `LIST` has `Pageable` and `Sortable` effects by default. Transforms match on those effects and leave everything else alone. This is why `paginated()` modifies List but not Get or Create — they don't have the `Pageable` effect.
+Each transform targets operations by their *effects* — semantic tags that describe what an operation does. `LIST` has `Pageable` and `Sortable` effects by default. Transforms match on those effects and leave everything else alone. This is why `Paginated()` modifies List but not Get or Create — they don't have the `Pageable` effect.
 
 ## Stacking and composing
 
-Transforms chain. Each one sees the result of the previous:
+Transforms stack in `@schema_meta`. Each one sees the result of the previous:
 
 ```python
-http_crud("/articles", provider_node=Articles)
-    .chain(paginated(20))        # modify List handler
-    .chain(sorted_list())        # add sort params to (already-paginated) List
-    .chain(readonly())           # remove Create, Update, Patch, Delete entirely
-    .chain(without_delete())     # or just remove Delete
+@schema_meta(
+    http_crud("/articles", Articles),
+    Paginated(20),       # modify List handler
+    Sorted(),            # add sort params to (already-paginated) List
+    Readonly(),          # remove Create, Update, Patch, Delete entirely
+    WithoutDelete(),     # or just remove Delete
+)
 ```
 
 Some useful ones at a glance:
 
 | Transform | What it does |
 |-----------|-------------|
-| `readonly()` | Drop all mutation endpoints |
-| `without_delete()` | Drop DELETE only |
-| `without_ops(PATCH, UPDATE)` | Drop specific ops |
-| `only_ops(LIST, GET)` | Keep only these |
-| `add_capability(cap, Mutation)` | Attach a capability to mutations |
-| `swap_handler(LIST, MyHandler())` | Replace a handler template |
-| `project_response(exclude=("secret",))` | Strip fields from responses |
+| `Readonly()` | Drop all mutation endpoints |
+| `WithoutDelete()` | Drop DELETE only |
+| `OnlyOps("List", "Get")` | Keep only these |
+| `ProjectResponse(exclude=("secret",))` | Strip fields from responses |
+| `SoftDelete(field="deleted_at")` | Mark as deleted instead of deleting |
+| `Timestamped(created="created_at", updated="updated_at")` | Auto-set timestamps |
 
 The key insight: transforms operate on *descriptions*, not code. They rewrite the derivation data before materialization. That's why they're powerful — you're not monkey-patching handlers, you're reshaping what gets generated in the first place.
 

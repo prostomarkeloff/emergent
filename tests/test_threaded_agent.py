@@ -250,14 +250,14 @@ class TestGILResolution:
         with pytest.raises(RuntimeError, match="free-threaded"):
             agent_cls.build({LeafA})
 
-    def test_auto_downgrade_dispatches_to_event_loop(self) -> None:
-        from nodnod import EventLoopAgent
+    def test_auto_downgrade_dispatches_to_callback_agent(self) -> None:
+        from emergent.graph.runtime._helpers import CallbackAgent
 
         agent_cls = RuntimeAgent.with_policy(
             RuntimePolicy(scheduling=WorkStealing(), gil=AutoDowngrade())
         )
         agent = agent_cls.build({LeafA})
-        assert isinstance(agent._delegate, EventLoopAgent)
+        assert isinstance(agent._delegate, CallbackAgent)
 
     def test_cooperative_ignores_gil_policy(self) -> None:
         agent_cls = RuntimeAgent.with_policy(
@@ -306,11 +306,11 @@ class TestGILResolution:
 
 
 class TestDispatch:
-    def test_cooperative_dispatches_to_event_loop(self) -> None:
-        from nodnod import EventLoopAgent
+    def test_cooperative_dispatches_to_callback_agent(self) -> None:
+        from emergent.graph.runtime._helpers import CallbackAgent
 
         agent = _build_agent(_COOPERATIVE, {LeafA})
-        assert isinstance(agent._delegate, EventLoopAgent)
+        assert isinstance(agent._delegate, CallbackAgent)
 
     def test_work_stealing_dispatches_to_work_stealing(self) -> None:
         agent = _build_agent(_WORK_STEALING, {LeafA})
@@ -1068,6 +1068,123 @@ class TestCapabilitiesAsPlugins:
             "compile_work_stealing",
         )
         assert ctx.priority == 10  # 3 + 7
+
+
+class TestTraitsPlumbing:
+    """Verify traits from schema_meta are folded and passed to _WorkStealingAgent."""
+
+    def test_traits_reach_agent(self) -> None:
+        from dataclasses import dataclass, replace
+        from emergent.wire.axis.schema._universal import SchemaCapability, schema_meta
+        from emergent.graph.runtime import WorkStealingContext, WorkStealingCompilable
+
+        @dataclass(frozen=True, slots=True)
+        class Priority(SchemaCapability):
+            value: int
+
+            def compile_work_stealing(
+                self, ctx: WorkStealingContext
+            ) -> WorkStealingContext:
+                return replace(ctx, priority=self.value)
+
+        @schema_meta(Priority(42))
+        @scalar_node
+        class PriorityLeaf:
+            @classmethod
+            def __compose__(cls) -> int:
+                return 1
+
+        agent = _build_agent(
+            RuntimePolicy(scheduling=WorkStealing(workers=1)),
+            {PriorityLeaf},
+        )
+        delegate = agent._delegate
+        assert isinstance(delegate, _WorkStealingAgent)
+        assert PriorityLeaf in delegate.traits
+        assert delegate.traits[PriorityLeaf].priority == 42
+
+    def test_traits_fold_transitive_deps(self) -> None:
+        """Capabilities on transitive dependencies (not just targets) are folded."""
+        from dataclasses import dataclass, replace
+        from emergent.wire.axis.schema._universal import SchemaCapability, schema_meta
+        from emergent.graph.runtime import WorkStealingContext, WorkStealingCompilable
+
+        @dataclass(frozen=True, slots=True)
+        class Priority(SchemaCapability):
+            value: int
+
+            def compile_work_stealing(
+                self, ctx: WorkStealingContext
+            ) -> WorkStealingContext:
+                return replace(ctx, priority=self.value)
+
+        @schema_meta(Priority(99))
+        @scalar_node
+        class TaggedLeaf:
+            @classmethod
+            def __compose__(cls) -> int:
+                return 1
+
+        @scalar_node
+        class Consumer:
+            @classmethod
+            def __compose__(cls, x: TaggedLeaf) -> int:
+                return x + 1
+
+        agent = _build_agent(
+            RuntimePolicy(scheduling=WorkStealing(workers=1)),
+            {Consumer},  # target is Consumer, but TaggedLeaf has the capability
+        )
+        delegate = agent._delegate
+        assert isinstance(delegate, _WorkStealingAgent)
+        assert TaggedLeaf in delegate.traits
+        assert delegate.traits[TaggedLeaf].priority == 99
+
+    def test_no_traits_when_no_capabilities(self) -> None:
+        agent = _build_agent(
+            RuntimePolicy(scheduling=WorkStealing(workers=1)),
+            {LeafA},
+        )
+        delegate = agent._delegate
+        assert isinstance(delegate, _WorkStealingAgent)
+        assert len(delegate.traits) == 0
+
+    @pytest.mark.asyncio
+    async def test_traits_dont_break_execution(self) -> None:
+        """Agent with traits still executes correctly."""
+        from dataclasses import dataclass, replace
+        from emergent.wire.axis.schema._universal import SchemaCapability, schema_meta
+        from emergent.graph.runtime import WorkStealingContext
+
+        @dataclass(frozen=True, slots=True)
+        class Priority(SchemaCapability):
+            value: int
+
+            def compile_work_stealing(
+                self, ctx: WorkStealingContext
+            ) -> WorkStealingContext:
+                return replace(ctx, priority=self.value)
+
+        @schema_meta(Priority(10))
+        @scalar_node
+        class PriLeafA:
+            @classmethod
+            def __compose__(cls) -> int:
+                return 100
+
+        @scalar_node
+        class PriConsumer:
+            @classmethod
+            def __compose__(cls, x: PriLeafA) -> int:
+                return x + 1
+
+        agent = _build_agent(
+            RuntimePolicy(scheduling=WorkStealing(workers=2)),
+            {PriConsumer},
+        )
+        scope = Scope(detail="traits-exec")
+        await agent.run(local_scope=scope, mapped_scopes={})
+        assert scope.retrieve(PriConsumer).unwrap().value == 101
 
 
 class TestCapabilityCrossCompiler:

@@ -153,7 +153,7 @@ class MemoryRelationalProvider(Generic[T]):
 
     # ─── Query Execution ──────────────────────────────────────────────────
 
-    def _execute(self, query: RelationalQuerySet[T]) -> list[T]:
+    def execute(self, query: RelationalQuerySet[T]) -> list[T]:
         """Execute query on data via fold() with MemoryQueryCompilable protocol."""
         ctx = MemoryQueryContext(data=list(self._data))
         result = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
@@ -161,20 +161,20 @@ class MemoryRelationalProvider(Generic[T]):
 
     async def fetch_one(self, query: RelationalQuerySet[T]) -> T | None:
         """Fetch single result."""
-        results = self._execute(query)
+        results = self.execute(query)
         return results[0] if results else None
 
     async def fetch_many(self, query: RelationalQuerySet[T]) -> list[T]:
         """Fetch all results."""
-        return self._execute(query)
+        return self.execute(query)
 
     async def count(self, query: RelationalQuerySet[T]) -> int:
         """Count results."""
-        return len(self._execute(query))
+        return len(self.execute(query))
 
     async def exists(self, query: RelationalQuerySet[T]) -> bool:
         """Check existence."""
-        results = self._execute(query)
+        results = self.execute(query)
         return len(results) > 0
 
     # ─── Mutations ────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ class MemoryRelationalProvider(Generic[T]):
 
     async def delete_where(self, query: RelationalQuerySet[T]) -> int:
         """Delete matching entities."""
-        to_delete = set(id(item) for item in self._execute(query))
+        to_delete = set(id(item) for item in self.execute(query))
         original_len = len(self._data)
         self._data = [item for item in self._data if id(item) not in to_delete]
         return original_len - len(self._data)

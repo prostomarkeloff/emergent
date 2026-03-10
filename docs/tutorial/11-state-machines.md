@@ -2,7 +2,7 @@
 
 Another custom dialect. This time we're not deriving CRUD or task processing — we're deriving *validated state transitions*.
 
-An order goes from draft to pending to approved to shipped. Or it gets rejected. Or cancelled. The transitions have rules: you can't ship a draft, you can't approve something that's already shipped. Normally you'd write validation logic in every handler. With a custom dialect, you declare the rules and the handlers generate themselves.
+An order goes from draft to pending to approved to shipped. Or it gets rejected. Or cancelled. The transitions have rules: you can't ship a draft, you can't approve something that's already shipped. Normally you'd write validation logic in every handler. With a custom `DeriveGeneratable`, you declare the rules and the handlers generate themselves.
 
 ---
 
@@ -11,26 +11,25 @@ An order goes from draft to pending to approved to shipped. Or it gets rejected.
 The idea: define transitions as data, generate one endpoint per transition with automatic validation.
 
 ```python
-# workflow.py (full implementation in derivelib/examples/workflow.py)
+# workflow.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated
 
 from kungfu import Ok, Error, Result
+from nodnod import scalar_node
 
+from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId
+from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
+from emergent.wire.axis.schema._universal import SchemaCapability, schema_meta
+from emergent.wire.axis.surface import application
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
-
-from derivelib import (
-    derive, build_application_from_decorated, memory_node,
-    exposure, SurfaceCtx, Derivation,
-    fetch_by_identity, id_path, provider_field,
-    NotFound, InvalidData, DomainError,
-)
-from derivelib._effects import Creates, Mutation
-from derivelib.axes.schema import inspect_entity, require_identity
-from derivelib._protocols import HasProvider
+from emergent.wire.derive import compile_derive, materialize, ExposureBuilder, exposure
+from emergent.wire.derive._ctx import DeriveCtx
+from emergent.wire.derive._effects import Creates, Mutation, DomainError, InvalidData, NotFound
+from emergent.wire.derive._query_helpers import fetch_by_identity, provider_field
 
 
 # ── Transition DSL ───────────────────────────────────────────────────────────
@@ -45,27 +44,42 @@ class Transition:
 Five transitions. A name, where it can start from, where it goes.
 
 ```python
-# ── Surface step: one endpoint per transition ────────────────────────────────
+# ── The DeriveGeneratable capability ─────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
-class TransitionStep:
+class WorkflowPattern(SchemaCapability):
     base_path: str
-    transition: Transition
-    state_field: str
     provider_node: type
+    state_field: str
+    transitions: tuple[Transition, ...]
 
-    @property
-    def name(self) -> str:
-        return self.transition.name
+    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
+        entity = ctx.entity
+        id_names = tuple(ctx.identity_fields.keys())
+        non_id_names = tuple(
+            n for n in ctx.fields if n not in ctx.identity_fields
+        )
 
-    def derive_surface[E](self, ctx: SurfaceCtx[E]) -> SurfaceCtx[E]:
-        schema = ctx.schema
-        entity = schema.entity
-        id_names = schema.identity_names()
-        non_id_names = tuple(schema.non_identity_fields().keys())
-        tr, sf = self.transition, self.state_field
+        # Create endpoint
+        init_state = self.transitions[0].from_states[0] if self.transitions else "draft"
+        ctx = self._add_create(ctx, entity, id_names, non_id_names, init_state)
 
-        async def handler(op: HasProvider[E]) -> Result[E, DomainError]:
+        # One transition endpoint per declared transition
+        for tr in self.transitions:
+            ctx = self._add_transition(ctx, entity, id_names, non_id_names, tr)
+
+        return ctx
+
+    def _add_create(self, ctx, entity, id_names, non_id_names, init_state):
+        path = f"{self.base_path}/create"
+        # ... builds a create endpoint with initial state
+        # (see examples for full implementation)
+        return ctx
+
+    def _add_transition(self, ctx, entity, id_names, non_id_names, tr):
+        sf = self.state_field
+
+        async def handler(op: object) -> Result[object, DomainError]:
             obj = await fetch_by_identity(op.provider, entity, op, id_names)
             if obj is None:
                 return Error(NotFound(
@@ -86,49 +100,24 @@ class TransitionStep:
             await op.provider.update(updated)
             return Ok(updated)
 
-        req_fields = {n: info.base_type for n, info in schema.identity_fields.items()}
-        req_fields["provider"] = provider_field(self.provider_node)
-        path = f"{self.base_path}/{id_path(id_names)}/{tr.name}"
-        return ctx.add_exposure(
-            exposure(tr.name, entity)
-            .request(**req_fields)
-            .response(state=str)
-            .handler(handler)
-            .trigger(HTTPRouteTrigger("POST", path))
-        )
+        # Build the operation and exposure, add to ctx
+        # ... (using ctx.add_operation or generate_specs)
+        return ctx
 ```
 
-Each `TransitionStep` implements `SurfaceDerivable` — it contributes one endpoint to the surface axis. The handler: fetch the entity, check current state against allowed `from_states`, update to `to_state`, save.
-
-```python
-# ── The pattern ──────────────────────────────────────────────────────────────
-
-@dataclass(frozen=True, slots=True)
-class WorkflowPattern:
-    base_path: str
-    provider_node: type
-    state_field: str
-    transitions: tuple[Transition, ...]
-
-    def compile(self, entity: type) -> Derivation:
-        init = self.transitions[0].from_states[0] if self.transitions else "draft"
-        return (
-            inspect_entity(), require_identity(),
-            WorkflowCreateStep(self.base_path, self.state_field, init, self.provider_node),
-            *(TransitionStep(self.base_path, tr, self.state_field, self.provider_node)
-              for tr in self.transitions),
-        )
-```
-
-`WorkflowPattern` is a `Pattern` — it has `compile(entity) -> Derivation`. The derivation is: schema inspection + a create step + one transition step per declared transition.
+Each transition produces one endpoint. The handler: fetch the entity, check current state against allowed `from_states`, update to `to_state`, save. The `WorkflowPattern` implements `DeriveGeneratable` — it contributes endpoints to the derive context during Phase 1.
 
 ## Using it
 
 ```python
-Orders = memory_node()
+@scalar_node
+class Orders:
+    @classmethod
+    def __compose__(cls) -> MutatingRelationalProvider:
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
 
 
-@derive(WorkflowPattern(
+@schema_meta(WorkflowPattern(
     "/orders", provider_node=Orders, state_field="status",
     transitions=(
         Transition("submit",  ("draft",),    "pending"),
@@ -146,7 +135,7 @@ class Order:
     status: str = "draft"
 
 
-app = build_application_from_decorated(Order)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(Order)])
 from emergent.wire.compile import targets
 fastapi_app = targets.fastapi.compile(app)
 ```
@@ -171,9 +160,9 @@ curl -X POST http://localhost:8000/orders/1/ship
 # {"state": "shipped"}
 ```
 
-Five transitions, six endpoints, validated. emergent doesn't know about state machines. The `WorkflowPattern` does. And it's built from the same pieces as CRUD — schema inspection, surface steps, handler functions, trigger generation.
+Five transitions, six endpoints, validated. emergent doesn't know about state machines. The `WorkflowPattern` does. And it's built from the same pieces as CRUD — schema inspection via `DeriveCtx`, surface contributions via `add_operation`, handler functions, trigger generation.
 
-That's the thesis: the primitives are general enough to express any derivation pattern. CRUD, task queues, state machines, event sourcing — they're all just different dialects of the same algebra.
+That's the thesis: the primitives are general enough to express any derivation pattern. CRUD, task queues, state machines, event sourcing — they're all just different `DeriveGeneratable` capabilities of the same algebra.
 
 ---
 

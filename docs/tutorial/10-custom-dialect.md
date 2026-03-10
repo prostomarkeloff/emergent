@@ -2,7 +2,7 @@
 
 Here's the secret that took me a while to see: **CRUD is not special.**
 
-`http_crud` is 6 `Op` descriptors with handler templates, bundled with HTTP triggers. That's it. It's one dialect built from generic primitives. You can build your own dialect for anything — a task queue, an event pipeline, a game server, a monitoring dashboard. The primitives are the same.
+`http_crud` is a `SchemaCapability` implementing `DeriveGeneratable`. It bundles 6 `Op` descriptors with handler templates and HTTP triggers. That's it. It's one dialect built from generic primitives. You can build your own dialect for anything — a task queue, an event pipeline, a game server, a monitoring dashboard. The primitives are the same.
 
 Let's build a task queue to prove it.
 
@@ -32,17 +32,18 @@ from nodnod import scalar_node
 from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId
 from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
-
-from derivelib import (
-    Op, derive, build_application_from_decorated, dialect,
-    HTTPTriggers, CLITriggers, HandlerSpec,
-    required_non_id, entity_response, id_only, list_response, no_fields,
-    Read, Creates, Idempotent,
-    FetchMany, FetchOneById,
-)
-from derivelib._ctx import OperationHandler
-from derivelib._errors import DomainError
-from derivelib._protocols import HasProvider
+from emergent.wire.axis.schema._universal import SchemaCapability, schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize
+from emergent.wire.derive._ctx import DeriveCtx, OperationHandler
+from emergent.wire.derive._crud import _provider_fields
+from emergent.wire.derive._effects import Creates, DomainError, Idempotent, Read
+from emergent.wire.derive._handler import FetchMany, FetchOneById, HandlerSpec
+from emergent.wire.derive._opspec import Op, generate_specs
+from emergent.wire.derive._project import entity_response, id_only, list_response, non_id
+from emergent.wire.derive._query_strategy import ProviderInjection, RelationalStrategy
+from emergent.wire.derive._trigger import CLITriggers, HTTPTriggers, TriggerGen
+from emergent.wire.axis.query import relational
 
 
 # ── The custom handler template ──────────────────────────────────────────────
@@ -76,7 +77,7 @@ class SubmitAndProcess[R]:
             data.update(kw)
             return entity_type(**data)
 
-        async def handler(op: HasProvider[E]) -> Result[E, DomainError]:
+        async def handler(op: object) -> Result[E, DomainError]:
             # Build entity from request fields
             data = {f: getattr(op, f) for f in inputs}
             for name in id_names:
@@ -113,56 +114,89 @@ class SubmitAndProcess[R]:
         return handler
 
 
-# ── The dialect: 3 ops ───────────────────────────────────────────────────────
+# ── The dialect: a DeriveGeneratable SchemaCapability ────────────────────────
 
-def _task_ops[R](
-    processor: Callable[..., Awaitable[R]], background: bool = True,
-) -> tuple[Op, ...]:
-    return (
-        Op("Create", required_non_id(), entity_response(),
-           SubmitAndProcess(processor, background=background),
-           effects=(Creates(),)),
-        Op("Get", id_only(), entity_response(),
-           FetchOneById(), effects=(Read(), Idempotent())),
-        Op("List", no_fields(), list_response(),
-           FetchMany(), effects=(Read(),)),
-    )
+@dataclass(frozen=True, slots=True)
+class TaskQueue(SchemaCapability):
+    """Task queue dialect — submit, poll, list."""
+
+    triggers: TriggerGen
+    provider_node: type
+    processor: Callable[..., Awaitable[object]]
+    background: bool = True
+
+    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
+        if not ctx.identity_fields:
+            raise ValueError(f"{ctx.entity.__name__} needs Identity field for TaskQueue")
+
+        prov_op_field, prov_req_field = _provider_fields(self.provider_node)
+        from dataclasses import replace
+        ctx = replace(
+            ctx,
+            query_strategy=RelationalStrategy(
+                provider_node=self.provider_node,
+                base_query=relational(ctx.entity),
+                injection=ProviderInjection(
+                    op_field=prov_op_field,
+                    request_field=prov_req_field,
+                ),
+            ),
+        )
+
+        from emergent.wire.derive._project import no_fields
+
+        ops = (
+            Op("Create", non_id(), entity_response(),
+               SubmitAndProcess(self.processor, background=self.background),
+               effects=(Creates(),)),
+            Op("Get", id_only(), entity_response(),
+               FetchOneById(), effects=(Read(), Idempotent())),
+            Op("List", no_fields(), list_response(),
+               FetchMany(), effects=(Read(),)),
+        )
+
+        return generate_specs(
+            ctx,
+            ops=ops,
+            triggers=self.triggers,
+            capabilities=(),
+            source="TaskQueue",
+            extra_op_fields=(prov_op_field,),
+            extra_request_fields=(prov_req_field,),
+        )
 
 
 def http_task_queue[R](
     path: str, provider_node: type, processor: Callable[..., Awaitable[R]],
-) -> ...:
-    return dialect(
-        *_task_ops(processor),
+) -> TaskQueue:
+    return TaskQueue(
         triggers=HTTPTriggers(path),
         provider_node=provider_node,
+        processor=processor,
     )
 
 
 def cli_task_queue[R](
     prefix: str, provider_node: type, processor: Callable[..., Awaitable[R]],
-) -> ...:
-    return dialect(
-        *_task_ops(processor, background=False),
+) -> TaskQueue:
+    return TaskQueue(
         triggers=CLITriggers(prefix),
         provider_node=provider_node,
+        processor=processor,
+        background=False,
     )
 ```
 
-That's the dialect. ~80 lines. Most of it is the `SubmitAndProcess` template. The dialect itself is just `_task_ops` (3 `Op` descriptors) plus `dialect()` (the smart constructor that adds schema inspection and provider binding).
+That's the dialect. The `TaskQueue` is a `SchemaCapability` implementing `DeriveGeneratable`. It creates a `DeriveCtx`, sets up the query strategy, defines 3 ops, and calls `generate_specs()` — the same function `CRUD` uses internally.
 
 ## Using it
 
 ```python
-_store: MemoryRelationalProvider[ImageResize] = MemoryRelationalProvider(
-    key_fn=lambda x: x.id, next_id=SequenceNextId(),
-)
-
 @scalar_node
 class Tasks:
     @classmethod
     def __compose__(cls) -> MutatingRelationalProvider[ImageResize]:
-        return _store
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
 
 
 async def resize_image(task: ImageResize) -> str:
@@ -170,7 +204,7 @@ async def resize_image(task: ImageResize) -> str:
     return f"resized {task.url} to {task.width}x{task.height}"
 
 
-@derive(
+@schema_meta(
     http_task_queue("/tasks", provider_node=Tasks, processor=resize_image),
     cli_task_queue("task", provider_node=Tasks, processor=resize_image),
 )
@@ -200,19 +234,17 @@ curl http://localhost:8000/tasks/1
 curl http://localhost:8000/tasks
 ```
 
-Same `@derive`. Same `build_application_from_decorated`. Same `targets.fastapi.compile`. Different dialect. Different behavior. Same algebra.
+Same `@schema_meta`. Same `compile_derive` + `materialize`. Same `targets.fastapi.compile`. Different dialect. Different behavior. Same algebra.
 
-## The `dialect()` smart constructor
+## Building a custom DeriveGeneratable
 
-When you call `dialect(*ops, triggers=..., provider_node=...)`, it:
+When you build a custom `SchemaCapability` implementing `compile_derive_generate`, you:
 
-1. Prepends schema preamble: `inspect_entity()`, `require_identity()`
-2. Prepends query setup: `bind_provider(node)`, `base_query()`
-3. Adds `provider` field to all ops (so handlers can access the database)
-4. Pairs each `Op` with a trigger from the trigger generator
-5. Returns a `Dialect` — which is a `Pattern`, meaning it has `.compile(entity)` and `.chain(transform)`
+1. Set up the query strategy (provider node, base query)
+2. Define your ops — each with a name, input projection, response spec, handler template, and effects
+3. Call `generate_specs()` — the shared loop that pairs ops with triggers and appends `OpSpec`s to the context
 
-You get all the framework machinery for free: schema inspection, provider binding, identity validation, transforms. Your custom dialect only needs to define what's *unique* — the ops and their handler templates.
+You get all the framework machinery for free: schema inspection (fields are already on `DeriveCtx`), provider binding, identity validation, transforms. Your custom dialect only needs to define what's *unique* — the ops and their handler templates.
 
 ---
 

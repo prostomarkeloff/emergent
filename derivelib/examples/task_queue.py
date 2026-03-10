@@ -15,28 +15,30 @@ import asyncio
 import os
 import pickle
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Annotated, TYPE_CHECKING
+from dataclasses import dataclass, replace as dc_replace
+from typing import Annotated, TYPE_CHECKING
 
 from kungfu import Ok, Result
 from nodnod import scalar_node
 
-from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet, SequenceNextId
+from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet, SequenceNextId, relational
 from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
+from emergent.wire.axis.schema._universal import SchemaCapability
 
-from derivelib import (
-    Op, Dialect, derive, build_application_from_decorated, dialect,
-    HTTPTriggers, CLITriggers, HandlerSpec,
-    required_non_id, entity_response, id_only, list_response, no_fields,
-    Read, Creates, Idempotent,
-    FetchMany, FetchOneById,
-)
-from derivelib._ctx import OperationHandler
-from derivelib._protocols import HasProvider
+from emergent.wire.derive._ctx import DeriveCtx
+from emergent.wire.derive._crud import _provider_fields
+from emergent.wire.derive._effects import Creates, Idempotent, Read
+from emergent.wire.derive._handler import FetchMany, FetchOneById, HandlerSpec, HasProvider
+from emergent.wire.derive._opspec import Op, OpSpec
+from emergent.wire.derive._project import entity_response, id_only, list_response, no_fields, required_non_id
+from emergent.wire.derive._query_strategy import ProviderInjection, RelationalStrategy
+from emergent.wire.derive._trigger import CLITriggers, HTTPTriggers, TriggerGen
+
+from derivelib import derive, build_application_from_decorated
 
 if TYPE_CHECKING:
-    from derivelib._errors import DomainError
+    from emergent.wire.derive._errors import DomainError
 
 
 # --- handler template: insert + process (background or foreground) ---
@@ -51,9 +53,9 @@ class SubmitAndProcess[R]:
     result_field: str = "result"
     error_field: str = "error"
 
-    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[EntityT, DomainError]:
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> Callable[..., Awaitable[Result[EntityT, DomainError]]]:
         import dataclasses as _dc
-        entity_type: Any = spec.entity  # type[EntityT] needs Any to use with dataclasses.fields
+        entity_type = spec.entity
         id_names = spec.identity_names
         id_set = set(id_names)
         proc, bg = self.processor, self.background
@@ -96,7 +98,7 @@ class SubmitAndProcess[R]:
         return handler
 
 
-# --- the dialect: 3 ops, transport-agnostic ---
+# --- the ops: 3 operations, transport-agnostic ---
 
 def _task_ops[R](processor: Callable[..., Awaitable[R]], background: bool = True) -> tuple[Op, ...]:
     return (
@@ -107,12 +109,68 @@ def _task_ops[R](processor: Callable[..., Awaitable[R]], background: bool = True
     )
 
 
-def http_task_queue[R](path: str, provider_node: type, processor: Callable[..., Awaitable[R]]) -> Dialect:
-    return dialect(*_task_ops(processor), triggers=HTTPTriggers(path), provider_node=provider_node)
+# --- TaskQueue as SchemaCapability (DeriveGeneratable) ---
+
+@dataclass(frozen=True, slots=True)
+class TaskQueueCapability[R](SchemaCapability):
+    """Task queue dialect — 3 ops (Create/Get/List) with custom submit-and-process handler."""
+
+    triggers: TriggerGen
+    provider_node: type
+    processor: Callable[..., Awaitable[R]]
+    background: bool = True
+
+    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        prov_op_field, prov_req_field = _provider_fields(self.provider_node)
+        ctx = dc_replace(
+            ctx,
+            query_strategy=RelationalStrategy(
+                provider_node=self.provider_node,
+                base_query=relational(ctx.entity),
+                injection=ProviderInjection(
+                    op_field=prov_op_field,
+                    request_field=prov_req_field,
+                ),
+            ),
+        )
+
+        for op in _task_ops(self.processor, background=self.background):
+            trigger_result = self.triggers(ctx.entity, op)
+            if trigger_result is None:
+                continue
+            triggers = (trigger_result,) if not isinstance(trigger_result, tuple) else trigger_result
+
+            in_fields = op.input_proj.project(ctx)
+            annotated_fields = ctx.annotated_field_types(only=set(in_fields.keys()))
+
+            for t in triggers:
+                spec = OpSpec(
+                    name=op.name,
+                    entity_name=ctx.entity.__name__,
+                    input_fields=in_fields,
+                    request_fields=dict(annotated_fields),
+                    response_spec=op.output,
+                    handler_template=op.handler_template,
+                    trigger=t,
+                    capabilities=op.capabilities,
+                    effects=op.effects,
+                    codec_factory=op.codec_factory,
+                    extra_op_fields=(prov_op_field, *op.extra_op_fields),
+                    extra_request_fields=(prov_req_field, *op.extra_request_fields),
+                    scope_fields=op.scope_fields,
+                    source="TaskQueue",
+                )
+                ctx = ctx.add_spec(spec)
+
+        return ctx
 
 
-def cli_task_queue[R](prefix: str, provider_node: type, processor: Callable[..., Awaitable[R]]) -> Dialect:
-    return dialect(*_task_ops(processor, background=False), triggers=CLITriggers(prefix), provider_node=provider_node)
+def http_task_queue[R](path: str, provider_node: type, processor: Callable[..., Awaitable[R]]) -> TaskQueueCapability[R]:
+    return TaskQueueCapability(HTTPTriggers(path), provider_node, processor)
+
+
+def cli_task_queue[R](prefix: str, provider_node: type, processor: Callable[..., Awaitable[R]]) -> TaskQueueCapability[R]:
+    return TaskQueueCapability(CLITriggers(prefix), provider_node, processor, background=False)
 
 
 # --- persistent provider (pickle) ---

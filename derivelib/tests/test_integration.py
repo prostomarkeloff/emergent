@@ -19,7 +19,7 @@ from derivelib import (
     endpoint_count,
     memory_node,
 )
-from derivelib._errors import DomainError, InvalidData
+from derivelib import DomainError, InvalidData
 from derivelib.patterns.crud import CREATE, GET, LIST, http_crud
 from derivelib.patterns.methods import get, methods, post
 from derivelib.transforms import readonly, without_delete

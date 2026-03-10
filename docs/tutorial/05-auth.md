@@ -2,7 +2,7 @@
 
 Your API is open. Anyone can read, write, delete. That was fine for prototyping. It's not fine for production.
 
-Let's lock the door. Not by hand-writing middleware — by composing auth as a transform on the derivation.
+Let's lock the door. Not by hand-writing middleware — by composing auth as a capability on the derivation.
 
 ---
 
@@ -25,15 +25,16 @@ from nodnod import scalar_node
 from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId, kv
 from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider, MemoryKVProvider
 from emergent.wire.axis.schema import Identity, Unique
-
-from derivelib import Read, derive, build_application_from_decorated
-from derivelib.patterns.crud import http_crud, GET, LIST, CREATE
-from derivelib.transforms import project_response
-from derivelib.authlib import (
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud, ProjectResponse
+from emergent.wire.derive._crud import GET, LIST, CREATE
+from emergent.wire.derive._effects import Read
+from emergent.wire.derive.auth.login import auth_login
+from emergent.wire.derive.auth import (
     BearerExtract,
     TokenValidate,
     require_auth,
-    auth_login,
     register_auth_errors,
 )
 
@@ -75,13 +76,12 @@ def _identity_fn(u: User) -> str:
     return u.name
 
 
-@derive(
+@schema_meta(
     # Public: list + get + create, hide active_at
-    http_crud("/users", provider_node=UserStore, ops=(LIST, GET, CREATE)).chain(
-        project_response(exclude=("active_at",))
-    ),
+    http_crud("/users", UserStore, ops=(LIST, GET, CREATE)),
+    ProjectResponse(exclude=("active_at",)),
     # Authorized: get with all fields
-    http_crud("/users/me", provider_node=UserStore, ops=(GET,)).chain(auth),
+    http_crud("/users/me", UserStore, ops=(GET,)),
     # Login
     auth_login(
         "/login",
@@ -100,7 +100,7 @@ class User:
     active_at: str | None = None
 
 
-app = build_application_from_decorated(User)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(User)])
 
 from emergent.wire.compile import Axes, targets
 fastapi_app = targets.fastapi.compile(app)
@@ -145,18 +145,18 @@ curl -s http://localhost:8000/users/me/1
 
 Three pieces snap together:
 
-**`auth_login("/login", ...)`** — a pattern that creates a POST endpoint. It finds the user by `match_field`, generates a random token, stores it in the session KV provider, returns it. It's a derivation pattern just like `http_crud` — it produces a wire endpoint from a description.
+**`auth_login("/login", ...)`** — a `DeriveGeneratable` capability that creates a POST endpoint. It finds the user by `match_field`, generates a random token, stores it in the session KV provider, returns it. It's a derivation capability just like `http_crud` — it produces a wire endpoint from a description.
 
-**`require_auth(TokenValidate(...), BearerExtract(), effect=Read)`** — a transform that wraps endpoints matching the `Read` effect with two *enrichers*:
+**`require_auth(TokenValidate(...), BearerExtract(), effect=Read)`** — a `DeriveModifiable` that wraps endpoints matching the `Read` effect with two *enrichers*:
 
 1. **`BearerExtract()`** — reads `Authorization: Bearer <token>` from the request header, injects the raw token into the scope
 2. **`TokenValidate(lookup=...)`** — calls your lookup function, validates the token, injects the user identity into the scope
 
 Enrichers are runtime middleware. They execute *before* your handler. If the token is missing or invalid, the enricher short-circuits with a 401 — the handler never runs.
 
-**`project_response(exclude=("active_at",))`** — strips `active_at` from response types on Read operations. Public users see `{id, name, email}`. Authorized users see everything.
+**`ProjectResponse(exclude=("active_at",))`** — strips `active_at` from response types on Read operations. Public users see `{id, name, email}`. Authorized users see everything.
 
-The beautiful part: these are all just transforms and patterns. `require_auth` is a `DerivationT`. `auth_login` is a `Pattern`. `project_response` is a `DerivationT`. They compose with `.chain()` like any other transform. Auth isn't a special subsystem bolted onto the framework — it's built from the same algebra as pagination and CRUD.
+The beautiful part: these are all just capabilities. `require_auth` is a `DeriveModifiable`. `auth_login` is a `DeriveGeneratable`. `ProjectResponse` is a `DeriveModifiable`. They compose in `@schema_meta(...)` like any other capability. Auth isn't a special subsystem bolted onto the framework — it's built from the same algebra as pagination and CRUD.
 
 ---
 

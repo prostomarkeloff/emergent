@@ -1,8 +1,8 @@
 # Bridge
 
-Compile takes a wire Application and produces a framework artifact: `Application → FastAPI`.
+Compile takes a wire Application and produces a framework artifact: `Application -> FastAPI`.
 
-Bridge does the reverse: `FastAPI → Application`.
+Bridge does the reverse: `FastAPI -> Application`.
 
 Why would you want that? Because you have a legacy app. It works. It's in production. You're not rewriting it. But you *would* like a CLI tool that does the same things. Or a Telegram bot. Or just to get your legacy routes into the wire IR so you can mix them with new emergent endpoints.
 
@@ -59,7 +59,7 @@ def delete_note(note_id: int):
     return {"message": f"Note {note_id} deleted"}
 ```
 
-Vanilla FastAPI. No emergent. No wire. No `@derive`.
+Vanilla FastAPI. No emergent. No wire. No `@schema_meta`.
 
 ## Bridging to CLI
 
@@ -125,7 +125,7 @@ Bridge is lossy. A FastAPI app has middleware, dependencies, exception handlers,
 
 Compile is lossless in the other direction. A wire Application compiles to a complete framework artifact with nothing missing.
 
-Round-trip: `bridge(compile(app)) ≈ app` (approximately recovers the original). But `compile(bridge(fastapi_app))` produces a clean version that preserves behavior but loses framework-specific implementation details.
+Round-trip: `bridge(compile(app)) ~ app` (approximately recovers the original). But `compile(bridge(fastapi_app))` produces a clean version that preserves behavior but loses framework-specific implementation details.
 
 This isn't a bug. It's the nature of the operation. Bridge is a forgetful functor — it extracts structure from a framework artifact. You can't reconstruct what it forgot. That's why bridge *capabilities* exist — they're hints that tell the extraction what to do with framework-specific patterns.
 

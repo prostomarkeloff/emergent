@@ -19,7 +19,7 @@ pipeline = graph(ProcessOrder, agent_cls=agent_cls)
 
 ### Cooperative
 
-Single-thread `asyncio.gather` (nodnod `EventLoopAgent` behavior). Default.
+Single-thread `asyncio.gather` via `CallbackAgent`. Default.
 
 ```python
 from emergent.graph.runtime import RuntimePolicy, Cooperative
@@ -27,7 +27,7 @@ from emergent.graph.runtime import RuntimePolicy, Cooperative
 policy = RuntimePolicy(scheduling=Cooperative())
 ```
 
-No per-node capabilities — ignores all `schema_meta`. Trivial compiler.
+Uses `CallbackAgent` internally — same DAG semantics as nodnod's `EventLoopAgent`, but lives in emergent (modifiable) and supports `Spawnable` (live node management). No per-node capabilities — ignores all `schema_meta`. Trivial compiler.
 
 ### WorkStealing
 
@@ -43,7 +43,7 @@ policy = RuntimePolicy(scheduling=WorkStealing())
 policy = RuntimePolicy(scheduling=WorkStealing(workers=8))
 ```
 
-Defines `WorkStealingContext` + `WorkStealingCompilable` protocol. Capabilities can implement `compile_work_stealing()` to affect per-node scheduling behavior.
+Defines `WorkStealingContext` + `WorkStealingCompilable` protocol. Capabilities can implement `compile_work_stealing()` to affect per-node scheduling behavior. Folded traits are stored on the agent and available via `agent.traits`.
 
 ```python
 from emergent.graph.runtime import WorkStealingContext, WorkStealingCompilable
@@ -57,6 +57,7 @@ from emergent.graph.runtime import ThreadedAgent
 # Equivalent to:
 # RuntimeAgent.with_policy(RuntimePolicy(
 #     scheduling=WorkStealing(),
+#     errors=FailFast(),
 #     gil=RequireFreeThreaded(),
 # ))
 pipeline = graph(ProcessOrder, agent_cls=ThreadedAgent)
@@ -80,9 +81,29 @@ RuntimePolicy(scheduling=WorkStealing(), gil=AutoDowngrade())
 
 ---
 
-## 3. Per-Node Capabilities via schema_meta
+## 3. Error Policy
+
+Controls how the runtime handles node failures.
+
+```python
+from emergent.graph.runtime import FailFast, CollectErrors
+
+# First error kills the entire graph (default, current behavior)
+RuntimePolicy(errors=FailFast())
+
+# CollectErrors is reserved for future use — raises NotImplementedError
+RuntimePolicy(errors=CollectErrors())  # NotImplementedError
+```
+
+`ErrorPolicy = FailFast | CollectErrors` — union type for the `errors` axis.
+
+---
+
+## 4. Per-Node Capabilities via schema_meta
 
 Capabilities are `SchemaCapability` subclasses — self-contained compiler plugins. Each scheduling policy defines its own context and protocol. Capabilities implement `compile_*` methods against whichever compilers they care about. Unknown capabilities are silently skipped (open-world).
+
+Traits are folded for **all nodes** in the graph (targets + transitive dependencies), not just the target nodes.
 
 ```python
 from dataclasses import dataclass, replace
@@ -121,7 +142,7 @@ Pydantic sees `Heavy` -> skipped (no `compile_pydantic`).
 
 ---
 
-## 4. Writing a Custom Scheduling Policy
+## 5. Writing a Custom Scheduling Policy
 
 A scheduling policy implements `SchedulingCompilable`:
 
@@ -251,7 +272,44 @@ RuntimePolicy(scheduling=RemoteCluster(), gil=NeverDowngrade())
 
 ---
 
-## 5. CallbackAgent — Building Blocks for Custom Agents
+## 6. Spawnable — Live Node Management
+
+`Spawnable` is an opt-in protocol for agents that support adding/removing nodes while `run()` is active. Both `CallbackAgent` and `_WorkStealingAgent` implement it.
+
+```python
+from emergent.graph.runtime import Spawnable
+
+agent = RuntimeAgent.with_policy(RuntimePolicy()).build(nodes)
+
+# Check if delegate supports it
+if isinstance(agent, Spawnable):
+    agent.spawn({NewNode})           # Add nodes to running agent
+    agent.despawn({OldNode})         # Remove nodes, cancel in-flight
+    print(agent.living_nodes)        # Currently tracked nodes
+```
+
+### Protocol
+
+```python
+@runtime_checkable
+class Spawnable(Protocol):
+    def spawn(
+        self,
+        nodes: set[type[Node]],
+        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+    ) -> None: ...
+
+    def despawn(self, nodes: set[type[Node]]) -> None: ...
+
+    @property
+    def living_nodes(self) -> frozenset[type[Node]]: ...
+```
+
+`RuntimeAgent` delegates `spawn`/`despawn`/`living_nodes` to the inner agent, raising `TypeError` if the delegate isn't `Spawnable`.
+
+---
+
+## 7. CallbackAgent — Building Blocks for Custom Agents
 
 Writing a full nodnod `Agent` from scratch means reimplementing dependency tracking, Either/ResultNode handling, error propagation (~500 lines). `CallbackAgent` provides all of that — you only supply a `NodeExecutor`.
 
@@ -303,18 +361,19 @@ info.final_nodes     # frozenset({Diamond})
 
 ---
 
-## 6. WorkStealing Internals
+## 8. WorkStealing Internals
 
 ```
 caller's event loop
         |  await agent.run(scope, mapped_scopes)
         v
 WorkStealing.build_agent(nodes)
+  |-- build_graph_info(nodes) -> expand all transitive deps
   |-- fold_schema per node (WorkStealingCompilable) -> per-node traits
-  |-- _WorkStealingAgent(graph_info, n_workers)
+  |-- _WorkStealingAgent(graph_info, n_workers, traits)
 
 _WorkStealingAgent.run()
-  |-- Builds _GraphInfo (dependency counters, ready roots, dependents map)
+  |-- Builds _RunState (dependency counters, ready roots, dependents map)
   |-- Creates _WorkStealingPool (N workers, each with own asyncio event loop)
   |-- Submits ready tasks (zero-dependency nodes)
   |-- Awaits done_event via loop.run_in_executor (non-blocking bridge)
@@ -344,7 +403,7 @@ No extra locks needed:
 
 ---
 
-## 7. Benchmarks
+## 9. Benchmarks
 
 Free-threaded Python 3.14t, 12 cores, 8 parallel nodes per benchmark.
 
@@ -380,7 +439,7 @@ hard           62227ms      42666ms       1.5x
 
 ---
 
-## 8. Comparison with Alternatives
+## 10. Comparison with Alternatives
 
 | Approach | Parallelism | GIL-free needed | Overhead |
 |---|---|---|---|
@@ -393,7 +452,7 @@ hard           62227ms      42666ms       1.5x
 
 ---
 
-## 9. When to Use What
+## 11. When to Use What
 
 | Policy | When |
 |---|---|
@@ -403,11 +462,12 @@ hard           62227ms      42666ms       1.5x
 
 ---
 
-## 10. Files
+## 12. Files
 
-- `emergent/graph/runtime/_policy.py` — protocols, built-in policies, contexts
+- `emergent/graph/runtime/_policy.py` — protocols, built-in policies, contexts, error policy
 - `emergent/graph/runtime/_agent.py` — RuntimeAgent, GIL detection, protocol dispatch
 - `emergent/graph/runtime/_helpers.py` — GraphInfo, build_graph_info, CallbackAgent, NodeExecutor
 - `emergent/graph/runtime/_threaded.py` — WorkStealing agent implementation
+- `emergent/graph/runtime/_spawnable.py` — Spawnable protocol (live node management)
 - `emergent/graph/runtime/__init__.py` — re-exports
-- `tests/test_threaded_agent.py` — 112 tests
+- `tests/test_threaded_agent.py` — 116 tests

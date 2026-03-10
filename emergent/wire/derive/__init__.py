@@ -18,6 +18,7 @@ from emergent.wire.derive._compile import compile_derive
 from emergent.wire.derive._crud import CRUD, cli_crud, crud, http_crud
 from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
 from emergent.wire.derive._explain import derive_dict, explain_derive, explain_entity
+from emergent.wire.derive._handler import DescriptiveTemplate
 from emergent.wire.derive._materialize import materialize
 from emergent.wire.derive._metadata import DerivedMetadata
 from emergent.wire.derive._project import (
@@ -31,6 +32,7 @@ from emergent.wire.derive._protocols import (
     DeriveGeneratable,
     DeriveModifiable,
 )
+from emergent.wire.derive._opspec import OpLike, generate_specs, normalize_op
 from emergent.wire.derive._query_strategy import (
     NoQueryStrategy,
     ProviderInjection,
@@ -38,15 +40,21 @@ from emergent.wire.derive._query_strategy import (
     RelationalStrategy,
 )
 from emergent.wire.derive._transforms import (
+    CreateOnly,
     EffectDeprecated,
     EffectRateLimited,
     Filtered,
     MutationsOnly,
+    OnlyOps,
     Paginated,
     ProjectResponse,
     Readonly,
     Searchable,
+    SoftDelete,
     Sorted,
+    Timestamped,
+    UpdateOnly,
+    WithoutCreate,
     WithoutDelete,
     WithRateLimit,
     WithRetry,
@@ -74,6 +82,11 @@ __all__ = (
     "crud",
     "http_crud",
     "cli_crud",
+    # Op helpers
+    "DescriptiveTemplate",
+    "OpLike",
+    "normalize_op",
+    "generate_specs",
     # Query Strategy
     "QueryStrategy",
     "RelationalStrategy",
@@ -103,7 +116,13 @@ __all__ = (
     "Readonly",
     "MutationsOnly",
     "WithoutDelete",
+    "WithoutCreate",
+    "CreateOnly",
+    "UpdateOnly",
+    "OnlyOps",
     "ProjectResponse",
+    "SoftDelete",
+    "Timestamped",
     "Filtered",
     "Searchable",
     "WithTimeout",

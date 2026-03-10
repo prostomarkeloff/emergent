@@ -1,6 +1,6 @@
 # Universal Derivation
 
-Derive anything from anything. One domain, three algebras, full composition.
+Derive anything from anything. One primitive (`fold_schema`), three-phase compilation, full composition.
 
 All examples below are from a single trading platform. Runnable:
 
@@ -10,35 +10,360 @@ uv run python docs/_test_universal_derive_examples.py
 
 ---
 
-## The domain
+## Architecture Overview
 
-Three types, three algebras, every kind of composition:
+Three layers, each built on the one below:
 
-| Type | Kind | Algebras |
-|------|------|----------|
-| `Instrument` | Entity (dataclass) | CRUD + risk rules |
-| `Order` | Entity (dataclass) | CRUD (readonly) + state machine + lifecycle endpoints + risk rules |
-| `RiskEngine` | Plain class (NOT entity) | Methods + risk rules |
+| Layer | Primitive | Context | Output |
+|-------|-----------|---------|--------|
+| **wire.derive** | `compile_derive` | `DeriveCtx` | Endpoints (OpSpec + Operation) |
+| **Custom algebra** | `fold_schema` | Your context | Your output (state machine, rules, events, ...) |
+| **Bridge** | Capability implementing both | Runs its own algebra, emits into DeriveCtx | Endpoints generated from custom algebra data |
 
-Two custom algebras reusable across all types:
-
-- **State Machine** — `Lifecycle` capability → `StateMachineCtx` (transitions, guards, terminal states)
-- **Risk Rules** — `RiskChecks` capability → `RulesCtx` (rules with severity) AND bridge to wire.derive endpoint
+All three layers share the same mechanism: `fold_schema(cls, initial_ctx, Protocol, "method_name")`.
 
 ---
 
-## Custom algebra: State Machine (Level 3)
+## 1. Three-Phase Compilation
 
-Own context, own protocol, own compile. Not tied to wire.derive. Not endpoints.
+`compile_derive(cls)` runs three protocol folds in sequence:
+
+```
+Phase 1: DeriveGeneratable  — GENERATE endpoints (CRUD, Methods, bridges)
+Phase 2: DeriveModifiable   — MODIFY generated specs (Paginated, Readonly, SoftDelete, ...)
+Phase 3: DeriveAugmentable  — AUGMENT after modification (NestedCRUD backlinks, ...)
+```
+
+```python
+from emergent.wire.derive import compile_derive, materialize
+
+ctxs = compile_derive(User)          # list[DeriveCtx] — one per generator group
+endpoints = [materialize(ctx) for ctx in ctxs]
+```
+
+### Multi-Generator Handling
+
+When a class has multiple `DeriveGeneratable` capabilities, each gets its own `DeriveCtx`. Shared modifiers and augmenters are applied to each:
+
+```python
+@schema_meta(
+    http_crud("/api/products", Store),   # generator 1
+    cli_crud("product", Store),          # generator 2
+    Paginated(20),                       # modifier — applied to both
+)
+@dataclass
+class Product: ...
+
+ctxs = compile_derive(Product)  # [http_ctx, cli_ctx]
+```
+
+Single generator or zero generators → single-element list.
+
+---
+
+## 2. DeriveCtx — Unified Context
+
+Frozen dataclass accumulating all derivation state. Merges old SchemaCtx + QueryCtx + SurfaceCtx.
+
+```python
+from emergent.wire.derive import DeriveCtx
+
+@dataclass(frozen=True, slots=True)
+class DeriveCtx[EntityT]:
+    entity: type[EntityT]
+    fields: dict[str, FieldInfo]              # schema axis
+    identity_fields: dict[str, FieldInfo]     # Identity-annotated fields
+    query_strategy: QueryStrategy[EntityT]    # query axis (relational, none, ...)
+    specs: tuple[OpSpec, ...]                 # generated OpSpecs (Phase 1)
+    operations: tuple[Operation, ...]         # direct operations (Phase 1)
+    capabilities: tuple[SurfaceCapability, ...] # global capabilities (surface axis)
+```
+
+### Two Factory Methods
+
+**`from_entity(cls)`** — for dataclasses with field inspection:
+
+```python
+ctx = DeriveCtx.from_entity(User)
+# ctx.fields = {"id": FieldInfo(...), "name": FieldInfo(...)}
+# ctx.identity_fields = {"id": FieldInfo(...)}
+```
+
+**`from_subject(cls)`** — for any type (services, configs, plain classes):
+
+```python
+ctx = DeriveCtx.from_subject(RiskEngine)
+# ctx.fields = {}  — no field inspection
+# ctx.identity_fields = {}  — no identity requirement
+```
+
+`compile_derive` auto-detects: tries `from_entity`, falls back to `from_subject` on `TypeError`.
+
+### Two Paths Through Materialization
+
+`materialize(ctx)` merges two paths into a single Endpoint:
+
+1. **OpSpec path** — `ctx.specs` → `build_from_spec()` → types + handler + exposure. Used by CRUD.
+2. **Direct operations path** — `ctx.operations` → already built `(OpType, handler, Exposure)` tuples. Used by Methods, bridges.
+
+```python
+endpoint = materialize(ctx)
+# endpoint.runner — ops-based dispatch
+# endpoint.exposures — triggers + codecs + capabilities
+```
+
+### Context Accumulation Methods
+
+All return new `DeriveCtx` via `dataclasses.replace()` (immutable):
+
+```python
+ctx = ctx.add_spec(spec)              # append OpSpec
+ctx = ctx.add_operation(op_triple)    # append (type, handler, Exposure)
+ctx = ctx.add_capability(cap)         # global capability
+
+# Spec transforms (for DeriveModifiable):
+ctx = ctx.reject_by_effect(Mutation)  # remove specs with effect
+ctx = ctx.select_by_effect(Read)      # keep only specs with effect
+ctx = ctx.replace_handler(Deletes, SoftDeleteMark("deleted_at"))
+ctx = ctx.wrap_handler(Read, my_wrapper)
+ctx = ctx.exclude_fields(Creates, frozenset({"created_at"}))
+ctx = ctx.filter_query(lambda e: e.deleted_at.is_null())
+ctx = ctx.add_spec_capability(AuthCap(), Mutation)
+ctx = ctx.map_specs_by_effect(Read, transform_fn)
+```
+
+---
+
+## 3. Built-in Generators (Phase 1)
+
+### CRUD
+
+Transport-agnostic. Generates OpSpecs from entity fields.
+
+```python
+from emergent.wire.derive import http_crud, cli_crud
+from emergent.wire.derive._crud import LIST, GET, CREATE, UPDATE, PATCH, DELETE, UPSERT
+
+@schema_meta(http_crud("/api/users", UserProvider))
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: str
+
+# Selective ops:
+@schema_meta(http_crud("/api/users", UserProvider, ops=(LIST, GET, CREATE)))
+```
+
+7 built-in Op constants: `LIST`, `GET`, `CREATE`, `UPDATE`, `PATCH`, `DELETE`, `UPSERT`.
+
+CRUD requires `Identity` field — raises `ValueError` on plain classes.
+
+### Methods
+
+Scan class for `@method`-decorated methods, generate one operation per trigger.
+
+```python
+from emergent.wire.derive.patterns.methods import Methods, post, get, command
+
+@schema_meta(Methods())
+class MyService:
+    @staticmethod
+    @post("/api/health")
+    async def health() -> Result[dict, DomainError]:
+        return Ok({"status": "ok"})
+
+    @classmethod
+    @get("/api/version")
+    async def version(cls) -> Result[str, DomainError]:
+        return Ok("2.0")
+```
+
+Three calling conventions: `@staticmethod`, `@classmethod`, instance method.
+
+Multi-target — stack decorators for multiple exposures per method:
+
+```python
+@classmethod
+@post("/api/orders")
+@command("order-create")
+async def create(cls, customer: str) -> Result[int, DomainError]: ...
+```
+
+### MethodDialect
+
+Transport-agnostic Methods — methods describe WHAT (`@op`), trigger gen decides WHERE:
+
+```python
+from emergent.wire.derive.patterns.methods import MethodDialect, op
+
+@schema_meta(MethodDialect(triggers=HTTPTriggers("/api/orders")))
+class OrderService:
+    @classmethod
+    @op("Create", effects=(Creates(),))
+    async def create(cls, customer: str) -> Result[Order, DomainError]: ...
+```
+
+---
+
+## 4. Built-in Modifiers (Phase 2)
+
+All implement `DeriveModifiable` via `compile_derive_modify`.
+
+### Query Enrichment
+
+```python
+Paginated(50)           # paginated list with page/page_size params
+Sorted("name", "desc")  # sorted list with sort/order params
+```
+
+### Effect-Based Filters
+
+```python
+Readonly()       # remove mutations, keep reads
+MutationsOnly()  # keep mutations, remove reads
+WithoutDelete()  # remove delete operations
+WithoutCreate()  # remove create operations
+CreateOnly()     # keep only create
+UpdateOnly()     # keep only update
+OnlyOps(("List", "Get"))  # keep only named ops
+```
+
+### Response Projection
+
+```python
+ProjectResponse(exclude=("secret", "internal_id"))  # hide fields from response
+```
+
+### In-Memory Filtering & Search
+
+```python
+Filtered("name", "status")   # add filter_{field} params to Read ops
+Searchable("name", "bio")    # add q param for full-text search on Read ops
+```
+
+**Warning:** Both do in-memory filtering after fetch.
+
+### Composed Transforms
+
+```python
+SoftDelete()                              # replace hard delete with set deleted_at + filter query
+SoftDelete(deleted_field="removed_at")    # custom field name
+Timestamped()                             # auto-set created_at/updated_at
+Timestamped(created_field="made_at", updated_field="changed_at")
+```
+
+### Enricher Transforms
+
+```python
+WithTimeout(30.0)      # add Timeout enricher to all ops
+WithRetry(3)           # add Retry enricher to mutation ops
+WithRateLimit(rpm=60)  # add RateLimit enricher to all ops
+EffectRateLimited()    # rate limit only ops declaring RateLimited effect
+EffectDeprecated()     # deprecation warning on ops declaring Deprecated effect
+```
+
+---
+
+## 5. Trigger System
+
+`TriggerGen` — callable that maps `(entity, Op) -> Trigger | tuple[Trigger, ...] | None`:
+
+```python
+from emergent.wire.derive._trigger import HTTPTriggers, CLITriggers
+
+HTTPTriggers("/api/users")  # List→GET /api/users, Get→GET /api/users/{id}, etc.
+CLITriggers("user")         # List→user-list, Get→user-get, etc.
+```
+
+Composable trigger generators:
+
+```python
+from emergent.wire.derive import PrefixedTriggerGen, FilteredTriggerGen, MultiTriggerGen
+
+PrefixedTriggerGen("/v2", inner)      # prefix all paths
+FilteredTriggerGen(inner, allow={"List", "Get"})  # filter by op name
+MultiTriggerGen(http_triggers, cli_triggers)      # multiple triggers per op
+```
+
+---
+
+## 6. OpSpec — Intermediate Representation
+
+OpSpec is the inspectable, transformable, serializable description of a derived operation. Types are built only at materialization time.
 
 ```python
 @dataclass(frozen=True, slots=True)
-class TransitionDef:
-    action: str
-    source: str
-    target: str
-    guard: str = ""  # "risk_score < threshold"
+class OpSpec:
+    name: str
+    entity_name: str
+    input_fields: Mapping[str, AnnotationValue]
+    request_fields: Mapping[str, AnnotationValue]
+    response_spec: ResponseSpec
+    handler_template: HandlerTemplate
+    trigger: Trigger
+    capabilities: tuple[SurfaceCapability, ...]
+    effects: tuple[DerivationEffect, ...]
+    source: str  # "CRUD", "NestedCRUD", etc.
+```
 
+This is what Phase 2 modifiers transform. Paginated replaces `handler_template` and `response_spec`. Readonly rejects specs by effect. SoftDelete replaces handler + adds query filter.
+
+### Handler Templates
+
+Protocol-based handler construction:
+
+```python
+class HandlerTemplate(Protocol):
+    def build(self, spec: HandlerSpec) -> OperationHandler: ...
+```
+
+Built-in: `FetchMany`, `FetchOneById`, `InsertNew`, `UpdateExisting`, `PatchExisting`, `DeleteOne`, `UpsertExisting`, `PaginatedFetchMany`, `SortedFetchMany`, `SoftDeleteMark`, `TimestampInsert`, `TimestampUpdate`.
+
+Composition via `WrappedTemplate`:
+
+```python
+from emergent.wire.derive._handler import WrappedTemplate
+
+template = WrappedTemplate(inner=FetchMany(), wrapper=my_logging_wrapper)
+```
+
+And `Pipeline` for multi-step handlers:
+
+```python
+from emergent.wire.derive import Pipeline, PipelineStep
+
+pipeline = Pipeline(steps=(ValidateStep(), TransformStep(), PersistStep()))
+```
+
+---
+
+## 7. Query Strategy
+
+Controls how handlers access data. Set during Phase 1 generation.
+
+```python
+from emergent.wire.derive import RelationalStrategy, NoQueryStrategy, ProviderInjection
+
+# CRUD sets this automatically:
+RelationalStrategy(
+    provider_node=UserProvider,
+    base_query=relational(User),
+    injection=ProviderInjection(op_field=..., request_field=...),
+)
+
+# Non-entity subjects get:
+NoQueryStrategy()  # default — no provider, no query
+```
+
+---
+
+## 8. Custom Algebras (Level 3)
+
+Own context, own protocol, own compile. Not tied to wire.derive. Not endpoints.
+
+### State Machine Example
+
+```python
 @dataclass(frozen=True, slots=True)
 class StateMachineCtx:
     subject: type
@@ -69,51 +394,21 @@ class Lifecycle(SchemaCapability):
 
     def derive_state_machine(self, ctx: StateMachineCtx) -> StateMachineCtx:
         defs = tuple(
-            TransitionDef(
-                action=action, source=src, target=tgt,
-                guard=self.guards.get(action, ""),
-            )
-            for action, src, tgt in self.transitions
+            TransitionDef(action=a, source=s, target=t, guard=self.guards.get(a, ""))
+            for a, s, t in self.transitions
         )
-        return replace(
-            ctx,
-            initial_state=self.initial,
-            transitions=(*ctx.transitions, *defs),
-            terminal_states=ctx.terminal_states | self.terminal,
-        )
+        return replace(ctx, initial_state=self.initial,
+                       transitions=(*ctx.transitions, *defs),
+                       terminal_states=ctx.terminal_states | self.terminal)
 ```
 
 This algebra has NO knowledge of HTTP, endpoints, or wire.derive. Pure domain logic.
 
 ---
 
-## Custom algebra: Risk Rules (Level 3 + Bridge)
+## 9. Bridge Pattern — Custom Algebra + Endpoints
 
 Dual-protocol capability — implements its own algebra AND bridges to wire.derive.
-
-```python
-@dataclass(frozen=True, slots=True)
-class RiskRule:
-    name: str
-    severity: str  # "warning" | "block"
-    condition: str
-    message: str
-
-@dataclass(frozen=True, slots=True)
-class RulesCtx:
-    subject: type
-    rules: tuple[RiskRule, ...] = ()
-    max_severity: str = "warning"
-
-@runtime_checkable
-class RiskDerivable(Protocol):
-    def derive_risk(self, ctx: RulesCtx) -> RulesCtx: ...
-
-def compile_risk_rules(cls: type) -> RulesCtx:
-    return fold_schema(cls, RulesCtx(subject=cls), RiskDerivable, "derive_risk")
-```
-
-The capability implements **two protocols** — the bridge pattern:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -122,30 +417,20 @@ class RiskChecks(SchemaCapability):
 
     # Protocol 1: own algebra → RulesCtx
     def derive_risk(self, ctx: RulesCtx) -> RulesCtx:
-        defs = tuple(
-            RiskRule(name=n, severity=s, condition=c, message=m)
-            for n, s, c, m in self.rules
-        )
-        max_sev = "block" if any(r.severity == "block" for r in defs) else ctx.max_severity
-        return replace(ctx, rules=(*ctx.rules, *defs), max_severity=max_sev)
+        defs = tuple(RiskRule(name=n, severity=s, condition=c, message=m)
+                     for n, s, c, m in self.rules)
+        return replace(ctx, rules=(*ctx.rules, *defs), ...)
 
     # Protocol 2: bridge → wire.derive, generates GET /risk-rules endpoint
     def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
-        # Run own algebra internally
         rules_ctx = self.derive_risk(RulesCtx(subject=ctx.entity))
-        rules_snapshot = rules_ctx.rules
-        subject = ctx.entity
         # ... build handler returning rules as JSON ...
         return ctx.add_operation((op_type, annotated, exposure))
 ```
 
 Same `@schema_meta`, same capability — two completely different outputs depending on which fold runs.
 
----
-
-## Lifecycle Bridge: State Machine → Endpoints
-
-`LifecycleBridge` reads the state machine algebra and generates one POST endpoint per transition:
+### Lifecycle Bridge — State Machine to Endpoints
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -155,28 +440,31 @@ class LifecycleBridge(SchemaCapability):
     def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
         sm_ctx = compile_state_machine(ctx.entity)  # run Level 3 algebra
         for tr in sm_ctx.transitions:
-            # generate POST /api/orders/validate, POST /api/orders/submit, etc.
+            # generate POST /api/orders/{action} per transition
             ctx = ctx.add_operation((op_type, handler, exposure))
         return ctx
 ```
 
-This is composition: Level 3 algebra produces data, bridge converts it to endpoints.
+Composition: Level 3 algebra produces data, bridge converts to endpoints.
 
 ---
 
-## Putting it together
+## 10. Trading Platform Example
 
-### Instrument: entity + CRUD + risk rules
+Three types, three algebras, every kind of composition:
+
+| Type | Kind | Algebras |
+|------|------|----------|
+| `Instrument` | Entity (dataclass) | CRUD + risk rules |
+| `Order` | Entity (dataclass) | CRUD (readonly) + state machine + lifecycle endpoints + risk rules |
+| `RiskEngine` | Plain class (NOT entity) | Methods + risk rules |
+
+### Instrument: CRUD + risk rules
 
 ```python
 @schema_meta(
     http_crud("/api/instruments", InstrumentStore, ops=(LIST, GET, CREATE, DELETE)),
-    RiskChecks(rules=(
-        ("max_notional", "block", "notional > 10_000_000",
-         "Single instrument notional exceeds $10M limit"),
-        ("illiquid_check", "warning", "avg_volume < 1000",
-         "Low liquidity instrument — manual review recommended"),
-    )),
+    RiskChecks(rules=(...)),
     Paginated(50),
 )
 @dataclass
@@ -187,63 +475,18 @@ class Instrument:
     currency: str
 ```
 
-Result:
+Result — 5 exposures: 4 CRUD specs + 1 risk-rules operation.
 
-```
-Entity: Instrument
-  Fields: id, symbol, exchange, currency
-  Identity: id
-  Provider: InstrumentStore
-Operations (4 specs):
-  List: GET /api/instruments [Read, Pageable, Sortable] ()
-  Get: GET /api/instruments/{id} [Read, Idempotent, Cacheable] (id)
-  Create: POST /api/instruments [Creates] (symbol, exchange, currency)
-  Delete: DELETE /api/instruments/{id} [Deletes, Idempotent] (id)
-Direct operations: 1
-  InstrumentRiskRulesOp: GET /api/instrument/risk-rules
-```
+### Order: CRUD + state machine + lifecycle + risk rules
 
-Simultaneously through risk rules algebra:
-
-```python
-rules_ctx = compile_risk_rules(Instrument)
-# → RulesCtx(rules=(RiskRule("max_notional", "block", ...), RiskRule("illiquid_check", "warning", ...)))
-```
-
-### Order: entity + CRUD (readonly) + state machine + lifecycle endpoints + risk rules
-
-Three algebras on one type. CRUD + Lifecycle + LifecycleBridge + RiskChecks + Readonly — all compose.
+Three algebras on one type:
 
 ```python
 @schema_meta(
     http_crud("/api/orders", OrderStore),
-    Lifecycle(
-        initial="new",
-        transitions=(
-            ("validate", "new", "validated"),
-            ("submit", "validated", "submitted"),
-            ("fill", "submitted", "filled"),
-            ("partial_fill", "submitted", "partial"),
-            ("cancel", "new", "cancelled"),
-            ("cancel", "validated", "cancelled"),
-            ("cancel", "submitted", "cancelled"),
-            ("reject", "submitted", "rejected"),
-        ),
-        terminal=frozenset({"filled", "cancelled", "rejected"}),
-        guards={
-            "submit": "risk_score < threshold",
-            "fill": "available_quantity >= order_quantity",
-        },
-    ),
+    Lifecycle(initial="new", transitions=(...), terminal=frozenset({...}), guards={...}),
     LifecycleBridge(base_path="/api/orders"),
-    RiskChecks(rules=(
-        ("max_order_size", "block", "quantity > 100_000",
-         "Order quantity exceeds 100K limit"),
-        ("price_deviation", "warning", "abs(price - mid) / mid > 0.05",
-         "Price deviates >5% from mid"),
-        ("self_trade", "block", "counterparty == self",
-         "Self-trading detected"),
-    )),
+    RiskChecks(rules=(...)),
     Readonly(),
 )
 @dataclass
@@ -256,135 +499,128 @@ class Order:
     status: str
 ```
 
-Result — 11 endpoints from one `@schema_meta`:
+Result — 11 exposures: 2 CRUD specs (readonly) + 8 lifecycle + 1 risk-rules.
 
-```
-Operations (2 specs):                          ← CRUD, filtered by Readonly
-  List: GET /api/orders [Read, Pageable, Sortable] ()
-  Get: GET /api/orders/{id} [Read, Idempotent, Cacheable] (id)
-Direct operations: 9                           ← 8 lifecycle + 1 risk-rules
-  OrderValidateOp: POST /api/orders/validate
-  OrderSubmitOp: POST /api/orders/submit
-  OrderFillOp: POST /api/orders/fill
-  OrderPartial_FillOp: POST /api/orders/partial_fill
-  OrderCancelOp: POST /api/orders/cancel      ← 3 cancel transitions (from 3 states)
-  OrderCancelOp: POST /api/orders/cancel
-  OrderCancelOp: POST /api/orders/cancel
-  OrderRejectOp: POST /api/orders/reject
-  OrderRiskRulesOp: GET /api/order/risk-rules
-```
-
-Simultaneously — Level 3 standalone outputs from the SAME capabilities:
+Three folds, three outputs, same capabilities, same `@schema_meta`:
 
 ```python
-sm_ctx = compile_state_machine(Order)
-# initial=new, 8 transitions, terminal={filled, cancelled, rejected}
-# new --validate--> validated
-# validated --submit [risk_score < threshold]--> submitted
-# submitted --fill [available_quantity >= order_quantity]--> filled
-# submitted --partial_fill--> partial
-# ...
-
-rules_ctx = compile_risk_rules(Order)
-# 3 rules: max_order_size (block), price_deviation (warning), self_trade (block)
+ctxs = compile_derive(Order)        # 3 DeriveCtx (CRUD, Lifecycle, RiskChecks)
+sm = compile_state_machine(Order)   # StateMachineCtx: 8 transitions
+rules = compile_risk_rules(Order)   # RulesCtx: 3 rules
 ```
 
-Three folds, three outputs, same capabilities, same `@schema_meta`.
-
-### RiskEngine: NOT an entity — service class + methods + risk rules
-
-No dataclass. No fields. No identity. Not an entity at all.
+### RiskEngine: NOT an entity
 
 ```python
 @schema_meta(
     Methods(),
-    RiskChecks(rules=(
-        ("engine_load", "warning", "cpu_usage > 0.9",
-         "Risk engine CPU above 90%"),
-        ("stale_data", "block", "data_age_seconds > 30",
-         "Market data is stale — risk calculations unreliable"),
-    )),
+    RiskChecks(rules=(...)),
 )
 class RiskEngine:
     @staticmethod
     @post("/api/risk/evaluate")
-    async def evaluate(instrument_id: int, quantity: int, price: float) -> Result[dict, DomainError]:
-        notional = quantity * price
-        risk_score = min(notional / 1_000_000, 10.0)
-        return Ok({
-            "instrument_id": instrument_id,
-            "notional": notional,
-            "risk_score": round(risk_score, 2),
-            "approved": risk_score < 5.0,
-        })
+    async def evaluate(instrument_id: int, quantity: int, price: float) -> Result[dict, DomainError]: ...
 
     @staticmethod
     @get("/api/risk/status")
-    async def status() -> Result[dict, DomainError]:
-        return Ok({"status": "healthy", "engine": "RiskEngine", "version": "2.1"})
+    async def status() -> Result[dict, DomainError]: ...
 ```
 
-Result:
-
-```
-Entity: RiskEngine
-  Fields:                                     ← empty — not an entity
-Direct operations: 3
-  RiskEngineEvaluateOp: POST /api/risk/evaluate
-  RiskEngineStatusOp: GET /api/risk/status
-  RiskEngineRiskRulesOp: GET /api/riskengine/risk-rules
-```
-
-### Cross-algebra: all types, all algebras
-
-```python
-# wire.derive → endpoints
-for cls in (Instrument, Order, RiskEngine):
-    ctx = compile_derive(cls)
-    endpoint = materialize(ctx)
-    # Instrument: entity=True,  specs=4, ops=1,  exposures=5
-    # Order:      entity=True,  specs=2, ops=9,  exposures=11
-    # RiskEngine: entity=False, specs=0, ops=3,  exposures=3
-
-# State machine algebra → StateMachineCtx
-for cls in (Instrument, Order, RiskEngine):
-    sm = compile_state_machine(cls)
-    # Instrument: none (no Lifecycle)
-    # Order:      8 transitions
-    # RiskEngine: none (no Lifecycle)
-
-# Risk rules algebra → RulesCtx
-for cls in (Instrument, Order, RiskEngine):
-    rules = compile_risk_rules(cls)
-    # Instrument: 2 rules, max_severity=block
-    # Order:      3 rules, max_severity=block
-    # RiskEngine: 2 rules, max_severity=block
-```
-
-Each fold sees only the capabilities that implement its protocol. Unknown capabilities are silently skipped (open-world). Same `@schema_meta`, different views.
+Result — 3 exposures: 2 method operations + 1 risk-rules. No fields, no identity.
 
 ---
 
-## How it works
+## 11. Explain / Introspection
 
-Three primitives:
+DeriveCtx is self-describing — all state is inspectable frozen data.
 
-1. **`@schema_meta(*caps)`** — attaches capabilities to any class. Plain `setattr`. No type inspection.
+```python
+from emergent.wire.derive import explain_derive, derive_dict, explain_entity
 
-2. **`fold_schema(cls, ctx, protocol, method)`** — iterates `get_schema_meta(cls)`, calls `method` on each capability matching `protocol`, accumulates into `ctx`. Any class, any context type, any protocol.
+text = explain_derive(ctx)    # human-readable multi-line
+data = derive_dict(ctx)       # structured dict
+text = explain_entity(Order)  # compile + explain in one call
+```
 
-3. **`isinstance` dispatch** — each capability implements the protocols it cares about. `RiskChecks` implements both `RiskDerivable` and `DeriveGeneratable`. `Lifecycle` implements only `StateMachineDerivable`. The fold skips what doesn't match.
+```
+Entity: Order
+  Fields: id, instrument_id, side, quantity, price, status
+  Identity: id
+  Provider: OrderStore
+  Query: relational
+Operations (2 specs):
+  List: GET /api/orders [Read, Pageable, Sortable] ()
+  Get: GET /api/orders/{id} [Read, Idempotent, Cacheable] (id)
+```
 
-`compile_derive` = `fold_schema` with `DeriveCtx` + 3 protocols.
-`compile_state_machine` = `fold_schema` with `StateMachineCtx` + 1 protocol.
-`compile_risk_rules` = `fold_schema` with `RulesCtx` + 1 protocol.
+---
 
-Same fold. Different contexts. Different outputs.
+## 12. Recipe — Extending
 
-### Recipe
+### New DeriveModifiable
+
+1. Subclass `SchemaCapability`
+2. Implement `compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx`
+3. Use `ctx.reject_by_effect`, `ctx.replace_handler`, `ctx.wrap_handler`, etc.
+
+### New DeriveGeneratable
+
+1. Subclass `SchemaCapability`
+2. Implement `compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx`
+3. Use `ctx.add_spec(OpSpec(...))` for template-based ops, or `ctx.add_operation(triple)` for direct ops
+
+### New custom algebra (Level 3)
 
 1. **Context** — frozen dataclass accumulator
 2. **Protocol** — `@runtime_checkable`, one method: `def derive_X(self, ctx: MyCtx) -> MyCtx`
-3. **Capabilities** — `SchemaCapability` + protocol method. Optionally also `compile_derive_generate` for wire.derive bridge
+3. **Capabilities** — `SchemaCapability` + protocol method
 4. **Compile** — `fold_schema(cls, MyCtx(subject=cls), MyDerivable, "derive_X")`
-5. **Bridge** (optional) — same capability implements `compile_derive_generate`, runs own algebra internally, converts result to wire operations
+5. **Bridge** (optional) — same capability also implements `compile_derive_generate`
+
+---
+
+## 13. Files
+
+### Core
+
+- `emergent/wire/derive/_compile.py` — `compile_derive`, three-phase orchestration
+- `emergent/wire/derive/_ctx.py` — `DeriveCtx`, unified context, `from_entity`/`from_subject`
+- `emergent/wire/derive/_protocols.py` — `DeriveGeneratable` / `DeriveModifiable` / `DeriveAugmentable`
+- `emergent/wire/derive/_materialize.py` — `materialize`, DeriveCtx → Endpoint
+- `emergent/wire/derive/_opspec.py` — `Op`, `OpSpec`, `build_from_spec`, `generate_specs`
+
+### Handlers & Codegen
+
+- `emergent/wire/derive/_handler.py` — `HandlerTemplate`, `HandlerSpec`, all built-in templates, `WrappedTemplate`
+- `emergent/wire/derive/_codegen.py` — runtime dataclass/request/response type creation
+- `emergent/wire/derive/_project.py` — response projections (entity, list, paginated, composed)
+- `emergent/wire/derive/_pipeline.py` — `Pipeline`, `PipelineStep`, `PipelineContext`
+
+### Generators & Transforms
+
+- `emergent/wire/derive/_crud.py` — `CRUD`, `http_crud`, `cli_crud`, Op constants
+- `emergent/wire/derive/_transforms.py` — all DeriveModifiable transforms
+- `emergent/wire/derive/patterns/methods.py` — `Methods`, `MethodDialect`, decorators (`@post`, `@get`, `@op`, ...)
+- `emergent/wire/derive/patterns/nested.py` — `NestedCRUD` (DeriveAugmentable)
+
+### Supporting
+
+- `emergent/wire/derive/_trigger.py` — `TriggerGen`, `HTTPTriggers`, `CLITriggers`, composable generators
+- `emergent/wire/derive/_query_strategy.py` — `QueryStrategy`, `RelationalStrategy`, `NoQueryStrategy`
+- `emergent/wire/derive/_query_helpers.py` — identity queries, scoped queries, provider field helpers
+- `emergent/wire/derive/_effects.py` — `DerivationEffect` types (Read, Creates, Deletes, Pageable, ...)
+- `emergent/wire/derive/_errors.py` — `DomainError`, `NotFound`
+- `emergent/wire/derive/_error_caps.py` — default error surface capabilities
+- `emergent/wire/derive/_metadata.py` — `DerivedMetadata` for target compiler introspection
+- `emergent/wire/derive/_explain.py` — `explain_derive`, `derive_dict`, `explain_entity`
+- `emergent/wire/derive/_builders.py` — `ExposureBuilder`, `endpoint_builder`
+
+### Fold Primitive
+
+- `emergent/wire/compile/_core.py` — `fold`, `fold_schema`, `fold_field`
+- `emergent/wire/axis/schema/_universal.py` — `SchemaCapability`, `schema_meta`, `get_schema_meta`, `Identity`
+
+### Tests & Examples
+
+- `tests/test_universal_derive.py` — Level 1-3 tests
+- `docs/_test_universal_derive_examples.py` — runnable trading platform example

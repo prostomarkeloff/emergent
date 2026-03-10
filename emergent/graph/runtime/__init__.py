@@ -21,6 +21,7 @@ from emergent.graph.runtime._helpers import (
     build_graph_info,
     default_executor,
 )
+from emergent.graph.runtime._spawnable import Spawnable
 from emergent.graph.runtime._policy import (
     AutoDowngrade,
     CollectErrors,
@@ -46,6 +47,7 @@ __all__ = (
     "RuntimeAgent",
     "ThreadedAgent",
     "RuntimePolicy",
+    "Spawnable",
     "SchedulingCompilable",
     "Cooperative",
     "WorkStealing",

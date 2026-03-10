@@ -1,6 +1,6 @@
 # Raw Wire
 
-Everything derivelib generates compiles down to wire primitives. derivelib is sugar — powerful sugar, but sugar. The wire layer is what actually talks to FastAPI, CLI, Telegram.
+Everything the derive system generates compiles down to wire primitives. Derivation is sugar — powerful sugar, but sugar. The wire layer is what actually talks to FastAPI, CLI, Telegram.
 
 Sometimes you need it directly. A health check endpoint. A metrics route. A webhook receiver. Something where derivation makes no sense and you just want to wire a function to a URL.
 
@@ -76,15 +76,15 @@ app = application().mount(
 fastapi_app = fastapi.compile(app)
 ```
 
-No `@derive`. No derivelib. Pure wire.
+No `@schema_meta`. No derive system. Pure wire.
 
 ## The RRC codec
 
 `rrc` stands for **request-response codec**. It's the standard execution path:
 
-1. Incoming request → `Request.to_domain()` → domain `Op`
-2. `Op` → runner → `Result[T, E]`
-3. `Result` → `Response.from_domain(result)` → outgoing response
+1. Incoming request -> `Request.to_domain()` -> domain `Op`
+2. `Op` -> runner -> `Result[T, E]`
+3. `Result` -> `Response.from_domain(result)` -> outgoing response
 
 The codec mediates between the framework world (HTTP body, query params) and the domain world (typed ops and results). Each side speaks its own language; the codec translates.
 
@@ -116,32 +116,34 @@ endp = (
 
 One endpoint, two triggers. FastAPI sees the HTTP trigger. CLI sees the CLI trigger. Same runner, same logic, different entry points.
 
-## Mixing wire and derivelib
+## Mixing wire and derived endpoints
 
-Wire endpoints compose with derivelib-derived endpoints in the same application:
+Wire endpoints compose with derived endpoints in the same application:
 
 ```python
-from derivelib import build_application_from_decorated
+from emergent.wire.derive import compile_derive, materialize
 
 # Derived endpoints
-derived_app = build_application_from_decorated(User, Product)
+derived_endpoints = [
+    materialize(ctx)
+    for entity in (User, Product)
+    for ctx in compile_derive(entity)
+]
 
 # Wire endpoints
-wire_app = application().mount(
-    endpoint(runner).expose(
-        HTTPRouteTrigger("GET", "/health"),
-        rrc(HealthRequest, HealthResponse),
-    ),
+health_endpoint = endpoint(runner).expose(
+    HTTPRouteTrigger("GET", "/health"),
+    rrc(HealthRequest, HealthResponse),
 )
 
 # Merge
-full_app = derived_app + wire_app
+full_app = application().mount(*derived_endpoints, health_endpoint)
 
 # Compile everything together
 fastapi_app = fastapi.compile(full_app)
 ```
 
-derivelib generates wire Applications. Wire Applications compose with `+`. Everything compiles together. Level 1 entities next to Level 4 raw wire endpoints. No conflict.
+Derived endpoints and raw wire endpoints compose with `application().mount(...)`. Level 1 entities next to Level 4 raw wire endpoints. No conflict.
 
 ---
 

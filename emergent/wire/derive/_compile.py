@@ -1,6 +1,6 @@
-"""compile_derive — two-phase derivation via fold_schema.
+"""compile_derive — three-phase derivation via fold_schema.
 
-    from emergent.wire.derive import compile_derive
+    from emergent.wire.derive import compile_derive, materialize
 
     @schema_meta(CRUD("/users", Users), Paginated(20))
     @dataclass
@@ -8,13 +8,22 @@
         id: Annotated[int, Identity]
         name: str
 
-    ctx = compile_derive(User)
-    endpoint = materialize(ctx)
+    ctxs = compile_derive(User)
+    endpoints = [materialize(ctx) for ctx in ctxs]
+
+Multiple generators (e.g. http_crud + cli_crud) are compiled independently:
+
+    @schema_meta(http_crud("/products", Store), cli_crud("product", Store))
+    @dataclass
+    class Product: ...
+
+    ctxs = compile_derive(Product)  # [http_ctx, cli_ctx]
 """
 
 from __future__ import annotations
 
-from emergent.wire.compile._core import fold_schema
+from emergent.wire.axis.schema._universal import get_schema_meta
+from emergent.wire.compile._core import fold, fold_schema
 from emergent.wire.derive._ctx import DeriveCtx
 from emergent.wire.derive._protocols import (
     DeriveAugmentable,
@@ -24,7 +33,7 @@ from emergent.wire.derive._protocols import (
 
 
 def _validate_specs[EntityT](ctx: DeriveCtx[EntityT]) -> None:
-    """Check for duplicate spec names after Phase 1. Raises ValueError on conflict."""
+    """Check for duplicate spec names after a generate phase."""
     seen: dict[tuple[str, str], str] = {}
     for spec in ctx.specs:
         key = (spec.entity_name, spec.name)
@@ -36,30 +45,64 @@ def _validate_specs[EntityT](ctx: DeriveCtx[EntityT]) -> None:
         seen[key] = spec.source
 
 
-def compile_derive[EntityT](cls: type[EntityT]) -> DeriveCtx[EntityT]:
-    """Three-phase derive compilation via fold_schema.
-
-    Phase 1: fold DeriveGeneratable caps — CRUD generates OpSpecs
-    Validation: check for duplicate spec names
-    Phase 2: fold DeriveModifiable caps — Paginated/SoftDelete transform specs
-    Phase 3: fold DeriveAugmentable caps — post-modification augmentation
-
-    Uses wire's fold_schema() which folds get_schema_meta(cls) capabilities.
-    No new fold mechanism — same fold, same isinstance dispatch, same open-world.
-
-    Returns DeriveCtx with accumulated specs, operations, and capabilities.
-    When no derive capabilities are present, returns empty DeriveCtx (no-op).
-    """
+def _make_ctx[EntityT](cls: type[EntityT]) -> DeriveCtx[EntityT]:
+    """Create initial DeriveCtx from entity or plain class."""
     try:
-        ctx: DeriveCtx[EntityT] = DeriveCtx.from_entity(cls)
+        return DeriveCtx.from_entity(cls)
     except TypeError:
-        # Not a structured type (dataclass/Pydantic/TypedDict/NamedTuple)
-        ctx = DeriveCtx.from_subject(cls)
-    ctx = fold_schema(cls, ctx, DeriveGeneratable, "compile_derive_generate")
-    _validate_specs(ctx)
-    ctx = fold_schema(cls, ctx, DeriveModifiable, "compile_derive_modify")
-    ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
-    return ctx
+        return DeriveCtx.from_subject(cls)
+
+
+def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
+    """Three-phase derive compilation.
+
+    Phase 1: DeriveGeneratable — CRUD generates OpSpecs
+    Phase 2: DeriveModifiable  — Paginated/SoftDelete transform specs
+    Phase 3: DeriveAugmentable — post-modification augmentation
+
+    Multiple independent generators (e.g. http_crud + cli_crud) are
+    compiled into separate DeriveCtx automatically. Shared modifiers
+    and augmenters are applied to each context.
+
+    Returns list[DeriveCtx] — one per generator group.
+    Single generator → single-element list. Zero generators → single empty ctx.
+    """
+    caps = get_schema_meta(cls)
+
+    generators: list[DeriveGeneratable] = []
+    others: list[object] = []
+    for cap in caps:
+        if isinstance(cap, DeriveGeneratable):
+            generators.append(cap)
+        else:
+            others.append(cap)
+
+    if len(generators) <= 1:
+        # 0-1 generators — single fold, standard path
+        ctx: DeriveCtx[EntityT] = _make_ctx(cls)
+        ctx = fold_schema(cls, ctx, DeriveGeneratable, "compile_derive_generate")
+        _validate_specs(ctx)
+        ctx = fold_schema(cls, ctx, DeriveModifiable, "compile_derive_modify")
+        ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
+        return [ctx]
+
+    # Multiple generators — each gets its own DeriveCtx
+    results: list[DeriveCtx[EntityT]] = []
+    for gen in generators:
+        ctx = _make_ctx(cls)
+
+        # Phase 1: generate — only this generator
+        ctx = gen.compile_derive_generate(ctx)
+        _validate_specs(ctx)
+
+        # Phase 2+3: modify & augment — generator itself + shared caps
+        group: list[object] = [gen, *others]
+        ctx = fold(group, ctx, DeriveModifiable, "compile_derive_modify")
+        ctx = fold(group, ctx, DeriveAugmentable, "compile_derive_augment")
+
+        results.append(ctx)
+
+    return results
 
 
 __all__ = ("compile_derive",)

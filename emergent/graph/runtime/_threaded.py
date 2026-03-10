@@ -20,7 +20,9 @@ import collections
 import os
 import sys
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import kungfu
 from nodnod.agent.base import Agent
@@ -32,6 +34,10 @@ from nodnod.value import Value
 
 from emergent.graph.runtime._helpers import GraphInfo as _GraphInfo
 from emergent.graph.runtime._helpers import build_graph_info as _build_graph_info
+from emergent.graph.runtime._spawnable import Spawnable
+
+if TYPE_CHECKING:
+    from emergent.graph.runtime._policy import WorkStealingContext
 
 
 @dataclass(slots=True)
@@ -272,7 +278,6 @@ async def _execute_sequential_either(
 
         member_result = task.local_scope.retrieve(member)
         if kungfu.is_some(member_result):
-            member_result.unwrap()[task.node_scope][member]
             result = await compose_node(node, task.node_scope, task.local_scope)
             if kungfu.is_ok(result):
                 _on_node_complete(node, run_state, pool, graph_info)
@@ -435,13 +440,39 @@ class _WorkStealingAgent(Agent):
     Independent nodes run in true parallel on separate threads.
     Idle workers steal tasks from busy workers' deques.
 
+    Implements Spawnable — supports live node management (spawn/despawn)
+    while run() is active.
+
     Internal implementation — use RuntimeAgent.with_policy() or
     the ThreadedAgent alias instead of this class directly.
     """
 
-    def __init__(self, graph_info: _GraphInfo, n_workers: int) -> None:
+    def __init__(
+        self,
+        graph_info: _GraphInfo,
+        n_workers: int,
+        traits: Mapping[type[Node], WorkStealingContext] | None = None,
+    ) -> None:
         self._graph_info = graph_info
         self._n_workers = n_workers
+        self._traits: Mapping[type[Node], WorkStealingContext] = traits if traits is not None else {}
+        # Mutable state — initialized in run(), used by spawn/despawn
+        self._pool: _WorkStealingPool | None = None
+        self._run_state: _RunState | None = None
+        self._living: set[type[Node]] = set()
+
+    @staticmethod
+    def _resolve_workers(n_nodes: int, workers: int | None) -> int:
+        """Compute effective worker count: min(cpu_count, node_count), at least 1."""
+        if workers is None:
+            cpu_count = os.cpu_count()
+            n_workers = min(
+                cpu_count if cpu_count is not None else 4,
+                n_nodes,
+            )
+        else:
+            n_workers = workers
+        return max(n_workers, 1)
 
     @classmethod
     def build(cls, nodes: set[type[Node]]) -> _WorkStealingAgent:
@@ -452,16 +483,13 @@ class _WorkStealingAgent(Agent):
         cls, nodes: set[type[Node]], workers: int | None = None
     ) -> _WorkStealingAgent:
         graph_info = _build_graph_info(nodes)
-        if workers is None:
-            cpu_count = os.cpu_count()
-            n_workers = min(
-                cpu_count if cpu_count is not None else 4,
-                len(graph_info.all_nodes),
-            )
-        else:
-            n_workers = workers
-        n_workers = max(n_workers, 1)
+        n_workers = cls._resolve_workers(len(graph_info.all_nodes), workers)
         return cls(graph_info=graph_info, n_workers=n_workers)
+
+    @property
+    def traits(self) -> Mapping[type[Node], WorkStealingContext]:
+        """Per-node compilation context folded from schema_meta capabilities."""
+        return self._traits
 
     async def run(self, local_scope: Scope, mapped_scopes: dict[type[Node], Scope]) -> None:
         validate_local_scope_is_linked_to_node_scopes(local_scope, mapped_scopes)
@@ -483,7 +511,11 @@ class _WorkStealingAgent(Agent):
         if not self._graph_info.all_nodes:
             return
 
+        self._run_state = run_state
+        self._living = set(self._graph_info.all_nodes)
+
         pool = _create_pool(self._n_workers)
+        self._pool = pool
         _start_pool(pool, run_state, self._graph_info)
 
         for node in self._graph_info.ready_roots:
@@ -494,9 +526,66 @@ class _WorkStealingAgent(Agent):
         await caller_loop.run_in_executor(None, run_state.done_event.wait)
 
         _shutdown_pool(pool)
+        self._pool = None
+        self._run_state = None
 
         if run_state.error is not None:
             raise run_state.error
+
+    # --- Spawnable implementation ---
+
+    def spawn(
+        self,
+        nodes: set[type[Node]],
+        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+    ) -> None:
+        """Add new nodes to the running work-stealing pool."""
+        if self._pool is None or self._run_state is None:
+            raise RuntimeError("_WorkStealingAgent.spawn() called before run()")
+        run_state = self._run_state
+        new_info = _build_graph_info(nodes)
+        scopes = dict(run_state.mapped_scopes)
+        if mapped_scopes:
+            scopes.update(mapped_scopes)
+
+        # Register new nodes in pending
+        with run_state.pending_lock:
+            for node in new_info.all_nodes:
+                if node not in run_state.pending:
+                    run_state.pending[node] = new_info.initial_pending.get(node, 0)
+
+        # Update finals tracking — clear done so run() keeps waiting
+        with run_state.remaining_lock:
+            run_state.remaining_finals += len(nodes)
+            run_state.done_event.clear()
+
+        self._living |= set(new_info.all_nodes)
+
+        # Submit ready roots
+        for node in new_info.ready_roots:
+            node_scope = scopes.get(node, run_state.local_scope)
+            _submit_task(self._pool, _Task(node, node_scope, run_state.local_scope))
+
+    def despawn(self, nodes: set[type[Node]]) -> None:
+        """Remove nodes from tracking. In-flight threaded tasks complete but don't affect done condition."""
+        if self._run_state is None:
+            return
+        run_state = self._run_state
+
+        for node in nodes:
+            self._living.discard(node)
+
+        # If despawned nodes are finals, adjust remaining count
+        with run_state.remaining_lock:
+            for node in nodes:
+                if node in self._graph_info.final_nodes:
+                    run_state.remaining_finals -= 1
+            if run_state.remaining_finals <= 0:
+                run_state.done_event.set()
+
+    @property
+    def living_nodes(self) -> frozenset[type[Node]]:
+        return frozenset(self._living)
 
 
 __all__ = ("_WorkStealingAgent",)

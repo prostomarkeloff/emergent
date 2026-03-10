@@ -144,7 +144,7 @@ class LoginOp[V](SchemaCapability):
             "Login",
             SelectFields(names=(self.match_field,)),
             CustomResponse(
-                fields=(("token", str | None), ("error", str | None)),
+                field_specs=(("token", str | None), ("error", str | None)),
                 converter=token_converter,
             ),
             IssueToken(

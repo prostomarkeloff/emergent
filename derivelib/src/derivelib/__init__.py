@@ -1,38 +1,41 @@
-"""derivelib — Derivation algebra over wire IR.
+"""derivelib — DEPRECATED proxy to emergent.wire.derive.
 
-Dogfoods emergent.wire: reads schema/query/surface primitives,
-generates wire Applications via two-pass fold.
+derivelib will be removed in emergent 1.0.0.
+Use emergent.wire.derive directly for all derivation needs.
 
-    from derivelib import derive, build_application_from_decorated
-    from derivelib.patterns import http_crud
+    from emergent.wire.derive import compile_derive, materialize, http_crud
+    from emergent.wire.axis.schema._universal import schema_meta
 
-    @derive(http_crud("/api/users", provider_node=UserProvider))
+    @schema_meta(http_crud("/api/users", provider_node=UserProvider))
     @dataclass
     class User:
         id: Annotated[int, Identity]
         email: str
 
-    app = build_application_from_decorated(User)
-
-For wire primitives (triggers, codecs, schema, query, storage),
-import directly from emergent.wire.
+    ctx = compile_derive(User)
+    endpoint = materialize(ctx)
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, Any
+
+warnings.warn(
+    "derivelib is deprecated. Use emergent.wire.derive directly. "
+    "derivelib will be removed in emergent 1.0.0.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface import Application
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pattern Derivation
+# Pattern Derivation (proxy to wire.derive)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from ._derive import (
-    # Types
-    Pattern,
-    ExposureT,
     # Decorator
     derive,
     # Accessors
@@ -50,33 +53,10 @@ from ._derive import (
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Multi-Axis Derivation Infrastructure
+# Domain errors (re-export from wire.derive)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Contexts
-from ._ctx import (
-    SchemaCtx,
-    QueryCtx,
-    StorageCtx,
-    SurfaceCtx,
-    DerivationCtx,
-)
-
-# Protocols
-from ._protocols import (
-    SchemaDerivable,
-    QueryDerivable,
-    StorageDerivable,
-    SurfaceDerivable,
-    FullDerivable,
-    HandlerTemplate,
-    HandlerSpec,
-    WrappedTemplate,
-    wrap_template,
-)
-
-# Generic domain errors
-from ._errors import (
+from emergent.wire.derive._errors import (
     ProblemDetail,
     NotFound,
     AlreadyExists,
@@ -84,68 +64,50 @@ from ._errors import (
     DomainError,
 )
 
-# Generic error capabilities
-from ._error_caps import (
+# ═══════════════════════════════════════════════════════════════════════════════
+# Error capabilities (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._error_caps import (
     ErrorTransform,
     ProblemResponse,
     ERROR_CAPS,
 )
 
-# Generic query helpers
-from ._query_helpers import (
-    filter_by_identity,
-    identity_values,
-    scoped_query,
-    identity_query,
-    fetch_by_identity,
-    fetch_or_not_found,
-    not_found_error,
-    serialize_op_fields,
-    provider_field,
-    id_path,
+# ═══════════════════════════════════════════════════════════════════════════════
+# Effects (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._effects import (
+    DerivationEffect,
+    Read,
+    Mutation,
+    Idempotent,
+    Creates,
+    Updates,
+    Deletes,
+    Pageable,
+    Sortable,
+    Cacheable,
+    Filterable,
+    Searchable,
+    Public,
+    RateLimited,
+    Validated,
+    Versioned,
+    Bulk,
+    Auditable,
+    Emits,
+    Deprecated,
+    has_effect,
+    get_effect,
 )
 
-# OpSpec (inspectable operation description)
-from ._opspec import (
-    OpSpec,
-    build_from_spec,
-)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Field projections + response specs (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Generic handler templates
-from ._handler_templates import (
-    FetchMany,
-    FetchOneById,
-    InsertNew,
-    UpdateExisting,
-    DeleteOne,
-    PaginatedFetchMany,
-    CachedFetchOneById,
-    PatchExisting,
-    SortedFetchMany,
-)
-
-# Derivation core types
-from ._derivation import (
-    Step,
-    Derivation,
-    DerivationT,
-)
-
-# Fold primitive + phases
-from ._fold import (
-    StepHandler,
-    fold_steps,
-    DerivationPhase,
-    SCHEMA_PHASE,
-    QUERY_PHASE,
-    STORAGE_PHASE,
-    SURFACE_PHASE,
-    fold_derive,
-    materialize,
-)
-
-# Field projections + response specs
-from ._project import (
+from emergent.wire.derive._project import (
     FieldProjection,
     ResponseSpec,
     response_fields,
@@ -186,64 +148,92 @@ from ._project import (
     cursor_paginated_response,
     custom_response,
     dict_converter,
-    exclude_from as exclude_from,
 )
 
-# Adaptation
-from .adapt import (  # noqa: F401
-    AdaptationDialect as AdaptationDialect,
-    default_adaptation as default_adaptation,
+# exclude_from re-export
+from emergent.wire.derive._project import exclude_from as exclude_from
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Handler templates (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._handler import (
+    HandlerTemplate,
+    HandlerSpec,
+    WrappedTemplate,
+    wrap_template,
+    FetchMany,
+    FetchOneById,
+    InsertNew,
+    UpdateExisting,
+    DeleteOne,
+    PaginatedFetchMany,
+    CachedFetchOneById,
+    PatchExisting,
+    SortedFetchMany,
 )
 
-# Effects (derivation-phase capabilities)
-from ._effects import (
-    DerivationEffect,
-    Read,
-    Mutation,
-    Idempotent,
-    Creates,
-    Updates,
-    Deletes,
-    Pageable,
-    Sortable,
-    Cacheable,
-    Filterable,
-    Searchable,
-    Public,
-    RateLimited,
-    Validated,
-    Versioned,
-    Bulk,
-    Auditable,
-    Emits,
-    Deprecated,
-    has_effect,
-    get_effect,
+# ═══════════════════════════════════════════════════════════════════════════════
+# Query helpers (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._query_helpers import (
+    filter_by_identity,
+    identity_values,
+    scoped_query,
+    identity_query,
+    fetch_by_identity,
+    fetch_or_not_found,
+    not_found_error,
+    serialize_op_fields,
+    provider_field,
+    id_path,
 )
 
-# Transforms
+# ═══════════════════════════════════════════════════════════════════════════════
+# Codegen (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._codegen import (
+    create_dataclass,
+    set_type_name,
+    create_request_type,
+    create_response_type,
+    annotate_handler,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Builders (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._builders import (
+    ExposureBuilder,
+    exposure,
+    EndpointBuilder,
+    endpoint_builder,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Explain (re-export from wire.derive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from emergent.wire.derive._explain import (
+    explain_derive,
+    explain_entity,
+    derive_dict,
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Transforms (from rewritten transforms.py)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 from .transforms import (
-    # Fold primitives
-    map_by_effect,
-    reject_by_effect,
-    select_by_effect,
-    map_all_ops,
     # Semantic transforms
     readonly,
     mutations_only,
     without_delete,
-    without_ops,
-    only_ops,
     # Response projection
     project_response,
-    # Handler wrapping
-    wrap_by_effect,
-    # Capability injection
-    add_capability,
-    # Handler / trigger swaps
-    swap_handler,
-    swap_trigger,
-    rename_ops,
     # Query enrichment
     paginated,
     sorted_list,
@@ -256,67 +246,13 @@ from .transforms import (
     searchable,
     rate_limited,
     deprecated,
-    with_effect,
-    # Methods transforms
-    map_methods,
-    add_method_capability,
 )
 
-# Dialect infrastructure
-from ._dialect import (
-    Op,
-    TriggerGen,
-    Dialect,
-    ChainedPattern,
-    DEFAULT_REST_ROUTES,
-    HTTPTriggers,
-    NestedHTTPTriggers,
-    CLITriggers,
-    dialect,
-    with_caps,
-    select_ops,
-    exclude_ops,
-    by_effect,
-)
+# ═══════════════════════════════════════════════════════════════════════════════
+# Subpackages
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Codegen infrastructure (for custom patterns)
-from ._codegen import (
-    create_dataclass,
-    set_type_name,
-    create_request_type,
-    create_response_type,
-    annotate_handler,
-    ExposureBuilder,
-    exposure,
-    EndpointBuilder,
-    endpoint_builder,
-)
-
-# Surface step (re-export for convenience)
-from .axes.surface import DeriveOp
-
-# Explain — derivation pipeline introspection
-from ._explain import (
-    DeriveExplainHandler,
-    DERIVE_EXPLAIN,
-    opspec_dict,
-    step_dict,
-    derivation_dict,
-    entity_derivation_dict,
-    dialect_dict,
-    full_entity_dict,
-    explain_opspec,
-    explain_derivation,
-    explain_entity,
-    explain_full,
-)
-
-# Per-axis step libraries
-from . import axes
-
-# Patterns
 from . import patterns
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -362,14 +298,63 @@ def memory_node(key_field: str = "id", auto_id: bool = True) -> type:
 
 
 def endpoint_count(app: Application) -> int:
-    """Count total exposures across all endpoints in an Application.
-
-    Replaces the repeated ``sum(len(ep.exposures) for ep in app.endpoints)``::
-
-        app = build_application_from_decorated(User)
-        print(f"{endpoint_count(app)} endpoints")
-    """
+    """Count total exposures across all endpoints in an Application."""
     return sum(len(ep.exposures) for ep in app.endpoints)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Blocked imports — low-level API removed
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_BLOCKED_NAMES = frozenset({
+    # Old contexts
+    "SchemaCtx", "QueryCtx", "StorageCtx", "SurfaceCtx", "DerivationCtx",
+    # Old protocols
+    "SchemaDerivable", "QueryDerivable", "StorageDerivable", "SurfaceDerivable",
+    "FullDerivable",
+    # Old core types
+    "Step", "Derivation", "DerivationT",
+    "Pattern", "ExposureT",
+    # Old fold infrastructure
+    "StepHandler", "fold_steps", "DerivationPhase",
+    "SCHEMA_PHASE", "QUERY_PHASE", "STORAGE_PHASE", "SURFACE_PHASE",
+    "fold_derive", "materialize",
+    # Old dialect infrastructure
+    "Op", "TriggerGen", "Dialect", "ChainedPattern",
+    "DEFAULT_REST_ROUTES", "HTTPTriggers", "NestedHTTPTriggers", "CLITriggers",
+    "dialect", "with_caps", "select_ops", "exclude_ops", "by_effect",
+    # Old surface step
+    "DeriveOp",
+    # Old adaptation
+    "AdaptationDialect", "default_adaptation",
+    # Old opspec
+    "OpSpec", "build_from_spec",
+    # Old low-level transforms
+    "map_by_effect", "reject_by_effect", "select_by_effect",
+    "map_all_ops", "without_ops", "only_ops",
+    "wrap_by_effect", "add_capability",
+    "swap_handler", "swap_trigger", "rename_ops",
+    "with_effect", "map_methods", "add_method_capability",
+    # Old explain internals
+    "DeriveExplainHandler", "DERIVE_EXPLAIN",
+    "opspec_dict", "step_dict", "derivation_dict",
+    "entity_derivation_dict", "dialect_dict", "full_entity_dict",
+    "explain_opspec", "explain_derivation", "explain_full",
+    # axes subpackage
+    "axes",
+})
+
+_BLOCKED_MSG = (
+    "derivelib.{name} has been removed. "
+    "Use emergent.wire.derive directly. "
+    "derivelib will be removed in emergent 1.0.0."
+)
+
+
+def __getattr__(name: str) -> object:
+    if name in _BLOCKED_NAMES:
+        raise ImportError(_BLOCKED_MSG.format(name=name))
+    raise AttributeError(f"module 'derivelib' has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -378,8 +363,6 @@ def endpoint_count(app: Application) -> int:
 
 __all__ = (
     # Pattern Derivation
-    "Pattern",
-    "ExposureT",
     "derive",
     "get_patterns",
     "get_exposures",
@@ -390,22 +373,6 @@ __all__ = (
     "build_application",
     "build_endpoint",
     "build_application_from_decorated",
-    # Contexts
-    "SchemaCtx",
-    "QueryCtx",
-    "StorageCtx",
-    "SurfaceCtx",
-    "DerivationCtx",
-    # Protocols
-    "SchemaDerivable",
-    "QueryDerivable",
-    "StorageDerivable",
-    "SurfaceDerivable",
-    "FullDerivable",
-    "HandlerTemplate",
-    "HandlerSpec",
-    "WrappedTemplate",
-    "wrap_template",
     # Generic domain errors
     "ProblemDetail",
     "NotFound",
@@ -416,18 +383,34 @@ __all__ = (
     "ErrorTransform",
     "ProblemResponse",
     "ERROR_CAPS",
-    # Generic query helpers
-    "filter_by_identity",
-    "identity_values",
-    "scoped_query",
-    "identity_query",
-    "fetch_by_identity",
-    "not_found_error",
-    "fetch_or_not_found",
-    "serialize_op_fields",
-    "provider_field",
-    "id_path",
-    # Generic handler templates
+    # Effects
+    "DerivationEffect",
+    "Read",
+    "Mutation",
+    "Idempotent",
+    "Creates",
+    "Updates",
+    "Deletes",
+    "Pageable",
+    "Sortable",
+    "Cacheable",
+    "Filterable",
+    "Searchable",
+    "Public",
+    "RateLimited",
+    "Validated",
+    "Versioned",
+    "Bulk",
+    "Auditable",
+    "Emits",
+    "Deprecated",
+    "has_effect",
+    "get_effect",
+    # Handler templates
+    "HandlerTemplate",
+    "HandlerSpec",
+    "WrappedTemplate",
+    "wrap_template",
     "FetchMany",
     "FetchOneById",
     "InsertNew",
@@ -437,23 +420,6 @@ __all__ = (
     "CachedFetchOneById",
     "PatchExisting",
     "SortedFetchMany",
-    # OpSpec
-    "OpSpec",
-    "build_from_spec",
-    # Derivation core types
-    "Step",
-    "Derivation",
-    "DerivationT",
-    # Fold
-    "StepHandler",
-    "fold_steps",
-    "DerivationPhase",
-    "SCHEMA_PHASE",
-    "QUERY_PHASE",
-    "STORAGE_PHASE",
-    "SURFACE_PHASE",
-    "fold_derive",
-    "materialize",
     # Field projections + response specs
     "FieldProjection",
     "ResponseSpec",
@@ -495,85 +461,17 @@ __all__ = (
     "cursor_paginated_response",
     "custom_response",
     "dict_converter",
-    # Effects
-    "DerivationEffect",
-    "Read",
-    "Mutation",
-    "Idempotent",
-    "Creates",
-    "Updates",
-    "Deletes",
-    "Pageable",
-    "Sortable",
-    "Cacheable",
-    "Filterable",
-    "Searchable",
-    "Public",
-    "RateLimited",
-    "Validated",
-    "Versioned",
-    "Bulk",
-    "Auditable",
-    "Emits",
-    "Deprecated",
-    "has_effect",
-    "get_effect",
-    # Transforms
-    "map_by_effect",
-    "reject_by_effect",
-    "select_by_effect",
-    "map_all_ops",
-    "readonly",
-    "mutations_only",
-    "without_delete",
-    "without_ops",
-    "only_ops",
-    "project_response",
-    "wrap_by_effect",
-    "add_capability",
-    "swap_handler",
-    "swap_trigger",
-    "rename_ops",
-    "paginated",
-    "sorted_list",
-    "with_timeout",
-    "with_retry",
-    "with_rate_limit",
-    "filtered",
-    "searchable",
-    "rate_limited",
-    "deprecated",
-    "with_effect",
-    # Methods transforms
-    "map_methods",
-    "add_method_capability",
-    # Dialect
-    "Op",
-    "TriggerGen",
-    "Dialect",
-    "ChainedPattern",
-    "DEFAULT_REST_ROUTES",
-    "HTTPTriggers",
-    "NestedHTTPTriggers",
-    "CLITriggers",
-    "dialect",
-    "with_caps",
-    "select_ops",
-    "exclude_ops",
-    "by_effect",
-    # Explain
-    "DeriveExplainHandler",
-    "DERIVE_EXPLAIN",
-    "opspec_dict",
-    "step_dict",
-    "derivation_dict",
-    "entity_derivation_dict",
-    "dialect_dict",
-    "full_entity_dict",
-    "explain_opspec",
-    "explain_derivation",
-    "explain_entity",
-    "explain_full",
+    # Query helpers
+    "filter_by_identity",
+    "identity_values",
+    "scoped_query",
+    "identity_query",
+    "fetch_by_identity",
+    "not_found_error",
+    "fetch_or_not_found",
+    "serialize_op_fields",
+    "provider_field",
+    "id_path",
     # Codegen
     "create_dataclass",
     "set_type_name",
@@ -584,12 +482,27 @@ __all__ = (
     "exposure",
     "EndpointBuilder",
     "endpoint_builder",
-    # Surface step
-    "DeriveOp",
+    # Explain
+    "explain_derive",
+    "explain_entity",
+    "derive_dict",
+    # Transforms
+    "readonly",
+    "mutations_only",
+    "without_delete",
+    "project_response",
+    "paginated",
+    "sorted_list",
+    "with_timeout",
+    "with_retry",
+    "with_rate_limit",
+    "filtered",
+    "searchable",
+    "rate_limited",
+    "deprecated",
     # Helpers
     "memory_node",
     "endpoint_count",
     # Subpackages
-    "axes",
     "patterns",
 )

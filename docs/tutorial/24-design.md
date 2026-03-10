@@ -24,7 +24,7 @@ One production mechanism (concatenation). One consumption mechanism (fold). Unif
 
 ## Build-time and runtime are different things
 
-When you write `@derive(http_crud("/users"))`, nothing happens at runtime yet. The decorator produces a wire Application --- an intermediate representation. A data structure describing what endpoints exist, what triggers they respond to, what codecs they use, what capabilities they carry. It's a blueprint, not a building.
+When you write `@schema_meta(http_crud("/users", Users))`, nothing happens at runtime yet. The decorator attaches capabilities as schema metadata --- frozen data waiting to be compiled. When `compile_derive(User)` runs, it produces a `DeriveCtx` --- an intermediate representation. A data structure describing what endpoints exist, what triggers they respond to, what specs they carry. It's a blueprint, not a building.
 
 The compilation step --- `fastapi.compile(app)` --- reads that blueprint and produces a real FastAPI application. A different compilation step --- `cli.compile(app)` --- reads the same blueprint and produces a real argparse parser. The blueprint is the pivot point. It exists so you can inspect it before compiling, transform it between declaration and compilation, explain it without executing it, compile it to targets that didn't exist when you wrote the code.
 

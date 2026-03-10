@@ -78,7 +78,7 @@ class TestNonEntityDeriveEndpoints:
         class MyService:
             version = "2.0"
 
-        ctx = compile_derive(MyService)
+        [ctx] = compile_derive(MyService)
         assert ctx.entity is MyService
         assert ctx.fields == {}
         assert ctx.identity_fields == {}
@@ -141,7 +141,7 @@ class TestEntityDeriveUnchanged:
             id: Annotated[int, Identity]
             label: str
 
-        ctx = compile_derive(Item)
+        [ctx] = compile_derive(Item)
         assert "id" in ctx.fields
         assert "id" in ctx.identity_fields
 
@@ -161,7 +161,7 @@ class TestCrudOnNonEntity:
             pass
 
         with pytest.raises((TypeError, ValueError)):
-            compile_derive(NotAnEntity)
+            compile_derive(NotAnEntity)  # raises during generate phase
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

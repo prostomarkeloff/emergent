@@ -18,26 +18,36 @@ from dataclasses import dataclass, replace
 from typing import Annotated
 
 from kungfu import Error, Ok, Result
+from nodnod import scalar_node
 
-from emergent.wire.axis.query import MutatingRelationalProvider, relational
+from emergent.wire.axis.query import MutatingRelationalProvider, SequenceNextId, relational
+from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
 from emergent.wire.axis.schema import Identity
+from emergent.wire.axis.schema._universal import schema_meta
 from emergent.wire.axis.schema.dialects import compose
+from emergent.wire.axis.surface import application
+from emergent.wire.derive import compile_derive, materialize, http_crud
+from emergent.wire.derive._crud import CREATE, GET, LIST
+from emergent.wire.derive._effects import DomainError, InvalidData
+from emergent.wire.derive._project import SelectFields
+from emergent.wire.derive.patterns.methods import Methods, post
 
-from derivelib import build_application_from_decorated, derive, fields, memory_node
-from derivelib._errors import DomainError, InvalidData
-from derivelib.patterns.crud import CREATE, GET, LIST, http_crud
-from derivelib.patterns.methods import methods, post
 
-Bugs = memory_node()
+@scalar_node
+class Bugs:
+    @classmethod
+    def __compose__(cls) -> MutatingRelationalProvider:
+        return MemoryRelationalProvider(key_fn=lambda x: x.id, next_id=SequenceNextId())
+
 
 # CREATE normally takes ALL non-id fields. We narrow it:
 # only title + severity. status and assignee are domain-managed.
-BUG_CREATE = replace(CREATE, input_proj=fields("title", "severity"))
+BUG_CREATE = replace(CREATE, input_proj=SelectFields("title", "severity"))
 
 
-@derive(
-    http_crud("/bugs", provider_node=Bugs, ops=(LIST, GET, BUG_CREATE)),
-    methods,
+@schema_meta(
+    http_crud("/bugs", Bugs, ops=(LIST, GET, BUG_CREATE)),
+    Methods(),
 )
 @dataclass
 class Bug:
@@ -85,7 +95,7 @@ class Bug:
         return Ok(updated)
 
 
-app = build_application_from_decorated(Bug)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(Bug)])
 
 from emergent.wire.compile import targets
 fastapi_app = targets.fastapi.compile(app)
@@ -125,21 +135,21 @@ The domain rules work. Let's unpack the new concepts.
 
 ---
 
-## Two patterns, one entity
+## Two capabilities, one entity
 
 ```python
-@derive(
-    http_crud("/bugs", provider_node=Bugs, ops=(LIST, GET, BUG_CREATE)),
-    methods,
+@schema_meta(
+    http_crud("/bugs", Bugs, ops=(LIST, GET, BUG_CREATE)),
+    Methods(),
 )
 ```
 
-Two patterns stacked. `http_crud` derives the mechanical CRUD endpoints. `methods` scans the class for `@post` / `@get` decorated methods and wires each one as an endpoint. They don't interfere — they just produce separate exposures on the same entity.
+Two capabilities stacked in `@schema_meta`. `http_crud` is a `DeriveGeneratable` that derives the mechanical CRUD endpoints. `Methods()` is another `DeriveGeneratable` that scans the class for `@post` / `@get` decorated methods and wires each one as an endpoint. They don't interfere — they each generate into separate contexts when there are multiple generators, producing independent endpoints.
 
 ## Narrowing CREATE
 
 ```python
-BUG_CREATE = replace(CREATE, input_proj=fields("title", "severity"))
+BUG_CREATE = replace(CREATE, input_proj=SelectFields("title", "severity"))
 ```
 
 `CREATE` normally accepts all non-identity fields. But `status` and `assignee` are domain-managed — users shouldn't set them directly. `replace()` (from dataclasses) swaps the input projection. The derived CREATE endpoint now only accepts `title` and `severity`. `status` defaults to `"open"`, `assignee` to `None`.

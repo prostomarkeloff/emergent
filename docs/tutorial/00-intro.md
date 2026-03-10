@@ -15,7 +15,7 @@ emergent asks a different question: **what if the plumbing wrote itself?**
 Not from templates. Not from code generation. Not from YAML. From the shape of your data — the fields you already declared, the types you already annotated. One dataclass, one decorator, and the framework *derives* everything else: endpoints, request types, response types, error handling, OpenAPI docs. All from what you already wrote.
 
 ```python
-@derive(http_crud("/users", provider_node=Users))
+@schema_meta(http_crud("/users", UserStore))
 @dataclass
 class User:
     id: Annotated[int, Identity]

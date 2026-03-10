@@ -6,10 +6,8 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from emergent.wire.axis.schema import Identity
-from emergent.wire.axis.surface import Exposure
 
 from derivelib._derive import (
-    Pattern,
     derive,
     get_derivations,
     get_exposures,
@@ -78,25 +76,6 @@ class TestDeriveDecorator:
         assert len(patterns) == 2
 
 
-class TestPatternProtocol:
-    def test_isinstance_check(self) -> None:
-        from derivelib.patterns.crud import http_crud
-
-        pattern = http_crud("/api/users", provider_node=_DummyNode)
-        assert isinstance(pattern, Pattern)
-
-    def test_custom_pattern(self) -> None:
-        from derivelib._derivation import Derivation
-        from derivelib.axes.schema import inspect_entity
-
-        @dataclass
-        class MyPattern:
-            def compile(self, entity: type) -> Derivation:
-                return (inspect_entity(),)
-
-        assert isinstance(MyPattern(), Pattern)
-
-
 class TestDeriveEndpoints:
     def test_single_pattern(self) -> None:
         from derivelib._derive import derive_endpoints
@@ -111,8 +90,9 @@ class TestDeriveEndpoints:
             Item,
             http_crud("/api/items", provider_node=_DummyNode),
         )
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) > 0
+        assert len(endpoints) >= 1
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total > 0
 
     def test_from_decorated(self) -> None:
         from derivelib._derive import derive_from_decorated
@@ -125,8 +105,9 @@ class TestDeriveEndpoints:
             name: str
 
         endpoints = derive_from_decorated(Widget)
-        assert len(endpoints) == 1
-        assert len(endpoints[0].exposures) > 0
+        assert len(endpoints) >= 1
+        total = sum(len(ep.exposures) for ep in endpoints)
+        assert total > 0
 
 
 class TestBuildApplication:

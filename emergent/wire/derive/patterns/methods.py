@@ -266,6 +266,18 @@ def _build_method_operation(
     hints = get_type_hints(method_fn, include_extras=True)
     sig = inspect.signature(method_fn)
 
+    raw_attr = inspect.getattr_static(service, method_name)
+    is_static = isinstance(raw_attr, staticmethod)
+    is_classmethod = isinstance(raw_attr, classmethod)
+
+    # Validate the method is async — sync methods will crash at await
+    raw_fn = raw_attr.__func__ if isinstance(raw_attr, (classmethod, staticmethod)) else raw_attr
+    if not inspect.iscoroutinefunction(raw_fn):
+        raise TypeError(
+            f"{service.__name__}.{method_name} must be async. "
+            f"Use 'async def {method_name}(...)' instead of 'def {method_name}(...)'."
+        )
+
     fields: dict[str, type] = {}
     params: list[str] = []
     for name in sig.parameters:
@@ -273,10 +285,6 @@ def _build_method_operation(
             continue
         fields[name] = hints[name]
         params.append(name)
-
-    raw_attr = inspect.getattr_static(service, method_name)
-    is_static = isinstance(raw_attr, staticmethod)
-    is_classmethod = isinstance(raw_attr, classmethod)
 
     _method_fn, _params = method_fn, params
 
@@ -362,11 +370,15 @@ def _result_type_fields(result_type: type) -> dict[str, type]:
 
     If result_type is a dataclass, uses its fields. Otherwise treats as
     single ``result`` field.
+
+    Uses get_type_hints() to resolve string annotations produced by
+    ``from __future__ import annotations`` in the defining module.
     """
     import dataclasses
 
     if dataclasses.is_dataclass(result_type):
-        return {f.name: f.type for f in dataclasses.fields(result_type)}
+        hints = get_type_hints(result_type, include_extras=True)
+        return {f.name: hints[f.name] for f in dataclasses.fields(result_type)}
     return {"result": result_type}
 
 

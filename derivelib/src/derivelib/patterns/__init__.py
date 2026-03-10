@@ -1,11 +1,8 @@
-"""derivelib.patterns — Derivation dialects built from generic primitives.
+"""derivelib.patterns — proxy to emergent.wire.derive patterns.
 
-CRUD = schema × query × surface (via Op descriptors from derivelib._dialect)
+DEPRECATED: Use emergent.wire.derive directly.
+derivelib will be removed in emergent 1.0.0.
 
-Provider resolved at runtime via compose.Node (nodnod node composition).
-CRUD is just ONE dialect — anyone can build their own.
-
-    from derivelib import derive, build_application
     from derivelib.patterns import http_crud
 
     @derive(http_crud("/api/users", provider_node=UserProvider))
@@ -13,8 +10,6 @@ CRUD is just ONE dialect — anyone can build their own.
     class User:
         id: Annotated[int, Identity]
         email: str
-
-    app = build_application_from_decorated(User)
 """
 
 from .crud import (
@@ -65,7 +60,6 @@ from .methods import (
     delete,
     patch,
     command,
-    ExposeMethod,
 )
 
 __all__: list[str] = [
@@ -112,5 +106,4 @@ __all__: list[str] = [
     "delete",
     "patch",
     "command",
-    "ExposeMethod",
 ]

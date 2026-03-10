@@ -31,7 +31,7 @@ from emergent.wire.axis.schema import Identity
 from emergent.wire.axis.schema.dialects import compose
 
 from derivelib import build_application_from_decorated, derive, memory_node
-from derivelib._errors import DomainError, InvalidData
+from derivelib import DomainError, InvalidData
 from derivelib.patterns.methods import get, methods, post
 
 

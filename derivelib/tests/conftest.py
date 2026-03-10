@@ -7,8 +7,6 @@ from typing import Annotated
 
 from emergent.wire.axis.schema import Identity
 
-from derivelib._ctx import SchemaCtx
-
 
 @dataclass
 class User:
@@ -36,19 +34,3 @@ class CompositeKey:
 class NoIdentity:
     name: str
     value: int
-
-
-def user_schema() -> SchemaCtx[User]:
-    return SchemaCtx.from_entity(User)
-
-
-def post_schema() -> SchemaCtx[Post]:
-    return SchemaCtx.from_entity(Post)
-
-
-def composite_schema() -> SchemaCtx[CompositeKey]:
-    return SchemaCtx.from_entity(CompositeKey)
-
-
-def no_id_schema() -> SchemaCtx[NoIdentity]:
-    return SchemaCtx.from_entity(NoIdentity)
