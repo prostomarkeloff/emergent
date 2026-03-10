@@ -139,14 +139,14 @@ Compile и bridge — не оси. Это операции __над__ IR. Въе
 
 Помнишь обещание из начала? "Хитрые оптимизации, которые органически вытекают из данных, но скрыты за мешаниной архитектуры." Мы сказали, что emergent их даёт. Не сказали, что заставляет делать руками.
 
-## derivelib: те самые хитрые оптимизации
+## wire.derive: те самые хитрые оптимизации
 
-`derivelib` идёт в комплекте с emergent — загляни в `pyproject.toml`, она там, не опциональная. Это мета-слой: работает с примитивами самого emergent (ops, schema, storage, query, surface, capabilities) и порождает их из формы данных. Не шаблонная кодогенерация. Алгебраическая деривация над снопом.
+`wire.derive` идёт в комплекте с emergent — деривационный слой, который работает с примитивами самого emergent (ops, schema, storage, query, surface, capabilities) и порождает их из формы данных. Не шаблонная кодогенерация. Алгебраическая деривация над снопом.
 
-Синтаксис — один декоратор: `@derive(pattern)`.
+Синтаксис — один декоратор: `@schema_meta(capabilities...)`.
 
 ```python
-@derive(http_crud("/api/users", provider_node=Users))
+@schema_meta(http_crud("/api/users", Users))
 @dataclass
 class User:
     id: Annotated[int, Identity]
@@ -158,28 +158,29 @@ class User:
 
 Как работает? Пайплайн деривации ходит по тем же осям:
 
-1. `http_crud` создаёт `Dialect` — пачку дескрипторов `Op` + `TriggerGen` (маппинг операций на HTTP-маршруты) + provider node.
-2. `@derive` сохраняет паттерн на классе. Ничего не запускается.
-3. При сборке приложения `fold_derive(steps, User)` фолдит шаги в два прохода:
-   - Проход 1: Schema — инспекция полей, поиск `Identity`, валидация ограничений
-   - Проход 2: Query → Storage → Surface — привязка provider, базовый запрос, генерация операций
-4. Каждый шаг — frozen dataclass с `derive_schema`, `derive_query`, `derive_storage` или `derive_surface` (или подмножеством). Фолд проверяет `isinstance` и пропускает лишнее.
-5. Surface-проход копит `OpSpec`'ы — чистые описания операций. OpSpec знает имя, входную проекцию, форму ответа, шаблон обработчика, триггер, capabilities, эффекты.
+1. `http_crud` — это `DeriveGeneratable` capability: умеет порождать операции, триггеры и маршруты из формы сущности.
+2. `@schema_meta` сохраняет capabilities как метаданные на классе. Ничего не запускается.
+3. При сборке приложения `compile_derive(User)` прогоняет три фазы:
+   - Фаза 1: Generate — `DeriveGeneratable` capabilities порождают операции, триггеры и surface-спеки из формы сущности
+   - Фаза 2: Modify — `DeriveModifiable` capabilities трансформируют сгенерированные спеки (подмена обработчиков, пагинация и т.д.)
+   - Фаза 3: Augment — `DeriveAugmentable` capabilities навешивают сквозные заботы (auth, логирование и т.д.)
+4. Каждая capability — frozen dataclass, реализующий `DeriveGeneratable`, `DeriveModifiable` или `DeriveAugmentable` (или подмножество). Компилятор проверяет `isinstance` и пропускает лишнее.
+5. Generate-фаза копит `OpSpec`'ы — чистые описания операций. OpSpec знает имя, входную проекцию, форму ответа, шаблон обработчика, триггер, capabilities, эффекты.
 6. `materialize(ctx)` берёт спеки и строит конкретику: типы операций, типы запросов (с `to_domain()` внутри), типы ответов (с `from_domain()` внутри), обработчики, экспозиции.
 7. На выходе — wire `Endpoint`, который монтируется в `Application`, который компилируется в FastAPI, CLI или что угодно.
 
-Шаги — frozen dataclasses. Их можно собирать, инспектировать, трансформировать. Не устраивает Delete? `swap_handler("Delete", SoftDeleteMark())`. Пагинация на List? `.chain(paginated(20))`. Auth только на мутации? `.chain(add_capability(AuthCap(), Mutation))`. Это трансформы над кортежом деривации — код, не конфигурация.
+Capabilities — frozen dataclasses. Их можно собирать, инспектировать, трансформировать. Не устраивает Delete? `SoftDelete("deleted_at")` как capability. Пагинация на List? `Paginated(20)`. Auth только на мутации? Добавь auth capability. Это `DeriveModifiable` трансформы, сложенные в `@schema_meta` — код, не конфигурация.
 
-Но `http_crud` — один паттерн. derivelib — не CRUD-генератор. CRUD — один диалект из обобщённых примитивов. Алгебра шагов — обобщённая, не привязана ни к осям, ни к транспорту. Свой диалект можно построить под что угодно: очередь задач, event sourcing, игровой API, stateful диалог. Примитивы достаточно низкоуровневые, чтобы выразить любой паттерн:
+Но `http_crud` — один паттерн. wire.derive — не CRUD-генератор. CRUD — одна capability из обобщённых примитивов. Алгебра capabilities — обобщённая, не привязана ни к осям, ни к транспорту. Свою capability можно построить под что угодно: очередь задач, event sourcing, игровой API, stateful диалог. Примитивы достаточно низкоуровневые, чтобы выразить любой паттерн:
 
 ```python
 # CRUD — один диалект
-@derive(http_crud("/api/users", provider_node=Users))
+@schema_meta(http_crud("/api/users", Users))
 @dataclass
 class User: ...
 
 # Methods — другой
-@derive(methods)
+@schema_meta(Methods())
 @dataclass
 class OrderService:
     @classmethod
@@ -188,9 +189,9 @@ class OrderService:
         return Ok(new_id)
 
 # Миксуй
-@derive(
-    http_crud("/bounties", provider_node=BountyBoard, ops=(LIST, GET, CREATE)),
-    methods,
+@schema_meta(
+    http_crud("/bounties", BountyBoard, ops=(LIST, GET, CREATE)),
+    Methods(),
 )
 @dataclass
 class Bounty:
@@ -202,26 +203,22 @@ class Bounty:
     @post("/bounties/{bounty_id}/claim")
     async def claim(cls, db: ..., bounty_id: int, hunter: str) -> Result[Bounty, DomainError]:
         ...
-
-# Или свой диалект с нуля
-@derive(game_api(runner, expose(GetBalance, BalanceResponse, "/balance")))
-class GameAPI: ...
 ```
 
-Четыре уровня одной системы: Level 1 (чистая алгебра, один декоратор, полный API), Level 2 (CRUD + ручные методы), Level 3 (только методы — пишешь async, derivelib связывает), Level 4 (голый wire, полный ручной контроль). Бери нужный уровень. Миксуй в одном приложении. Аварийный люк всегда на месте.
+Четыре уровня одной системы: Level 1 (авто CRUD, один декоратор, полный API), Level 2 (CRUD + ручные методы), Level 3 (только ручные методы, wire.derive связывает), Level 4 (голый wire, полный ручной контроль). Бери нужный уровень. Миксуй в одном приложении. Аварийный люк всегда на месте.
 
-Вот что значат "хитрые оптимизации". Данные, которые уже есть — поля датакласса, аннотации типов, capabilities — несут достаточно структурной информации, чтобы вывести всю API-поверхность целиком. derivelib читает эту структуру и пишет бойлерплейт за тебя. Не по конвенции, не угадыванием, не магическими строками — алгебраической деривацией по тем же осям, на которых построено всё приложение.
+Вот что значат "хитрые оптимизации". Данные, которые уже есть — поля датакласса, аннотации типов, capabilities — несут достаточно структурной информации, чтобы вывести всю API-поверхность целиком. wire.derive читает эту структуру и пишет бойлерплейт за тебя. Не по конвенции, не угадыванием, не магическими строками — алгебраической деривацией по тем же осям, на которых построено всё приложение.
 
 Обещание emergent выполнено: пишешь домен, выводишь остальное. Фреймворк — просто проекция.
 
 ## Что дальше
 
-Теперь ты знаешь форму emergent. Пять осей, вертикальная система capabilities, симметрия compile/bridge и derivelib — мета-слой, который превращает явную структуру в готовые приложения.
+Теперь ты знаешь форму emergent. Пять осей, вертикальная система capabilities, симметрия compile/bridge и wire.derive — мета-слой, который превращает явную структуру в готовые приложения.
 
-Собрать CRUD API за 5 минут — quickstart derivelib. `@derive(http_crud(...))` и погнали.
+Собрать CRUD API за 5 минут — тутор. `@schema_meta(http_crud(...))` и погнали.
 
 Разобраться в wire-примитивах — wire reference. Эндпоинты, триггеры, кодеки, capabilities — всё там.
 
 Мульти-целевое приложение с нуля (HTTP + CLI + Telegram, общая логика) — пример рулетки. Чистый Level 4, каждая деталь на виду.
 
-Свой диалект деривации — очередь задач, стейт-машина, event-sourced CQRS — derivelib reference. Алгебра маленькая: Step, Derivation, DerivationT, Pattern. Всё остальное — из этих четырёх.
+Свой диалект деривации — очередь задач, стейт-машина, event-sourced CQRS — universal-derivation doc. Алгебра маленькая: DeriveGeneratable, DeriveModifiable, DeriveAugmentable. Всё остальное — из этих трёх.

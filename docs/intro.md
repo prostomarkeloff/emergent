@@ -137,14 +137,14 @@ Here's the thing. The six axes and compile/bridge — that's the __foundation__.
 
 Remember the promise from the very beginning? "Tricky optimizations, that naturally come from data you're working on, but being hidden with mess of architecture." We said emergent makes them available. We didn't say emergent makes you do them by hand.
 
-## derivelib: the tricky optimizations
+## wire.derive: the tricky optimizations
 
-Emergent ships with `derivelib` by default — check `pyproject.toml`, it's right there, not an optional extra. derivelib is emergent's meta-layer: it operates on emergent's own primitives (ops, schema, storage, query, surface, capabilities) and generates them from the shape of your data. It's not code generation in the template sense. It's algebraic derivation over the sheaf.
+emergent ships with `wire.derive` built-in — the derivation layer that operates on emergent's own primitives (ops, schema, storage, query, surface, capabilities) and generates them from the shape of your data. It's not code generation in the template sense. It's algebraic derivation over the sheaf.
 
-The syntax is one decorator: `@derive(pattern)`.
+The syntax is one decorator: `@schema_meta(capabilities...)`.
 
 ```python
-@derive(http_crud("/api/users", provider_node=Users))
+@schema_meta(http_crud("/api/users", Users))
 @dataclass
 class User:
     id: Annotated[int, Identity]
@@ -156,28 +156,29 @@ That's it. Six endpoints (List, Get, Create, Update, Patch, Delete), request typ
 
 How? The derivation pipeline works on the same axes you already know:
 
-1. `http_crud` creates a `Dialect` — a bundle of `Op` descriptors + a `TriggerGen` (maps ops to HTTP routes) + a provider node.
-2. `@derive` stores this pattern on the class. Nothing runs yet.
-3. When you build the application, `fold_derive(steps, User)` folds the steps through two passes:
-   - Pass 1: Schema — inspect entity fields, discover `Identity`, validate constraints
-   - Pass 2: Query → Storage → Surface — bind provider, set base query, generate operations
-4. Each step is a frozen dataclass implementing `derive_schema`, `derive_query`, `derive_storage`, or `derive_surface` (or any subset). The fold checks `isinstance` and skips non-matching phases.
-5. The surface pass accumulates `OpSpec`s — pure data descriptions of operations. An OpSpec knows its name, input projection, response shape, handler template, trigger, capabilities, effects.
+1. `http_crud` is a `DeriveGeneratable` capability — it knows how to generate ops, triggers, and routes from the entity shape.
+2. `@schema_meta` stores capabilities as metadata on the class. Nothing runs yet.
+3. When you build the application, `compile_derive(User)` runs three phases:
+   - Phase 1: Generate — `DeriveGeneratable` capabilities produce ops, triggers, and surface specs from the entity shape
+   - Phase 2: Modify — `DeriveModifiable` capabilities transform the generated specs (swap handlers, add pagination, etc.)
+   - Phase 3: Augment — `DeriveAugmentable` capabilities attach cross-cutting concerns (auth, logging, etc.)
+4. Each capability is a frozen dataclass implementing `DeriveGeneratable`, `DeriveModifiable`, or `DeriveAugmentable` (or any subset). The compiler checks `isinstance` and skips non-matching phases.
+5. The Generate phase accumulates `OpSpec`s — pure data descriptions of operations. An OpSpec knows its name, input projection, response shape, handler template, trigger, capabilities, effects.
 6. `materialize(ctx)` takes the specs and builds concrete artifacts: op types, request types (with `to_domain()` baked in), response types (with `from_domain()` baked in), handlers, exposures.
 7. The result is a wire `Endpoint`, which gets mounted into an `Application`, which gets compiled to FastAPI or CLI or whatever.
 
-The beauty: steps are just frozen dataclasses. Composable, inspectable, transformable. You don't like the default Delete? `swap_handler("Delete", SoftDeleteMark())`. Pagination on List? `.chain(paginated(20))`. Auth on mutations only? `.chain(add_capability(AuthCap(), Mutation))`. These are transforms on the derivation tuple — code, not configuration.
+The beauty: capabilities are just frozen dataclasses. Composable, inspectable, transformable. You don't like the default Delete? `SoftDelete("deleted_at")` as a capability. Pagination on List? `Paginated(20)`. Auth on mutations only? Add an auth capability. These are `DeriveModifiable` transforms stacked in `@schema_meta` — code, not configuration.
 
-But `http_crud` is just one pattern. derivelib is not a CRUD generator. CRUD is one dialect built from generic primitives. The step algebra is generic, axis-agnostic, transport-agnostic. You can build your own dialect for anything: a task queue, an event-sourced system, a game API, a stateful conversation flow. The primitives are low-level enough that any derivation pattern can be expressed:
+But `http_crud` is just one pattern. wire.derive is not a CRUD generator. CRUD is one capability built from generic primitives. The capability algebra is generic, axis-agnostic, transport-agnostic. You can build your own capability for anything: a task queue, an event-sourced system, a game API, a stateful conversation flow. The primitives are low-level enough that any derivation pattern can be expressed:
 
 ```python
 # CRUD is one dialect
-@derive(http_crud("/api/users", provider_node=Users))
+@schema_meta(http_crud("/api/users", Users))
 @dataclass
 class User: ...
 
 # Methods is another
-@derive(methods)
+@schema_meta(Methods())
 @dataclass
 class OrderService:
     @classmethod
@@ -186,9 +187,9 @@ class OrderService:
         return Ok(new_id)
 
 # Mix them
-@derive(
-    http_crud("/bounties", provider_node=BountyBoard, ops=(LIST, GET, CREATE)),
-    methods,
+@schema_meta(
+    http_crud("/bounties", BountyBoard, ops=(LIST, GET, CREATE)),
+    Methods(),
 )
 @dataclass
 class Bounty:
@@ -200,26 +201,22 @@ class Bounty:
     @post("/bounties/{bounty_id}/claim")
     async def claim(cls, db: ..., bounty_id: int, hunter: str) -> Result[Bounty, DomainError]:
         ...
-
-# Or build your own dialect from scratch
-@derive(game_api(runner, expose(GetBalance, BalanceResponse, "/balance")))
-class GameAPI: ...
 ```
 
-Four levels of the same system: Level 1 (pure algebra, one decorator, full API), Level 2 (CRUD + hand-written methods), Level 3 (methods only, you write async methods, derivelib wires them), Level 4 (pure wire, full manual control). Pick the level you need. Mix them in the same app. The escape hatch is always there.
+Four levels of the same system: Level 1 (auto CRUD, one decorator, full API), Level 2 (CRUD + hand-written methods), Level 3 (hand-written methods only, wire.derive wires them), Level 4 (raw wire, full manual control). Pick the level you need. Mix them in the same app. The escape hatch is always there.
 
-This is what "tricky optimizations" means. The data you already have — your dataclass fields, your type annotations, your capabilities — carries enough structural information to derive the entire API surface. derivelib reads that structure and writes the boilerplate you'd otherwise type by hand. Not by convention, not by guessing, not by magic strings. By algebraic derivation over the same axes your whole app is built on.
+This is what "tricky optimizations" means. The data you already have — your dataclass fields, your type annotations, your capabilities — carries enough structural information to derive the entire API surface. wire.derive reads that structure and writes the boilerplate you'd otherwise type by hand. Not by convention, not by guessing, not by magic strings. By algebraic derivation over the same axes your whole app is built on.
 
 Emergent's promise, delivered: write the domain, derive the rest. The framework is just the projection.
 
 ## What's next
 
-You now know the shape of emergent. Five axes, one vertical capability system, compile/bridge symmetry, and derivelib — the meta-layer that turns explicit structure into derived applications.
+You now know the shape of emergent. Five axes, one vertical capability system, compile/bridge symmetry, and wire.derive — the meta-layer that turns explicit structure into derived applications.
 
-If you want to build a CRUD API in 5 minutes, jump to the derivelib quickstart. `@derive(http_crud(...))` and go.
+If you want to build a CRUD API in 5 minutes, jump to the tutorial. `@schema_meta(http_crud(...))` and go.
 
 If you want to understand the wire primitives, read the wire reference. Endpoints, triggers, codecs, capabilities — all there.
 
 If you want to build a multi-target app from scratch (HTTP + CLI + Telegram sharing logic), look at the roulette example. It's pure Level 4 wire, every piece visible.
 
-If you want to build your own derivation dialect — a task queue, a state machine, an event-sourced CQRS system — read the derivelib reference. The algebra is small: Step, Derivation, DerivationT, Pattern. Everything else is built from these four.
+If you want to build your own derivation dialect — a task queue, a state machine, an event-sourced CQRS system — read the universal-derivation doc. The algebra is small: DeriveGeneratable, DeriveModifiable, DeriveAugmentable. Everything else is built from these three.

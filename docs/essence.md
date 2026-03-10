@@ -220,28 +220,28 @@ The fold collected the context. The LLM verified the meaning. Same operator, rea
 
 ## Derivation: The Fold Generates Programs
 
-`@derive` attaches a pattern to an entity. A pattern compiles to a `Derivation` — a tuple of frozen dataclass steps:
+`@schema_meta` attaches capabilities to an entity. `compile_derive` runs three-phase compilation — Generate, Modify, Augment:
 
 ```python
-@derive(http_crud("/users", provider_node=Users))
+@schema_meta(http_crud("/users", Users))
 @dataclass
 class User:
     id: Annotated[int, Identity]
     name: str
 ```
 
-`http_crud` compiles to steps like `InspectEntity`, `BindProvider`, `BaseQuery`, and `DeriveOp` for each operation (List, Get, Create, Update, Delete). Each step is a frozen dataclass with `derive_*` methods for the axes it touches.
+`http_crud` is a `DeriveGeneratable` capability — it reads the entity schema and produces `OpSpec` descriptions for each operation (List, Get, Create, Update, Delete). Each OpSpec is a frozen dataclass describing one operation.
 
-`fold_derive` runs four sequential folds — one per axis:
+`compile_derive` runs three phases over the capabilities attached via `@schema_meta`:
 
 ```python
-schema_ctx  = SCHEMA_PHASE.fold(steps, SchemaCtx.from_entity(entity))
-query_ctx   = QUERY_PHASE.fold(steps, QueryCtx(schema=schema_ctx))
-storage_ctx = STORAGE_PHASE.fold(steps, StorageCtx(schema=schema_ctx))
-surface_ctx = SURFACE_PHASE.fold(steps, SurfaceCtx(schema=schema_ctx, query=query_ctx, ...))
+# Phase 1 — Generate: DeriveGeneratable capabilities produce OpSpecs
+# Phase 2 — Modify: DeriveModifiable capabilities rewrite OpSpecs (transforms)
+# Phase 3 — Augment: DeriveAugmentable capabilities post-process
+ctx = compile_derive(User)  # -> list[DeriveCtx]
 ```
 
-Each phase uses the same `fold()` underneath. Each step implements only the protocols it cares about. `InspectEntity` implements `SchemaDerivable`. `DeriveOp` implements `SurfaceDerivable`. The others are skipped — open-world, same as field compilation.
+Each phase uses the same `fold()` underneath. Each capability implements only the protocols it cares about. `http_crud` implements `DeriveGeneratable`. `Paginated` implements `DeriveModifiable`. The others are skipped — open-world, same as field compilation.
 
 The output: a complete `Application` with endpoints, handlers, exposures, ready for `fastapi.compile()` or `cli.compile()` or any target.
 
@@ -255,31 +255,30 @@ DeriveOp("Create", ..., effects=(Mutation(),))
 DeriveOp("Delete", ..., effects=(Mutation(), Deletes()))
 ```
 
-`DerivationT` transforms dispatch on these effects:
+Transforms dispatch on these effects:
 
 ```python
-def readonly() -> DerivationT:
-    return reject_by_effect(Mutation)  # drops Create, Update, Delete
+def Readonly():  # DeriveModifiable
+    # rejects OpSpecs with Mutation effect -> drops Create, Update, Delete
 
-def paginated(size: int) -> DerivationT:
-    # finds ops with Pageable effect, replaces their handler
-    return map_by_effect({Pageable: lambda eff, op: replace(op, handler=PaginatedFetchMany(size))})
+def Paginated(size: int):  # DeriveModifiable
+    # finds OpSpecs with Pageable effect, replaces their handler
 ```
 
 The transform doesn't parse code. It asks: *is this operation pageable?* via `isinstance(eff, Pageable)`. It reads `Pageable.default_size`. It replaces the handler. That's semantic dispatch — operating on domain meaning, not syntax.
 
-Compose them:
+Compose them by stacking in `@schema_meta()`:
 
 ```python
-@derive(
-    http_crud("/articles", provider_node=Articles)
-        .chain(paginated(20))
-        .chain(sorted_list())
-        .chain(readonly())
+@schema_meta(
+    http_crud("/articles", Articles),
+    Paginated(20),
+    Sorted(),
+    Readonly(),
 )
 ```
 
-`.chain()` applies `DerivationT` transforms sequentially: `tuple → tuple → tuple`. Pure functions on frozen data. Each transform is independently testable, composable, explainable.
+Capabilities stack as arguments — frozen data in, frozen data out. Each transform is independently testable, composable, explainable.
 
 ## Why Only Python
 

@@ -235,8 +235,8 @@ ctx = fold_field(field_info, initial_ctx, PydanticCompilable, "compile_pydantic"
 # Target compilation: fold over surface capabilities
 ctx = fold(capabilities, wrap_ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline")
 
-# Derivation: fold over derivation steps
-ctx = fold(steps, schema_ctx, SchemaDerivable, "derive_schema")
+# Derivation: three-phase compilation
+ctxs = compile_derive(User)  # Generate → Modify → Augment
 ```
 
 Same primitive. Three domains. Zero code duplication.

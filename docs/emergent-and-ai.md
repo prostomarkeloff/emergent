@@ -17,11 +17,11 @@ LLMs are bounded observers. They reason brilliantly when information is local. T
 Everything about an entity is on the entity:
 
 ```python
-@derive(
-    http_crud("/users", provider_node=Users)
-    .chain(paginated(50))
-    .chain(sorted_list())
-    .chain(require_auth())
+@schema_meta(
+    http_crud("/users", Users),
+    Paginated(50),
+    Sorted(),
+    RequireAuth(),
 )
 @dataclass
 class User:
@@ -32,7 +32,7 @@ class User:
 
 CRUD at `/users`. Paginated. Sorted. Auth required. One decorator. One dataclass. Complete picture. The agent reads this and knows everything — no routing file to check, no serializer to find, no middleware to trace.
 
-The `@derive` decorator isn't hiding behavior. It's declaring it. The `Annotated` types aren't metadata hints — they're the actual compilation inputs. What the agent sees is what the compiler sees.
+The `@schema_meta` decorator isn't hiding behavior. It's declaring it. The `Annotated` types aren't metadata hints — they're the actual compilation inputs. What the agent sees is what the compiler sees.
 
 ## What you can ask your agent to do
 
@@ -40,10 +40,10 @@ These prompts produce correct results on first try:
 
 | You say | Agent does |
 |---------|-----------|
-| "Add soft delete to Users" | Adds `.chain(soft_delete(field="deleted_at"))` + a field |
-| "Make the API read-only" | Adds `.chain(readonly())` |
-| "Add rate limiting to writes" | Adds `.chain(add_capability(RateLimit(...), Mutation))` |
-| "Create a CLI version" | Adds `cli_crud("user", provider_node=Users)` to `@derive` |
+| "Add soft delete to Users" | Adds `SoftDelete("deleted_at")` to `@schema_meta` + a field |
+| "Make the API read-only" | Adds `Readonly()` to `@schema_meta` |
+| "Add rate limiting to writes" | Adds `RateLimited(rpm=100)` to `@schema_meta` |
+| "Create a CLI version" | Adds `cli_crud("user", Users)` to `@schema_meta` |
 | "Add a new entity Product" | Copies the pattern, changes the fields |
 | "Add a custom claim method" | Adds a `@post("/bounties/{id}/claim")` classmethod |
 
@@ -62,9 +62,9 @@ Read app/entities/user.py
 
 The entity currently has:
 
-  @derive(
-      http_crud("/users", provider_node=Users)
-      .chain(paginated(50))
+  @schema_meta(
+      http_crud("/users", Users),
+      Paginated(50),
   )
   @dataclass
   class User:
@@ -73,25 +73,21 @@ The entity currently has:
       email: Annotated[str, Unique]
 
 I need to:
-1. Add .chain(soft_delete(field="deleted_at")) to the @derive decorator
+1. Add SoftDelete("deleted_at") to @schema_meta
 2. Add the deleted_at field to the dataclass
-3. Add the @schema_meta decorator for automatic adaptation
 
 Edit app/entities/user.py
   Added import: from emergent.wire.axis.schema.dialects.temporal import SoftDelete
-  Added import: from emergent.wire.axis.schema._universal import schema_meta
   Added import: from datetime import datetime
-  Added @schema_meta(SoftDelete("deleted_at")) decorator
-  Added .chain(soft_delete(field="deleted_at")) to @derive
+  Added SoftDelete("deleted_at") to @schema_meta
   Added field: deleted_at: datetime | None = None
 
 The file now reads:
 
-  @schema_meta(SoftDelete("deleted_at"))
-  @derive(
-      http_crud("/users", provider_node=Users)
-      .chain(paginated(50))
-      .chain(soft_delete(field="deleted_at"))
+  @schema_meta(
+      http_crud("/users", Users),
+      Paginated(50),
+      SoftDelete("deleted_at"),
   )
   @dataclass
   class User:
@@ -100,7 +96,7 @@ The file now reads:
       email: Annotated[str, Unique]
       deleted_at: datetime | None = None
 
-What soft_delete does:
+What SoftDelete does:
 - DELETE /users/{id} now sets deleted_at = now() instead of removing the row
 - All read queries automatically filter out rows where deleted_at is not None
 - No other files need to change
@@ -114,14 +110,14 @@ Done. Soft delete is active on Users. DELETE sets a timestamp,
 reads exclude deleted rows.
 ```
 
-One file. One decorator chain. The agent read the entity, understood the full picture from the `@derive` decorator, made the change, and verified it. No signals to discover, no middleware to check, no queryset manager to override. Total time: 30 seconds.
+One file. One decorator. The agent read the entity, understood the full picture from `@schema_meta`, made the change, and verified it. No signals to discover, no middleware to check, no queryset manager to override. Total time: 30 seconds.
 
 ## The verify loop
 
 emergent has built-in self-description at every level. The agent doesn't have to run the server to know if it worked:
 
 ```python
-from derivelib import explain_entity
+from emergent.wire.derive import explain_entity
 print(explain_entity(User))
 # Shows: schema fields, derivation steps, generated endpoints, triggers
 ```

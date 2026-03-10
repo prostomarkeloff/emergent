@@ -1,6 +1,6 @@
 # Architecture: The Theory Behind emergent
 
-This document explains **why** emergent's architecture works, not what it contains. For the "what", see `wire-reference.md`, `derivelib.md`, and `intro.md`. This document is about the structural invariants, the algebraic properties, and the design decisions that make the entire stack -- from `kungfu`'s `Result[T, E]` through `combinators.py`'s `Interp[T, E]` through `nodnod`'s auto-parallelizing graphs to `emergent.wire`'s multi-target compilation -- work as a coherent whole.
+This document explains **why** emergent's architecture works, not what it contains. For the "what", see `wire-reference.md`, `universal-derivation.md`, and `intro.md`. This document is about the structural invariants, the algebraic properties, and the design decisions that make the entire stack -- from `kungfu`'s `Result[T, E]` through `combinators.py`'s `Interp[T, E]` through `nodnod`'s auto-parallelizing graphs to `emergent.wire`'s multi-target compilation -- work as a coherent whole.
 
 ---
 
@@ -41,7 +41,7 @@ Every consumer of emergent does the same move: take something that would normall
 
 - An `Op` in algosik isn't an instruction that executes. It's a **reified intention** that the Python interpreter evaluates recursively and the LLVM backend compiles to native machine code.
 
-- A `DeriveOp` in derivelib isn't a code generator. It's a **specification** of what to generate (`OpSpec`), inspectable before any types are materialized.
+- An `OpSpec` in wire.derive isn't a code generator. It's a **specification** of what to generate, inspectable before any types are materialized.
 
 - A `Workload` in deployme isn't a running process. It's a **description** of a deployment unit that the compose compiler renders to a docker-compose dict and the uvicorn target runs directly.
 
@@ -89,7 +89,7 @@ Every interpretation of every IR in emergent is a catamorphism:
 | nodnod | node set + signatures | `EventLoopAgent.run(scope)` | resolved scope with values |
 | wire.compile | capability tuple | `fold(caps, PydanticContext, "compile_pydantic")` | Pydantic field config |
 | wire.query | query op list | `MEMORY_DIALECT.fold(ops, data)` | filtered/sorted list |
-| derivelib | step tuple | `fold_derive(steps, SchemaCtx)` | derivation context |
+| wire.derive | capability tuple | `compile_derive(Entity)` | DeriveCtx |
 | deployme | capability tuple | `fold(caps, ComposeCtx, handlers)` | compose service dict |
 | algosik | op list | `interpret(ops, data)` or `compile_compute(ops)` | Python list or LLVM IR |
 
@@ -107,7 +107,7 @@ This is the expression problem solved structurally, not by clever dispatch trick
 
 emergent uses two dispatch mechanisms, and the choice per module is not arbitrary.
 
-### Protocol dispatch (wire.compile, derivelib)
+### Protocol dispatch (wire.compile, wire.derive)
 
 Capabilities carry their own `compile_pydantic()`, `compile_openapi()`, `compile_argparse()` methods. The fold checks `isinstance(cap, PydanticCompilable)` and calls the method.
 
@@ -347,7 +347,7 @@ This means:
 
 ### The schema axis as diagonal
 
-derivelib's two-pass fold reveals something subtle. Pass 1 folds through `SchemaDerivable` to build `SchemaCtx` (entity type, fields, identity fields). Pass 2 folds independently through `QueryDerivable`, `StorageDerivable`, `SurfaceDerivable` -- but all three read from `SchemaCtx`.
+wire.derive's three-phase compilation reveals something subtle. Phase 1 (Generate) reads the entity schema to produce OpSpecs. Phase 2 (Modify) rewrites OpSpecs via transforms. Phase 3 (Augment) post-processes. All phases read from the schema axis.
 
 Schema is the **diagonal** of the product space. It's read by every other axis but written by none of them during compilation. This is why schema must resolve first: it establishes the shared coordinate system that surface, query, and storage project from.
 
@@ -409,7 +409,7 @@ Every consumer separates a sync/pure phase from an async/effectful phase:
 | combinators.py | `flow(...).retry().timeout().compile()` -> `Interp[T, E]` | `await L.down.to_result(interp)` |
 | nodnod | `EventLoopAgent.build(nodes)` -> topological plan | `await agent.run(scope)` |
 | wire | `fastapi.compile(app, axes)` -> FastAPI | `uvicorn.run(fastapi_app)` |
-| derivelib | `fold_derive(steps, entity)` -> DerivationCtx | `materialize(ctx)` -> Endpoint |
+| wire.derive | `compile_derive(Entity)` -> DeriveCtx | `materialize(ctx)` -> Endpoint |
 | deployme | `target.compile()` -> CompiledCompose | `await target.apply(compiled)` |
 | algosik | `compile_compute(ops)` -> LLVM IR | `jit(ir)` -> native_fn(data) |
 
@@ -424,7 +424,7 @@ algosik makes this most explicit. `interpret()` is the naive interpreter: for ea
 The same principle appears everywhere:
 - `to_pydantic(cls, axes)` doesn't validate data. It produces a Pydantic model class (the residual) that will validate data later at request time. The compilation phase is partial evaluation; the runtime phase is the residual executing.
 - deployme's `target.compile()` produces a compose dict. That dict is the residual. `apply()` runs `docker compose up` on it.
-- derivelib's `fold_derive` produces `OpSpec` descriptions. `materialize()` generates concrete types from those descriptions. The OpSpecs are the partially-evaluated program; the generated types are the residual.
+- wire.derive's `compile_derive` produces `OpSpec` descriptions. `materialize()` generates concrete types from those descriptions. The OpSpecs are the partially-evaluated program; the generated types are the residual.
 - combinators.py's `flow(...).compile()` produces an `Interp` thunk. The thunk is the residual. `await L.down.to_result(...)` runs it.
 - nodnod's `EventLoopAgent.build(nodes)` produces a topologically sorted plan. The plan is the residual. `.run(scope)` executes it with asyncio.gather parallelism.
 
@@ -464,9 +464,9 @@ This is analogous to type annotations in a dynamically typed language: the struc
 
 ---
 
-## 12. derivelib as Term Rewriting
+## 12. wire.derive as Term Rewriting
 
-derivelib is often described as "a CRUD generator." It's actually a **term rewriting system** over the wire IR.
+wire.derive is often described as "a CRUD generator." It's actually a **term rewriting system** over the wire IR.
 
 ### Terms
 
@@ -474,14 +474,14 @@ The terms are `OpSpec`s -- pure data descriptions of operations. An OpSpec knows
 
 ### Rewrite rules
 
-`.chain()` transforms are rewrite rules applied to the derivation tuple before evaluation (materialization):
+DeriveModifiable capabilities are rewrite rules applied to the derivation tuple before evaluation (materialization):
 
 ```python
-http_crud("/api/users", Users).chain(
-    readonly(),                          # delete terms tagged Mutation
-    paginated(20),                       # rewrite FetchMany -> PaginatedFetchMany
-    add_capability(RateLimit(...), Mutation),  # inject capability into Mutation terms
-    swap_handler("Create", CustomCreate()),    # replace specific handler template
+@schema_meta(
+    http_crud("/api/users", Users),
+    Readonly(),                                # delete OpSpecs tagged Mutation
+    Paginated(20),                             # rewrite FetchMany -> PaginatedFetchMany
+    WithoutDelete(),                           # remove Delete OpSpec
 )
 ```
 
@@ -502,12 +502,12 @@ The crucial property: **rewriting happens before types are generated.** OpSpecs 
 
 This means:
 - **Introspection works on descriptions.** `explain_entity()` shows OpSpecs before materialization. You see what will be generated without generating it.
-- **Transforms compose.** `readonly().chain(paginated(20))` applies both rewrites to the same description. The order doesn't matter (they target different effects).
+- **Transforms compose.** stacking `Readonly()` and `Paginated(20)` in `@schema_meta` applies both rewrites to the same description. The order doesn't matter (they target different effects).
 - **No dead code.** If `readonly()` removes `Delete`, no delete handler type, no delete request type, no delete route are ever generated. They were never materialized in the first place.
 
 ### Macro hygiene
 
-derivelib's two-pass fold is macro hygiene. Pass 1 (schema) establishes the **binding environment**: which fields exist, which are identity, which have defaults. Pass 2 (surface) expands terms against those bindings: `IdOnly` projection resolves to actual identity field names, `NonId` resolves to non-identity field names.
+wire.derive's three-phase compilation is macro hygiene. Phase 1 (Generate) establishes the **binding environment**: which fields exist, which are identity, which have defaults. Pass 2 (surface) expands terms against those bindings: `IdOnly` projection resolves to actual identity field names, `NonId` resolves to non-identity field names.
 
 You can't generate a Create request type until you know which fields aren't identity fields, so schema must resolve first. This is the same constraint that macro systems face: bindings must be established before expansion.
 
@@ -537,7 +537,7 @@ This means the architecture isn't "a good web framework pattern." It's a **gener
 
 The specific instantiation varies:
 - wire: typed annotations -> multiple framework targets
-- derivelib: entity shape -> multiple API operations
+- wire.derive: entity shape -> multiple API operations
 - deployme: workload descriptions -> multiple infrastructure targets
 - algosik: numeric expressions -> multiple execution backends
 
@@ -575,7 +575,7 @@ Level 5: emergent
    │   ├── compile: Application -> FastAPI / CLI / TG
    │   └── bridge: FastAPI -> Application
    │
-   ├── derivelib (entity shape -> Application via term rewriting)
+   ├── wire.derive (entity shape -> Application via term rewriting)
    │
    ├── deployme (Application -> infrastructure via capability fold)
    │

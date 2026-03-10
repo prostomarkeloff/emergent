@@ -1,4 +1,4 @@
-# emergent.wire + derivelib — Complete Cheatsheet
+# emergent.wire — Complete Cheatsheet
 
 ## Architecture: Sheaf over Compilation Targets
 
@@ -671,7 +671,7 @@ cli_parser = cli.compile(wire_app, prog="notes-cli")
 
 ---
 
-## 7. derivelib — Algebraic Derivation System
+## 7. wire.derive — Algebraic Derivation System (derivelib is deprecated)
 
 **Not a CRUD generator.** CRUD = one dialect. The machinery = generic algebraic derivation over wire's 4-axis sheaf.
 
@@ -686,15 +686,13 @@ type DerivationT = Callable[[Derivation], Derivation]
 ### The pipeline
 
 ```
-entity + @derive(pattern)
+entity + @schema_meta(capabilities)
     |
-pattern.compile(entity) -> Derivation (tuple of steps)
-    |
-fold_derive(steps, entity) -> DerivationCtx
+compile_derive(entity) -> list[DeriveCtx]
     |
 materialize(ctx) -> Endpoint
     |
-build_application_from_decorated -> Application
+application().mount(*endpoints)
     |
 targets.fastapi.compile(app)  /  targets.cli.compile(app)
 ```
@@ -709,24 +707,24 @@ Pass 2:  Query -> Storage -> Surface  (sequential, each sees prior results)
 ### Minimal CRUD
 
 ```python
-from derivelib import derive, build_application_from_decorated
-from derivelib.patterns import http_crud
+from emergent.wire.axis.schema._universal import schema_meta
+from emergent.wire.derive import compile_derive, materialize, http_crud
 
-@derive(http_crud("/users", provider_node=Users))
+@schema_meta(http_crud("/users", Users))
 @dataclass
 class User:
     id: Annotated[int, Identity]
     name: str
     email: str
 
-app = build_application_from_decorated(User)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(User)])
 fastapi_app = targets.fastapi.compile(app)
 ```
 
 ### CRUD Ops
 
 ```python
-from derivelib.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE, ALL_CRUD_OPS
+from emergent.wire.derive.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE, ALL_CRUD_OPS
 
 LIST   = Op("List",   no_fields(),  list_response(),   FetchMany())
 GET    = Op("Get",    id_only(),    entity_response(),  FetchOneById())
@@ -767,8 +765,8 @@ DELETE = Op("Delete", id_only(),    ok_response(),      DeleteOne())
 ### Effects
 
 ```python
-from derivelib import Read, Mutation, Creates, Updates, Deletes, Pageable, Sortable, Cacheable, Idempotent
-from derivelib._effects import has_effect, get_effect, DerivationEffect
+from emergent.wire.derive import Read, Mutation, Creates, Updates, Deletes, Pageable, Sortable, Cacheable, Idempotent
+from emergent.wire.derive._effects import has_effect, get_effect, DerivationEffect
 
 # Creates/Updates/Deletes extend Mutation
 # So has_effect(effects, Mutation) matches them automatically
@@ -789,7 +787,7 @@ from derivelib._effects import has_effect, get_effect, DerivationEffect
 ### TriggerGen — map (entity, Op) -> Trigger
 
 ```python
-from derivelib import HTTPTriggers, CLITriggers
+from emergent.wire.derive import HTTPTriggers, CLITriggers
 
 HTTPTriggers("/api/users")  # REST routes
 CLITriggers("user")         # user-list, user-get, user-create, ...
@@ -798,7 +796,7 @@ CLITriggers("user")         # user-list, user-get, user-create, ...
 ### Dialect — generic pattern
 
 ```python
-from derivelib import dialect, Dialect
+from emergent.wire.derive import dialect, Dialect
 
 my_dialect = dialect(
     LIST, GET, CREATE,
@@ -810,7 +808,7 @@ my_dialect = dialect(
 ### Transforms (DerivationT)
 
 ```python
-from derivelib.transforms import (
+from emergent.wire.derive.transforms import (
     readonly, mutations_only, without_delete,
     without_ops, only_ops,
     add_capability, paginated, sorted_list,
@@ -820,12 +818,12 @@ from derivelib.transforms import (
     with_timeout, with_retry, with_rate_limit,
 )
 
-# Compose via .chain()
-http_crud("/users", Users).chain(
-    readonly(),
-    paginated(50),
-    add_capability(CORSCap()),
-    project_response(exclude=("secret",)),
+# Compose via @schema_meta stacking
+@schema_meta(
+    http_crud("/users", Users),
+    Readonly(),
+    Paginated(50),
+    ProjectResponse(exclude=("secret",)),
 )
 ```
 
@@ -836,15 +834,15 @@ http_crud("/users", Users).chain(
 http_crud("/users", Users, ops=(LIST, GET))
 
 # Via transform
-http_crud("/users", Users).chain(only_ops("List", "Get"))
+@schema_meta(http_crud("/users", Users), OnlyOps("List", "Get"))
 ```
 
 ### Nested CRUD
 
 ```python
-from derivelib.patterns import nested_http_crud
+from emergent.wire.derive.patterns import nested_http_crud
 
-@derive(nested_http_crud("/users", parent=User, provider_node=Posts))
+@schema_meta(nested_http_crud("/users", parent=User, provider_node=Posts))
 @dataclass
 class Post:
     id: Annotated[int, Identity]
@@ -857,9 +855,9 @@ class Post:
 ### Multi-target
 
 ```python
-@derive(
-    http_crud("/products", provider_node=Store),
-    cli_crud("product", provider_node=Store),
+@schema_meta(
+    http_crud("/products", Store),
+    cli_crud("product", Store),
 )
 @dataclass
 class Product:
@@ -874,8 +872,7 @@ class Product:
 from emergent.wire.axis.schema._universal import schema_meta
 from emergent.wire.axis.schema.dialects.temporal import SoftDelete, Timestamps
 
-@schema_meta(SoftDelete("deleted_at"), Timestamps("created_at", "updated_at"))
-@derive(http_crud("/users", Users))
+@schema_meta(http_crud("/users", Users), SoftDelete("deleted_at"), Timestamps("created_at", "updated_at"))
 @dataclass
 class User:
     id: Annotated[int, Identity]
@@ -889,7 +886,7 @@ class User:
 ### Op-level transforms
 
 ```python
-from derivelib import with_caps, select_ops, exclude_ops, by_effect
+from emergent.wire.derive import with_caps, select_ops, exclude_ops, by_effect
 
 with_caps(ALL_CRUD_OPS, AuthRequired(), effect=Mutation)  # auth only for mutations
 select_ops(ALL_CRUD_OPS, "List", "Get")
@@ -963,7 +960,7 @@ def audit_mutations() -> DerivationT:
 ### ExposureBuilder — bypass fold for hand-crafted ops
 
 ```python
-from derivelib import exposure
+from emergent.wire.derive import exposure
 
 op_type, handler, exp = (
     exposure("create", Order)
@@ -980,19 +977,16 @@ op_type, handler, exp = (
 ### Application builders
 
 ```python
-from derivelib import (
-    build_application_from_decorated,  # from @derive entities
-    build_application,                  # explicit (entity, pattern) pairs
-    build_endpoint,                     # single endpoint
-    derive_endpoints,                   # endpoints without Application
-    derive_from_decorated,              # derive without building Application
+from emergent.wire.derive import (
+    compile_derive,                     # entity -> list[DeriveCtx]
+    materialize,                        # DeriveCtx -> Endpoint
 )
 ```
 
 ### Self-description
 
 ```python
-from derivelib import explain_entity, entity_derivation_dict, dialect_dict
+from emergent.wire.derive import explain_entity, entity_derivation_dict, dialect_dict
 
 print(explain_entity(User))
 data = entity_derivation_dict(User)
@@ -1129,45 +1123,45 @@ from emergent.wire.bridge.bridgers import fastapi as fastapi_bridger
 from emergent.wire.bridge._patterns import SKIP_DEPRECATED, CLEAN, fastapi_default
 ```
 
-### derivelib
+### wire.derive
 
 ```python
 # Core
-from derivelib import derive, build_application_from_decorated
-from derivelib import Op, Dialect, dialect, HTTPTriggers, CLITriggers
+from emergent.wire.derive import compile_derive, materialize
+from emergent.wire.derive import Op, Dialect, dialect, HTTPTriggers, CLITriggers
 
 # Projections
-from derivelib import all_fields, id_only, non_id, no_fields, required_non_id
-from derivelib import fields, exclude, optional_non_id, merge, exclude_from
+from emergent.wire.derive import all_fields, id_only, non_id, no_fields, required_non_id
+from emergent.wire.derive import fields, exclude, optional_non_id, merge, exclude_from
 
 # Response specs
-from derivelib import entity_response, list_response, ok_response, paginated_response, custom_response
+from emergent.wire.derive import entity_response, list_response, ok_response, paginated_response, custom_response
 
 # Effects
-from derivelib import Read, Mutation, Creates, Updates, Deletes, Pageable, Sortable, Cacheable
+from emergent.wire.derive import Read, Mutation, Creates, Updates, Deletes, Pageable, Sortable, Cacheable
 
 # Handler templates
-from derivelib import FetchMany, FetchOneById, InsertNew, UpdateExisting, PatchExisting, DeleteOne
+from emergent.wire.derive import FetchMany, FetchOneById, InsertNew, UpdateExisting, PatchExisting, DeleteOne
 
 # Transforms
-from derivelib.transforms import readonly, mutations_only, without_delete, paginated
-from derivelib.transforms import add_capability, swap_handler, rename_ops, map_by_effect
+from emergent.wire.derive.transforms import readonly, mutations_only, without_delete, paginated
+from emergent.wire.derive.transforms import add_capability, swap_handler, rename_ops, map_by_effect
 
 # CRUD pattern
-from derivelib.patterns import http_crud, cli_crud, nested_http_crud
-from derivelib.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE, ALL_CRUD_OPS
+from emergent.wire.derive.patterns import http_crud, cli_crud, nested_http_crud
+from emergent.wire.derive.patterns import LIST, GET, CREATE, UPDATE, PATCH, DELETE, ALL_CRUD_OPS
 
 # Errors
-from derivelib import NotFound, AlreadyExists, InvalidData, ProblemDetail
+from emergent.wire.derive import NotFound, AlreadyExists, InvalidData, ProblemDetail
 
 # Query helpers
-from derivelib import filter_by_identity, fetch_by_identity, provider_field, id_path
+from emergent.wire.derive import filter_by_identity, fetch_by_identity, provider_field, id_path
 
 # Codegen
-from derivelib import exposure, create_dataclass
+from emergent.wire.derive import exposure, create_dataclass
 
 # Explain
-from derivelib import explain_entity, entity_derivation_dict, dialect_dict
+from emergent.wire.derive import explain_entity, entity_derivation_dict, dialect_dict
 ```
 
 ---
@@ -1210,12 +1204,12 @@ from derivelib import explain_entity, entity_derivation_dict, dialect_dict
 17. **Axes passed explicitly.** No global state. `Axes.default()` for production, `Axes.traced()` for debugging.
 18. **fold_field is THE primitive.** Every compilation = fold capabilities into context.
 
-### derivelib
+### wire.derive
 
 19. **Effects over names.** Dispatch on `has_effect(op.effects, Mutation)`, not `op.name == "Create"`.
 20. **Frozen everything.** All steps, effects, templates: `@dataclass(frozen=True, slots=True)`.
 21. **Steps accumulate, materialize builds.** Steps accumulate OpSpec descriptions. Don't generate types inside steps.
-22. **Transforms compose.** `.chain(readonly(), paginated(20), add_capability(CORSCap()))`.
+22. **Transforms compose.** `@schema_meta(http_crud(...), Readonly(), Paginated(20))`.
 23. **Custom dialects, not modified CRUD.** Build your own from `Op` + `dialect()`.
 24. **Open-world extension.** New effects, triggers, templates, projections, response specs — all follow same protocol. No source modification needed.
 25. **scope_fields for nested.** Handler templates accept `scope_fields` for parent FK pre-filtering.
@@ -1285,18 +1279,18 @@ telegram_dp = telegrinder.compile(app, axes)
 
 ---
 
-## 14. Real-World Pattern: derivelib CRUD + Transforms
+## 14. Real-World Pattern: wire.derive CRUD + Transforms
 
 ```python
 # Full CRUD with auth, pagination, response projection, soft-delete
-@schema_meta(SoftDelete("deleted_at"), Timestamps("created_at", "updated_at"))
-@derive(
-    http_crud("/api/users", provider_node=Users).chain(
-        paginated(50),
-        add_capability(BearerAuth.jwt(), Mutation),
-        project_response(exclude=("deleted_at", "updated_at")),
-    ),
-    cli_crud("user", provider_node=Users).chain(readonly()),
+@schema_meta(
+    http_crud("/api/users", Users),
+    cli_crud("user", Users),
+    SoftDelete("deleted_at"),
+    Timestamps("created_at", "updated_at"),
+    Paginated(50),
+    Readonly(),  # for CLI
+    ProjectResponse(exclude=("deleted_at", "updated_at")),
 )
 @dataclass
 class User:
@@ -1307,6 +1301,6 @@ class User:
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
-app = build_application_from_decorated(User)
+app = application().mount(*[materialize(ctx) for ctx in compile_derive(User)])
 fastapi_app = targets.fastapi.compile(app)
 ```
