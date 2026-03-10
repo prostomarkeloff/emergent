@@ -10,11 +10,11 @@
 
 __all__: list[str] = []
 
-# FastAPI
+# FastAPI (pydantic may crash on free-threaded Python 3.14t beta)
 try:
     from emergent.wire.compile.targets import fastapi as fastapi
     __all__.append("fastapi")
-except ImportError:
+except (ImportError, Exception):
     pass
 
 # CLI (always available)
