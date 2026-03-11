@@ -331,6 +331,7 @@ from emergent.wire.derive.patterns.nested import nested_http_crud
 from emergent.wire.derive import (
     Paginated, Sorted, Readonly, ProjectResponse,
     SoftDelete, Timestamped, WithoutDelete, Filtered, Searchable,
+    scoped,
 )
 from emergent.wire.derive import explain_entity
 

@@ -40,7 +40,7 @@ This isn't just "separation of concerns" in the hand-wavy software engineering s
 
 The practical payoff: when something goes wrong with your HTTP routing, you don't need to check your field validators. When a query is slow, you don't need to audit your CLI argument parsing. Each axis is a closed world.
 
-## Order doesn't matter (within an axis)
+## Order doesn't matter
 
 Write `Annotated[str, MaxLen(50), Index()]` or `Annotated[str, Index(), MaxLen(50)]`. Same result. Always. The fold over capabilities within an axis is commutative --- the output doesn't depend on the order of inputs. This means no ordering bugs. You never have to remember "put the validator before the serializer" or "the auth middleware must come after the CORS middleware." Within an axis, capabilities form a multiset, not a sequence.
 
@@ -48,18 +48,17 @@ This is a hard property to maintain, and emergent maintains it deliberately. Cap
 
 The enricher chain on the surface axis is the one place where ordering could matter --- enrichers wrap the handler, so the outermost enricher runs first. But even there, the capability declaration order doesn't determine execution order. The compiler sorts enrichers by their declared priority, not by their position in the annotation list.
 
-There is one deliberate exception: `@schema_meta(...)` with multiple generators. When multiple `DeriveGeneratable` capabilities appear, modifiers bind **positionally** to the preceding generator. Capabilities before the first generator are global. This lets you scope transforms to specific endpoint groups without transport-specific filtering:
+In `@schema_meta(...)` with multiple generators, all modifiers apply to all generators --- order still doesn't matter. When you need a modifier scoped to one generator, you don't break commutativity with positional tricks. You use `scoped()` --- an explicit algebraic combinator:
 
 ```python
 @schema_meta(
-    http_crud("/users", Users),                  # generator 0
-    ProjectResponse(exclude=("secret",)),        # local to generator 0
-    http_crud("/users/me", Users, ops=(GET,)),   # generator 1
-    Authenticated(BearerExtract(), validate),    # local to generator 1
+    Paginated(20),                                          # global — all generators
+    scoped(http_crud("/users", Users), Readonly()),         # Readonly only on /users
+    scoped(http_crud("/admin/users", Users), Authenticated(...)),  # auth only on /admin
 )
 ```
 
-With a single generator, all modifiers apply --- order doesn't matter. The positional rule only activates when there are multiple generators producing independent endpoint groups.
+`scoped()` is itself a `DeriveGeneratable`. It delegates to the inner generator, then applies its local modifiers. The global `Paginated(20)` still applies to both groups. The scoped modifiers stay local. No ordering dependency --- swap the two `scoped()` calls and the result is identical.
 
 ## New things can't break old things
 

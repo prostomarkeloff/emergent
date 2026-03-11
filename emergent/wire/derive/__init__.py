@@ -61,6 +61,7 @@ from emergent.wire.derive._transforms import (
     WithTimeout,
 )
 from emergent.wire.derive._pipeline import Pipeline, PipelineContext, PipelineStep
+from emergent.wire.derive._scoped import Scoped, scoped
 from emergent.wire.derive._trigger import (
     FilteredTriggerGen,
     MultiTriggerGen,
@@ -130,6 +131,9 @@ __all__ = (
     "WithRateLimit",
     "EffectRateLimited",
     "EffectDeprecated",
+    # Scoped
+    "Scoped",
+    "scoped",
     # Builders
     "ExposureBuilder",
     "exposure",

@@ -11,20 +11,13 @@
     ctxs = compile_derive(User)
     endpoints = [materialize(ctx) for ctx in ctxs]
 
-Multiple generators (e.g. http_crud + cli_crud) are compiled independently.
-Capabilities are **positional** — a modifier binds to its preceding generator:
+Multiple generators (e.g. http_crud + cli_crud) are compiled independently:
 
-    @schema_meta(
-        Paginated(20),                              # global — before any generator
-        http_crud("/users", Store),                  # generator 0
-        ProjectResponse(exclude=("secret",)),        # local to generator 0
-        http_crud("/users/me", Store, ops=(GET,)),   # generator 1
-        Authenticated(BearerExtract(), validate),    # local to generator 1
-    )
+    @schema_meta(http_crud("/products", Store), cli_crud("product", Store))
     @dataclass
-    class User: ...
+    class Product: ...
 
-    ctxs = compile_derive(User)  # [public_ctx, authed_ctx]
+    ctxs = compile_derive(Product)  # [http_ctx, cli_ctx]
 """
 
 from __future__ import annotations
@@ -67,9 +60,9 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
     Phase 2: DeriveModifiable  — Paginated/SoftDelete transform specs
     Phase 3: DeriveAugmentable — post-modification augmentation
 
-    Capabilities in @schema_meta are **positional**:
-    - Caps before the first generator are **global** (apply to all generators)
-    - Caps after a generator are **local** (apply to that generator only)
+    Multiple independent generators (e.g. http_crud + cli_crud) are
+    compiled into separate DeriveCtx automatically. Shared modifiers
+    and augmenters are applied to each context.
 
     Returns list[DeriveCtx] — one per generator group.
     Single generator → single-element list. Zero generators → single empty ctx.
@@ -77,12 +70,15 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
     caps = get_schema_meta(cls)
 
     generators: list[DeriveGeneratable] = []
+    others: list[object] = []
     for cap in caps:
         if isinstance(cap, DeriveGeneratable):
             generators.append(cap)
+        else:
+            others.append(cap)
 
     if len(generators) <= 1:
-        # 0-1 generators — single fold, standard path (all caps apply)
+        # 0-1 generators — single fold, standard path
         ctx: DeriveCtx[EntityT] = _make_ctx(cls)
         ctx = fold_schema(cls, ctx, DeriveGeneratable, "compile_derive_generate")
         _validate_specs(ctx)
@@ -90,37 +86,17 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
         ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
         return [ctx]
 
-    # Multiple generators — positional: modifiers bind to preceding generator
-    global_caps: list[object] = []
-    groups: list[tuple[DeriveGeneratable, list[object]]] = []
-    current_gen: DeriveGeneratable | None = None
-    current_local: list[object] = []
-
-    for cap in caps:
-        if isinstance(cap, DeriveGeneratable):
-            if current_gen is not None:
-                groups.append((current_gen, current_local))
-            current_gen = cap
-            current_local = []
-        else:
-            if current_gen is None:
-                global_caps.append(cap)
-            else:
-                current_local.append(cap)
-
-    if current_gen is not None:
-        groups.append((current_gen, current_local))
-
+    # Multiple generators — each gets its own DeriveCtx
     results: list[DeriveCtx[EntityT]] = []
-    for gen, local_caps in groups:
+    for gen in generators:
         ctx = _make_ctx(cls)
 
         # Phase 1: generate — only this generator
         ctx = gen.compile_derive_generate(ctx)
         _validate_specs(ctx)
 
-        # Phase 2+3: modify & augment — generator + global caps + local caps
-        group: list[object] = [gen, *global_caps, *local_caps]
+        # Phase 2+3: modify & augment — generator itself + shared caps
+        group: list[object] = [gen, *others]
         ctx = fold(group, ctx, DeriveModifiable, "compile_derive_modify")
         ctx = fold(group, ctx, DeriveAugmentable, "compile_derive_augment")
 

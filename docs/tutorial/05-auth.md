@@ -27,7 +27,7 @@ from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider, 
 from emergent.wire.axis.schema import Identity, Unique
 from emergent.wire.axis.schema._universal import schema_meta
 from emergent.wire.axis.surface import application
-from emergent.wire.derive import compile_derive, materialize, http_crud, ProjectResponse
+from emergent.wire.derive import compile_derive, materialize, http_crud, ProjectResponse, scoped
 from emergent.wire.derive._crud import GET, LIST, CREATE
 from emergent.wire.derive._effects import Read
 from emergent.wire.derive.auth import (
@@ -69,14 +69,18 @@ def _identity_fn(u: User) -> str:
 
 @schema_meta(
     # Public: list + get + create, hide active_at
-    http_crud("/users", UserStore, ops=(LIST, GET, CREATE)),
-    ProjectResponse(exclude=("active_at",)),
+    scoped(
+        http_crud("/users", UserStore, ops=(LIST, GET, CREATE)),
+        ProjectResponse(exclude=("active_at",)),
+    ),
     # Authorized: get with all fields, requires Bearer token
-    http_crud("/users/me", UserStore, ops=(GET,)),
-    Authenticated(
-        BearerExtract(),
-        TokenValidate(identity_type=IdentityType, lookup=_lookup_token),
-        effect=Read,
+    scoped(
+        http_crud("/users/me", UserStore, ops=(GET,)),
+        Authenticated(
+            BearerExtract(),
+            TokenValidate(identity_type=IdentityType, lookup=_lookup_token),
+            effect=Read,
+        ),
     ),
     # Login
     LoginOp(
@@ -152,27 +156,40 @@ Enrichers are runtime middleware. They execute *before* your handler. If the tok
 
 **`ProjectResponse(exclude=("active_at",))`** — strips `active_at` from response types on Read operations. Public users see `{id, name, email}`. Authorized users see everything.
 
-## Positional capabilities
+## Scoping modifiers with `scoped()`
 
-Notice the ordering in `@schema_meta(...)`. This matters.
+Notice the `scoped()` wrappers. Without them, `ProjectResponse` and `Authenticated` would apply to *all* generators — both `/users` and `/users/me` would have `active_at` stripped, and both would require auth. That's not what we want.
 
-Capabilities in `schema_meta` are **positional** — a modifier binds to the generator **immediately before it**. Capabilities before the first generator are global (apply to all).
+`scoped()` binds modifiers to a specific generator:
 
 ```python
 @schema_meta(
-    http_crud("/users", ...),                  # generator 0
-    ProjectResponse(exclude=("active_at",)),   # local to generator 0
-    http_crud("/users/me", ..., ops=(GET,)),   # generator 1
-    Authenticated(...),                        # local to generator 1
-    LoginOp("/login", ...),                    # generator 2
+    scoped(
+        http_crud("/users", UserStore, ops=(LIST, GET, CREATE)),
+        ProjectResponse(exclude=("active_at",)),   # only /users
+    ),
+    scoped(
+        http_crud("/users/me", UserStore, ops=(GET,)),
+        Authenticated(...),                        # only /users/me
+    ),
+    LoginOp("/login", ...),
 )
 ```
 
-`ProjectResponse` only strips `active_at` from `/users` endpoints. `/users/me` keeps all fields. `Authenticated` only gates `/users/me`. The public `/users` endpoints stay open. No special filtering parameter needed — just position.
+`scoped()` is itself a `DeriveGeneratable`. It delegates to the inner generator for Phase 1, then applies the local modifiers. Shared modifiers outside any `scoped()` still apply to all generators — so you can mix both:
 
-This works for any derivation, not just HTTP. CLI, task queues, custom algebras — same rule.
+```python
+@schema_meta(
+    Paginated(20),             # global — applies to ALL generators
+    scoped(
+        http_crud("/users", UserStore),
+        ProjectResponse(exclude=("secret",)),  # only /users
+    ),
+    http_crud("/admin/users", AdminStore),     # gets Paginated but not ProjectResponse
+)
+```
 
-The beautiful part: these are all just capabilities. `Authenticated` is a `DeriveModifiable`. `LoginOp` is a `DeriveGeneratable`. `ProjectResponse` is a `DeriveModifiable`. They compose in `@schema_meta(...)` like any other capability. Auth isn't a special subsystem bolted onto the framework — it's built from the same algebra as pagination and CRUD.
+The beautiful part: these are all just capabilities. `Authenticated` is a `DeriveModifiable`. `LoginOp` is a `DeriveGeneratable`. `ProjectResponse` is a `DeriveModifiable`. `scoped()` is a `DeriveGeneratable` that composes them. They compose in `@schema_meta(...)` like any other capability. Auth isn't a special subsystem bolted onto the framework — it's built from the same algebra as pagination and CRUD.
 
 ---
 
