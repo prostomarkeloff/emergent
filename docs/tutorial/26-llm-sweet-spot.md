@@ -48,7 +48,7 @@ Adding soft delete to an entity. A cross-cutting concern that touches reads, wri
 
 **Traditional framework.** The agent needs to: (1) create a custom queryset manager that excludes deleted rows from all reads, (2) override the delete view to set a timestamp instead of actually deleting, (3) add filtering to list serializers, (4) update the admin to show a "deleted" filter, (5) hope that no other code path calls `.delete()` directly. Five layers. Implicit dependencies between them. The manager affects all queries globally — including ones the agent doesn't know about. One missed spot and deleted records leak into responses.
 
-**emergent.** The agent reads the `@derive` decorator and adds one transform:
+**emergent.** The agent reads the `@schema_meta` decorator and adds one transform:
 
 ```python
 @schema_meta(
@@ -99,7 +99,7 @@ Selection pressure is already here. Projects where agents can reason effectively
 
 Most "AI-friendly" frameworks solve the wrong problem. They build tools *for* LLMs (agent frameworks, prompt chains) or add documentation *about* code (codified context, RAG over docs). They don't change the code itself.
 
-emergent changes the code itself. The architecture is simultaneously more expressive — custom dialects, multi-target compilation, storage algebras, stateful codecs — and more tractable. It doesn't sacrifice power for readability. The mathematical structure that gives you `@derive` with seven chained transforms compiling to three targets is the same structure that lets a bounded observer understand each transform independently, modify one without breaking others, and verify the result with `explain()`.
+emergent changes the code itself. The architecture is simultaneously more expressive — custom dialects, multi-target compilation, storage algebras, stateful codecs — and more tractable. It doesn't sacrifice power for readability. The mathematical structure that gives you `@schema_meta` with seven chained transforms compiling to three targets is the same structure that lets a bounded observer understand each transform independently, modify one without breaking others, and verify the result with `explain()`.
 
 The fold that compiles your dataclass to FastAPI is the same fold an LLM can trace in one pass. The locality that lets you read one file to understand an entity is the locality that lets an agent modify it without breaking something three files away. The commutativity that prevents ordering bugs for you prevents hallucinated ordering dependencies for the agent.
 

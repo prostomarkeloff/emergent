@@ -40,13 +40,26 @@ This isn't just "separation of concerns" in the hand-wavy software engineering s
 
 The practical payoff: when something goes wrong with your HTTP routing, you don't need to check your field validators. When a query is slow, you don't need to audit your CLI argument parsing. Each axis is a closed world.
 
-## Order doesn't matter
+## Order doesn't matter (within an axis)
 
 Write `Annotated[str, MaxLen(50), Index()]` or `Annotated[str, Index(), MaxLen(50)]`. Same result. Always. The fold over capabilities within an axis is commutative --- the output doesn't depend on the order of inputs. This means no ordering bugs. You never have to remember "put the validator before the serializer" or "the auth middleware must come after the CORS middleware." Within an axis, capabilities form a multiset, not a sequence.
 
 This is a hard property to maintain, and emergent maintains it deliberately. Capabilities contribute independently to the compilation context. `MaxLen(50)` adds a constraint to the field. `Index()` marks it for indexing. Neither reads the other's output. They're parallel contributions, not sequential steps.
 
 The enricher chain on the surface axis is the one place where ordering could matter --- enrichers wrap the handler, so the outermost enricher runs first. But even there, the capability declaration order doesn't determine execution order. The compiler sorts enrichers by their declared priority, not by their position in the annotation list.
+
+There is one deliberate exception: `@schema_meta(...)` with multiple generators. When multiple `DeriveGeneratable` capabilities appear, modifiers bind **positionally** to the preceding generator. Capabilities before the first generator are global. This lets you scope transforms to specific endpoint groups without transport-specific filtering:
+
+```python
+@schema_meta(
+    http_crud("/users", Users),                  # generator 0
+    ProjectResponse(exclude=("secret",)),        # local to generator 0
+    http_crud("/users/me", Users, ops=(GET,)),   # generator 1
+    Authenticated(BearerExtract(), validate),    # local to generator 1
+)
+```
+
+With a single generator, all modifiers apply --- order doesn't matter. The positional rule only activates when there are multiple generators producing independent endpoint groups.
 
 ## New things can't break old things
 
