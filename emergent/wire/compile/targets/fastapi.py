@@ -792,18 +792,25 @@ def fastapi_compile(
     _compiler = compiler or FASTAPI_COMPILER
 
     app_scope: Scope | None = None
+    _family: ScopeFamily[Tier] | None = family
     request_axes = base_axes
 
-    if family is not None:
+    if _family is not None:
         from types import MappingProxyType
 
         app_scope = Scope(detail="app")
         layer = ScopeLayer(
             scopes=MappingProxyType({App: app_scope}),
-            family=family,
+            family=_family,
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
+    elif base_axes.scope_layer is not None:
+        # axes already has a scope_layer (e.g. from build_axes) — use it
+        layer = base_axes.scope_layer
+        _family = layer.family
+        app_scope = layer.scopes.get(App)
+        request_axes = base_axes
 
     # 1. Collect lifecycle handlers sorted by order — via pure compilers
     startup_with_order = sorted(
@@ -818,7 +825,7 @@ def fastapi_compile(
     @asynccontextmanager
     async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
         del fastapi_app
-        app_types = list(family.types_for(App)) if family else []
+        app_types = list(_family.types_for(App)) if _family else []
         if app_scope is not None:
             async with app_scope_lifespan(app_scope, app_types):
                 for _order, handler_fn in startup_with_order:

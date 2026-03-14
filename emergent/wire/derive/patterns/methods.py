@@ -316,14 +316,14 @@ def _build_method_operation(
 
     trigger = _enhance_trigger_with_args(trigger, fields)
 
-    # Build Op type
+    # Build Op type — ALL fields (compose.Node fields resolved by build_request)
     op_type = create_dataclass(
         op_name + "Op",
         list(fields.items()),
         frozen=True,
     )
 
-    # Build Request type
+    # Build Request type — ALL fields (compose.Node handled by build_field_value)
     request_type = create_request_type(
         op_name + "Request",
         list(fields.items()),
