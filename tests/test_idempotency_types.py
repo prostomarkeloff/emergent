@@ -11,7 +11,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -56,7 +56,7 @@ class TestIdempotencyRecordIsExpired:
             state=RecordState.COMPLETED,
             value="v",
             error=None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
         )
         assert record.is_expired is False
@@ -67,8 +67,8 @@ class TestIdempotencyRecordIsExpired:
             state=RecordState.COMPLETED,
             value="v",
             error=None,
-            created_at=datetime.now(),
-            expires_at=datetime.now() + timedelta(hours=1),
+            created_at=datetime.now(tz=timezone.utc),
+            expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=1),
         )
         assert record.is_expired is False
 
@@ -78,8 +78,8 @@ class TestIdempotencyRecordIsExpired:
             state=RecordState.COMPLETED,
             value="v",
             error=None,
-            created_at=datetime.now() - timedelta(hours=2),
-            expires_at=datetime.now() - timedelta(hours=1),
+            created_at=datetime.now(tz=timezone.utc) - timedelta(hours=2),
+            expires_at=datetime.now(tz=timezone.utc) - timedelta(hours=1),
         )
         assert record.is_expired is True
 
@@ -89,8 +89,8 @@ class TestIdempotencyRecordIsExpired:
             state=RecordState.COMPLETED,
             value="v",
             error=None,
-            created_at=datetime.now() - timedelta(seconds=10),
-            expires_at=datetime.now() - timedelta(milliseconds=1),
+            created_at=datetime.now(tz=timezone.utc) - timedelta(seconds=10),
+            expires_at=datetime.now(tz=timezone.utc) - timedelta(milliseconds=1),
         )
         assert record.is_expired is True
 
@@ -107,7 +107,7 @@ class TestIdempotencyRecordStateProperties:
             state=state,
             value="v" if state == RecordState.COMPLETED else None,
             error="e" if state == RecordState.FAILED else None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
         )
 
@@ -142,7 +142,7 @@ class TestIdempotencyRecordImmutable:
             state=RecordState.PENDING,
             value=None,
             error=None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
         )
         with pytest.raises(AttributeError):
@@ -154,7 +154,7 @@ class TestIdempotencyRecordImmutable:
             state=RecordState.PENDING,
             value=None,
             error=None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
         )
         with pytest.raises(AttributeError):
@@ -173,7 +173,7 @@ class TestIdempotencyRecordInputHash:
             state=RecordState.PENDING,
             value=None,
             error=None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
         )
         assert record.input_hash is None
@@ -184,7 +184,7 @@ class TestIdempotencyRecordInputHash:
             state=RecordState.PENDING,
             value=None,
             error=None,
-            created_at=datetime.now(),
+            created_at=datetime.now(tz=timezone.utc),
             expires_at=None,
             input_hash="sha256_abc",
         )

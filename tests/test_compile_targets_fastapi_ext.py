@@ -308,7 +308,7 @@ class TestWrapRrcFastapiExecution:
         route = wrap_rrc_fastapi(handler, trigger, _axes)
 
         mock_req = _make_mock_request(method="POST")
-        mock_req.json = AsyncMock(side_effect=Exception("bad json"))
+        mock_req.json = AsyncMock(side_effect=ValueError("bad json"))
         mock_req.path_params = {"name": "Fallback"}
 
         result = await route.endpoint(mock_req)

@@ -41,7 +41,12 @@ def register_auth_errors(fastapi_app: FastAPI) -> None:
     _MEDIA = "application/problem+json"
 
     async def _handle_401(request: _Req, exc: Exception) -> _JsonResp:
-        assert isinstance(exc, AuthenticationRequired)
+        if not isinstance(exc, AuthenticationRequired):
+            return _JsonResp(
+                status_code=500,
+                content={"type": "about:blank", "title": "Internal Server Error", "status": 500},
+                media_type=_MEDIA,
+            )
         return _JsonResp(
             status_code=401,
             content={
@@ -51,10 +56,16 @@ def register_auth_errors(fastapi_app: FastAPI) -> None:
                 "detail": exc.detail,
             },
             media_type=_MEDIA,
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     async def _handle_403(request: _Req, exc: Exception) -> _JsonResp:
-        assert isinstance(exc, AuthorizationFailed)
+        if not isinstance(exc, AuthorizationFailed):
+            return _JsonResp(
+                status_code=500,
+                content={"type": "about:blank", "title": "Internal Server Error", "status": 500},
+                media_type=_MEDIA,
+            )
         return _JsonResp(
             status_code=403,
             content={

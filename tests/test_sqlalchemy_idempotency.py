@@ -7,7 +7,7 @@ Uses in-memory SQLite via aiosqlite.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
@@ -255,7 +255,7 @@ async def test_set_pending_with_ttl_sets_expires_at(
     session: AsyncSession,
 ) -> None:
     ttl = timedelta(hours=1)
-    before = datetime.now()
+    before = datetime.now(tz=timezone.utc)
     result = await store.set_pending("pend-ttl", ttl, "cust-b")
     await session.commit()
 
@@ -333,7 +333,7 @@ async def test_set_completed_with_ttl_sets_expires_at(
     await session.commit()
 
     ttl = timedelta(minutes=30)
-    before = datetime.now()
+    before = datetime.now(tz=timezone.utc)
     await store.set_completed("comp-ttl", "done", ttl)
     await session.commit()
 
@@ -392,7 +392,7 @@ async def test_set_failed_with_ttl_sets_expires_at(
     await session.commit()
 
     ttl = timedelta(hours=2)
-    before = datetime.now()
+    before = datetime.now(tz=timezone.utc)
     await store.set_failed("fail-ttl", "timeout", ttl)
     await session.commit()
 
@@ -551,7 +551,7 @@ class TestToRecord:
 
     def test_record_expires_at_preserved(self) -> None:
         s = self._store_instance()
-        future = datetime.now() + timedelta(hours=1)
+        future = datetime.now(tz=timezone.utc) + timedelta(hours=1)
         model = self._make_model(expires_at=future)
         record = s.to_record(model)
         assert record.expires_at == future

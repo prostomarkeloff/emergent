@@ -495,7 +495,7 @@ class TestSetupFastapiScope:
 
         scope = Scope()
         mock_request = MagicMock(spec=fastapi.Request)
-        mock_request.json = AsyncMock(side_effect=Exception("bad json"))
+        mock_request.json = AsyncMock(side_effect=ValueError("bad json"))
 
         # Should not raise
         async with scope:

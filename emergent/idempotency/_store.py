@@ -15,7 +15,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from kungfu import Result
@@ -61,7 +61,7 @@ def make_pending_record[T](
     input_hash: str | None = None,
 ) -> Record[T]:
     """Create a PENDING record."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return IdempotencyRecord(
         key=key,
         state=RecordState.PENDING,
@@ -82,7 +82,7 @@ def make_completed_record[T](
     input_hash: str | None = None,
 ) -> Record[T]:
     """Create a COMPLETED record."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return IdempotencyRecord(
         key=key,
         state=RecordState.COMPLETED,
@@ -103,7 +103,7 @@ def make_failed_record[T](
     input_hash: str | None = None,
 ) -> Record[T]:
     """Create a FAILED record."""
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     return IdempotencyRecord(
         key=key,
         state=RecordState.FAILED,

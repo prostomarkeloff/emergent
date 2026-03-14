@@ -437,6 +437,7 @@ def _make_run_state(graph_info: _GraphInfo, scope: Scope | None = None) -> _RunS
         pending_lock=threading.Lock(),
         remaining_finals=len(graph_info.final_nodes),
         remaining_lock=threading.Lock(),
+        active_finals=set(graph_info.final_nodes),
         done_event=threading.Event(),
         error=None,
         error_lock=threading.Lock(),

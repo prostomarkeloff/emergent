@@ -469,6 +469,7 @@ class SoftDelete(SchemaCapability):
     deleted_field: str = "deleted_at"
 
     def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+        from emergent.wire.derive._effects import Creates
         from emergent.wire.derive._handler import SoftDeleteMark
 
         field = self.deleted_field

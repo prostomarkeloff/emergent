@@ -630,9 +630,8 @@ class TestProviderFetchOne:
         assert result.name == "alice"
 
     @pytest.mark.asyncio
-    async def test_fetch_one_get_op_not_found_raises(self) -> None:
-        """404 raises HTTPStatusError because _request calls raise_for_status()
-        before the status_code == 404 check in fetch_one can execute."""
+    async def test_fetch_one_get_op_not_found_returns_none(self) -> None:
+        """404 returns None — HTTPStatusError is caught for 404 status."""
         async def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(404, json={})
 
@@ -645,8 +644,8 @@ class TestProviderFetchOne:
         )
 
         query: APIQuerySet[str, User] = APIQuerySet(entity=User, op=GetOp(id="missing"))
-        with pytest.raises(httpx.HTTPStatusError):
-            await provider.fetch_one(query)
+        result = await provider.fetch_one(query)
+        assert result is None
 
 
 class TestProviderFetchMany:

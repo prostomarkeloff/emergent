@@ -468,13 +468,14 @@ class IdempotencyOutcome:
         if spec.policy.conflict_strategy != OnPending.WAIT:
             raise NodeError("Policy not WAIT")
 
+        import time
+
         timeout = spec.policy.pending_wait_timeout.total_seconds()
         poll_interval = 0.1
-        elapsed = 0.0
+        deadline = time.monotonic() + timeout
 
-        while elapsed < timeout:
+        while time.monotonic() < deadline:
             await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
 
             match await spec.storage.get(spec.key):
                 case Error(err):

@@ -359,6 +359,11 @@ class Regex(Expr):
     field: Expr
     pattern: str
 
+    def __post_init__(self) -> None:
+        import re
+
+        re.compile(self.pattern)
+
     def evaluate(self, obj: Any) -> bool:
         import re
 

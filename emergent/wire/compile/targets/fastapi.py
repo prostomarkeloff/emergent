@@ -102,7 +102,7 @@ class FastAPIJsonExtractor:
         else:
             try:
                 body = await request.json()
-            except Exception:
+            except ValueError:
                 body = {}
         if self.include_path_params:
             return {**body, **dict(request.path_params)}
@@ -142,10 +142,13 @@ def init_fastapi_extraction_constants() -> None:
     _extract_query = Extraction(fastapi=FastAPIQueryExtractor())
 
 
-# Public aliases for backward-compat (read-only; call _init first)
-EXTRACT_FORM = _extract_form
-EXTRACT_JSON = _extract_json
-EXTRACT_QUERY = _extract_query
+def __getattr__(name: str) -> object:
+    """Lazy access to extraction constants (initialized on first use)."""
+    _aliases = {"EXTRACT_FORM": "_extract_form", "EXTRACT_JSON": "_extract_json", "EXTRACT_QUERY": "_extract_query"}
+    if name in _aliases:
+        init_fastapi_extraction_constants()
+        return globals()[_aliases[name]]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -238,16 +241,18 @@ async def setup_fastapi_scope(
     scope.inject(fastapi.Request, request)
 
     if pydantic_types:
+        from pydantic import ValidationError
+
         try:
             body = await request.json()
-        except Exception:
+        except ValueError:
             body = {}
 
         for pydantic_type in pydantic_types:
             try:
                 instance = pydantic_type(**body)
                 scope.inject(pydantic_type, instance)
-            except Exception:
+            except (ValidationError, TypeError):
                 pass
 
 

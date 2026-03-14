@@ -37,7 +37,7 @@ from emergent.wire.axis.surface.enrichers import chain_enrichers
 
 def _scope_with_cq(cq: MagicMock) -> MagicMock:
     """Build mock scope whose Context.get("callback_query") returns *cq*."""
-    from telegrinder.bot.dispatch.context import Context as _Context
+    from emergent.wire._telegrinder_compat import Context as _ContextProto
 
     tg_ctx = MagicMock()
     tg_ctx.get = MagicMock(side_effect=lambda key: cq if key == "callback_query" else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
@@ -46,13 +46,13 @@ def _scope_with_cq(cq: MagicMock) -> MagicMock:
     ctx_wrapper.value = tg_ctx
 
     scope = MagicMock()
-    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _Context else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
+    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _ContextProto else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
     return scope
 
 
 def _scope_with_update_cute(incoming: object) -> MagicMock:
     """Build mock scope whose Context.get("update_cute").incoming_update is *incoming*."""
-    from telegrinder.bot.dispatch.context import Context as _Context
+    from emergent.wire._telegrinder_compat import Context as _ContextProto
 
     update_cute = MagicMock()
     update_cute.incoming_update = incoming
@@ -66,7 +66,7 @@ def _scope_with_update_cute(incoming: object) -> MagicMock:
     ctx_wrapper.value = tg_ctx
 
     scope = MagicMock()
-    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _Context else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
+    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _ContextProto else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
     return scope
 
 
@@ -79,7 +79,7 @@ def _scope_no_context() -> MagicMock:
 
 def _scope_no_cq() -> MagicMock:
     """Build mock scope with Context but no callback query anywhere."""
-    from telegrinder.bot.dispatch.context import Context as _Context
+    from emergent.wire._telegrinder_compat import Context as _ContextProto
 
     tg_ctx = MagicMock()
     tg_ctx.get = MagicMock(return_value=None)
@@ -88,7 +88,7 @@ def _scope_no_cq() -> MagicMock:
     ctx_wrapper.value = tg_ctx
 
     scope = MagicMock()
-    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _Context else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
+    scope.get = MagicMock(side_effect=lambda key: ctx_wrapper if key is _ContextProto else None)  # pyright: ignore[reportUnknownLambdaType] - MagicMock.get side_effect lambda
     return scope
 
 

@@ -199,7 +199,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         # If identity field has autoincrement placeholder (0 or None),
         # exclude it so the database assigns the real ID.
         identity = self._compiled.identity_field
-        if identity and data.get(identity) in (0, None, ""):
+        if identity and data.get(identity) in (0, None):
             data.pop(identity, None)
 
         model_instance = self._compiled.model(**data)
@@ -332,6 +332,10 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             )
             join_compiled: Compilation[object, DeclarativeBase] = compile_sa(target, tablename, base=base)
             on_clause = _compile_expr_raw(on_expr, compiled, join_compiled)
+            if kind == "right":
+                raise NotImplementedError(
+                    "RIGHT JOIN is not supported via SA .join(); restructure as LEFT JOIN with swapped operands"
+                )
             return stmt.join(
                 join_compiled.model,
                 on_clause,

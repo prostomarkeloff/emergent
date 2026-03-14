@@ -157,34 +157,34 @@ class TestMemoryKVProviderEdges:
         assert len(prov.data) == 0
 
     @pytest.mark.asyncio
-    async def test_wrong_op_for_set_noop(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
-        """Wrong op returns Ok(None) — no set occurs."""
-        result = (await prov.set(users_kv.get(1))).unwrap()
-        assert result is None
+    async def test_wrong_op_for_set_raises(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
+        """Wrong op raises TypeError."""
+        with pytest.raises(TypeError):
+            await prov.set(users_kv.get(1))
 
     @pytest.mark.asyncio
-    async def test_wrong_op_for_delete_noop(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
-        """Wrong op returns Ok(False) — no delete occurs."""
-        result = (await prov.delete(users_kv.get(1))).unwrap()
-        assert result is False
+    async def test_wrong_op_for_delete_raises(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
+        """Wrong op raises TypeError."""
+        with pytest.raises(TypeError):
+            await prov.delete(users_kv.get(1))
 
     @pytest.mark.asyncio
-    async def test_wrong_op_for_exists_noop(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
-        """Wrong op returns Ok(False) — no existence check."""
-        result = (await prov.exists(users_kv.get(1))).unwrap()
-        assert result is False
+    async def test_wrong_op_for_exists_raises(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
+        """Wrong op raises TypeError."""
+        with pytest.raises(TypeError):
+            await prov.exists(users_kv.get(1))
 
     @pytest.mark.asyncio
-    async def test_wrong_op_for_scan_noop(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
-        """Wrong op returns Ok([]) — empty scan."""
-        result = (await prov.scan(users_kv.get(1))).unwrap()
-        assert result == []
+    async def test_wrong_op_for_scan_raises(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
+        """Wrong op raises TypeError."""
+        with pytest.raises(TypeError):
+            await prov.scan(users_kv.get(1))
 
     @pytest.mark.asyncio
-    async def test_wrong_op_for_keys_noop(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
-        """Wrong op returns Ok([]) — empty keys."""
-        result = (await prov.keys(users_kv.get(1))).unwrap()
-        assert result == []
+    async def test_wrong_op_for_keys_raises(self, prov: MemoryKVProvider[int, User], users_kv: KVQuerySet[int, User]) -> None:
+        """Wrong op raises TypeError."""
+        with pytest.raises(TypeError):
+            await prov.keys(users_kv.get(1))
 
     @pytest.mark.asyncio
     async def test_init_with_data(self) -> None:

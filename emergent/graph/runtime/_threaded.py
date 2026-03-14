@@ -53,6 +53,7 @@ class _RunState:
     pending_lock: threading.Lock
     remaining_finals: int
     remaining_lock: threading.Lock
+    active_finals: set[type[Node]]
     done_event: threading.Event
     error: BaseException | None
     error_lock: threading.Lock
@@ -158,13 +159,11 @@ def _on_node_complete(
         node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
         _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
 
-    if node in graph_info.final_nodes:
-        with run_state.remaining_lock:
+    with run_state.remaining_lock:
+        if node in run_state.active_finals:
             run_state.remaining_finals -= 1
-            done = run_state.remaining_finals == 0
-
-        if done:
-            run_state.done_event.set()
+            if run_state.remaining_finals == 0:
+                run_state.done_event.set()
 
 
 def _on_node_failed(
@@ -174,7 +173,7 @@ def _on_node_failed(
     pool: _WorkStealingPool,
     graph_info: _GraphInfo,
 ) -> None:
-    """Called when a node fails. Queues ResultNode dependents, records error otherwise."""
+    """Called when a node fails. Decrements all dependents; queues ResultNode dependents, propagates error for others."""
     from nodnod.interface.result_node import ResultNode
 
     _signal_node_completed(run_state, node)
@@ -183,17 +182,24 @@ def _on_node_failed(
     has_result_node_dep = False
 
     for dependent in deps:
-        if not issubclass(dependent, ResultNode):
-            continue
-
         with run_state.pending_lock:
             run_state.pending[dependent] -= 1
             ready = run_state.pending[dependent] == 0
 
-        if ready:
-            node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
-            _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
-        has_result_node_dep = True
+        if issubclass(dependent, ResultNode):
+            if ready:
+                node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
+                _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
+            has_result_node_dep = True
+        elif ready:
+            # Non-ResultNode dependent is now unblocked but its parent failed.
+            # Propagate the failure and handle finals tracking.
+            _signal_node_completed(run_state, dependent)
+            with run_state.remaining_lock:
+                if dependent in run_state.active_finals:
+                    run_state.remaining_finals -= 1
+                    if run_state.remaining_finals == 0:
+                        run_state.done_event.set()
 
     if not has_result_node_dep:
         _record_error(run_state, error)
@@ -205,7 +211,15 @@ async def _execute_plain_task(
     pool: _WorkStealingPool,
     graph_info: _GraphInfo,
 ) -> None:
-    """Execute a plain node composition."""
+    """Execute a plain node composition.
+
+    NOTE: compose_node reads/writes Scope (OrderedDict) which is shared across
+    worker threads. In free-threaded Python 3.13t+/3.14, dict operations are
+    individually atomic (per-object locks). Scope.__setitem__ writes to unique
+    keys (one per node) and reads only from already-completed dependencies
+    (guaranteed by the pending counter), so the access pattern is safe under
+    the free-threading memory model.
+    """
     result = await compose_node(task.node, task.node_scope, task.local_scope)
     if kungfu.is_ok(result):
         _on_node_complete(task.node, run_state, pool, graph_info)
@@ -386,8 +400,11 @@ def _worker_main(
 
     try:
         worker.loop.run_until_complete(_run())
-    except Exception:
-        pass
+    except Exception as exc:
+        # Only record if computation is not already done — the pool shutdown
+        # closes event loops which raises RuntimeError in workers still running.
+        if not run_state.done_event.is_set():
+            _record_error(run_state, exc)
 
 
 def _create_pool(n_workers: int) -> _WorkStealingPool:
@@ -499,6 +516,7 @@ class _WorkStealingAgent(Agent):
             pending_lock=threading.Lock(),
             remaining_finals=len(self._graph_info.final_nodes),
             remaining_lock=threading.Lock(),
+            active_finals=set(self._graph_info.final_nodes),
             done_event=threading.Event(),
             error=None,
             error_lock=threading.Lock(),
@@ -512,7 +530,8 @@ class _WorkStealingAgent(Agent):
             return
 
         self._run_state = run_state
-        self._living = set(self._graph_info.all_nodes)
+        with run_state.remaining_lock:
+            self._living = set(self._graph_info.all_nodes)
 
         pool = _create_pool(self._n_workers)
         self._pool = pool
@@ -556,10 +575,10 @@ class _WorkStealingAgent(Agent):
 
         # Update finals tracking — clear done so run() keeps waiting
         with run_state.remaining_lock:
-            run_state.remaining_finals += len(nodes)
+            run_state.remaining_finals += len(new_info.final_nodes)
+            run_state.active_finals |= new_info.final_nodes
             run_state.done_event.clear()
-
-        self._living |= set(new_info.all_nodes)
+            self._living |= set(new_info.all_nodes)
 
         # Submit ready roots
         for node in new_info.ready_roots:
@@ -572,13 +591,12 @@ class _WorkStealingAgent(Agent):
             return
         run_state = self._run_state
 
-        for node in nodes:
-            self._living.discard(node)
-
-        # If despawned nodes are finals, adjust remaining count
+        # Adjust finals and living under lock
         with run_state.remaining_lock:
             for node in nodes:
-                if node in self._graph_info.final_nodes:
+                self._living.discard(node)
+                if node in run_state.active_finals:
+                    run_state.active_finals.discard(node)
                     run_state.remaining_finals -= 1
             if run_state.remaining_finals <= 0:
                 run_state.done_event.set()

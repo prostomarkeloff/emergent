@@ -161,6 +161,7 @@ class AuthorizeOps(SchemaCapability):
     identity_type: type
     role_map: dict[str, str]
     role_getter: Callable[..., set[str]]
+    strict: bool = True
 
     def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:
         new_specs = []
@@ -173,6 +174,11 @@ class AuthorizeOps(SchemaCapability):
                 )
                 new_specs.append(
                     replace(s, capabilities=(*s.capabilities, enricher))
+                )
+            elif self.strict:
+                raise ValueError(
+                    f"AuthorizeOps: operation {s.name!r} has no role mapping. "
+                    f"Add it to role_map or use strict=False to skip unmapped operations."
                 )
             else:
                 new_specs.append(s)

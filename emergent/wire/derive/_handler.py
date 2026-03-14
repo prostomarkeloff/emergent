@@ -699,13 +699,14 @@ class TimestampUpdate:
         entity_name = spec.entity_name
         non_id_names = list(spec.non_identity_names)
         base = spec.base_query
+        sf = spec.scope_fields
         uf = self.updated_field
 
         async def handler(op: HasProvider[EntityT]) -> Result[EntityT, DomainError]:
             assert base is not None
             existing, err = await fetch_or_not_found(
                 op.provider,
-                identity_query(base, op, (), id_names),
+                identity_query(base, op, sf, id_names),
                 entity_name, op, id_names,
             )
             if err is not None:

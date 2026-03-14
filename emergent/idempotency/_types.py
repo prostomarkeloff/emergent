@@ -5,7 +5,7 @@ Idempotency types — core data structures.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from typing import Generic, TypeVar
 
@@ -63,7 +63,7 @@ class IdempotencyRecord(Generic[T, E]):
         """Check if record has expired."""
         if self.expires_at is None:
             return False
-        return datetime.now() > self.expires_at
+        return datetime.now(tz=timezone.utc) > self.expires_at
 
     @property
     def is_pending(self) -> bool:

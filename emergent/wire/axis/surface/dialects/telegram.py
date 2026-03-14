@@ -85,7 +85,7 @@ def _get_callback_query_from_scope(scope: Scope) -> _CQCuteProto | None:
 
     # Check at runtime if it's a CallbackQueryCute via class name
     # (telegrinder is an optional dep so we can't use isinstance)
-    if type(incoming).__name__ == "CallbackQueryCute":
+    if incoming.__class__.__name__ == "CallbackQueryCute":
         return incoming  # type: ignore[return-value]  # runtime-verified CallbackQueryCute instance
 
     return None

@@ -12,6 +12,7 @@ import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
+from urllib.parse import quote as _url_quote
 
 import httpx
 
@@ -250,7 +251,12 @@ class QueryParamFilters(FilterEncoding):
                 params[f"{name}{self.operator_sep}isnull"] = "false"
             case And(left, right):
                 self._encode_expr(left, params)
-                self._encode_expr(right, params)
+                right_params: dict[str, Any] = {}
+                self._encode_expr(right, right_params)
+                for k, v in right_params.items():
+                    if k in params:
+                        raise ValueError(f"Duplicate filter key {k!r} in AND expression; query param encoding cannot represent this")
+                    params[k] = v
             case Or(_, _):
                 raise ValueError("OR filters not supported in query params encoding")
             case _:
@@ -441,8 +447,13 @@ class HTTPAPIProvider(Generic[T]):
     async def fetch_one(self, query: APIQuerySet[K, T]) -> T | None:
         """Execute get query, return single result."""
         if isinstance(query.op, GetOp):
-            url = f"{self.base_url}/{query.op.id}"
-            response = await self._request("GET", url)
+            url = f"{self.base_url}/{_url_quote(str(query.op.id), safe='')}"
+            try:
+                response = await self._request("GET", url)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    return None
+                raise
             if response.status_code == 404:
                 return None
             data = response.json()
@@ -496,7 +507,7 @@ class HTTPAPIProvider(Generic[T]):
             return self._parse_entity(response.json())
 
         elif isinstance(query.op, UpdateOp):
-            url = f"{self.base_url}/{query.op.id}"
+            url = f"{self.base_url}/{_url_quote(str(query.op.id), safe='')}"
             method = "PATCH" if query.op.partial else "PUT"
             response = await self._request(
                 method,
@@ -512,7 +523,7 @@ class HTTPAPIProvider(Generic[T]):
         if not isinstance(query.op, DeleteOp):
             raise ValueError(f"delete requires Delete op, got {type(query.op)}")
 
-        url = f"{self.base_url}/{query.op.id}"
+        url = f"{self.base_url}/{_url_quote(str(query.op.id), safe='')}"
         response = await self._request("DELETE", url)
         return response.status_code in (200, 204)
 

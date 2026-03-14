@@ -30,6 +30,7 @@ import asyncio
 import functools
 import inspect
 import re
+import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -558,10 +559,14 @@ class IsolateGlobalAsync[V](BridgeCapability):
                 new_value = await cm.__aenter__()
                 setattr(module, attr, new_value)
                 try:
-                    return await _call_handler(handler, *args, **kwargs)
-                finally:
-                    await cm.__aexit__(None, None, None)
+                    result = await _call_handler(handler, *args, **kwargs)
+                except BaseException:
+                    await cm.__aexit__(*sys.exc_info())
                     setattr(module, attr, old)
+                    raise
+                await cm.__aexit__(None, None, None)
+                setattr(module, attr, old)
+                return result
 
         return wrapped
 
@@ -745,17 +750,10 @@ class SetGlobal(BridgeCapability):
         import importlib
 
         module = importlib.import_module(self.module_path)
-        attr = self.attr_name
-        get_value = self.factory
-        # Set once flag
-        _initialized = False
+        setattr(module, self.attr_name, self.factory())
 
         @functools.wraps(handler)
         async def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-            nonlocal _initialized
-            if not _initialized:
-                setattr(module, attr, get_value())
-                _initialized = True
             return await _call_handler(handler, *args, **kwargs)
 
         return wrapped

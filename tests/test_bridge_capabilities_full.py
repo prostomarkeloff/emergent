@@ -382,9 +382,11 @@ class TestIsolateGlobalAsync:
 
             @asynccontextmanager
             async def factory():  # type: ignore[no-untyped-def]
-                yield "temp"
-                nonlocal exit_called
-                exit_called = True
+                try:
+                    yield "temp"
+                finally:
+                    nonlocal exit_called
+                    exit_called = True
 
             cap = IsolateGlobalAsync(
                 module_path="_test_isolate_async_exc",
@@ -399,7 +401,7 @@ class TestIsolateGlobalAsync:
             with pytest.raises(RuntimeError, match="fail"):
                 await wrapped()
 
-            # __aexit__ called with (None, None, None) per the source
+            # __aexit__ called with exception info per context manager protocol
             assert exit_called is True
             assert mod.val == "original"  # type: ignore[attr-defined]
         finally:

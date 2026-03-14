@@ -12,7 +12,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from kungfu import Ok, Some
@@ -81,9 +81,9 @@ class TestMakePendingRecord:
 
     def test_pending_with_ttl(self) -> None:
         ttl = timedelta(seconds=60)
-        before = datetime.now()
+        before = datetime.now(tz=timezone.utc)
         record: Record[str] = make_pending_record("key1", ttl=ttl)
-        after = datetime.now()
+        after = datetime.now(tz=timezone.utc)
 
         assert record.expires_at is not None
         assert before + ttl <= record.expires_at <= after + ttl
@@ -97,9 +97,9 @@ class TestMakePendingRecord:
         assert record.input_hash == "abc123"
 
     def test_pending_created_at_is_now(self) -> None:
-        before = datetime.now()
+        before = datetime.now(tz=timezone.utc)
         record: Record[str] = make_pending_record("key1", ttl=None)
-        after = datetime.now()
+        after = datetime.now(tz=timezone.utc)
         assert before <= record.created_at <= after
 
     def test_pending_is_pending_property(self) -> None:
@@ -124,9 +124,9 @@ class TestMakeCompletedRecord:
 
     def test_completed_with_ttl(self) -> None:
         ttl = timedelta(hours=1)
-        before = datetime.now()
+        before = datetime.now(tz=timezone.utc)
         record = make_completed_record("key1", 42, ttl=ttl)
-        after = datetime.now()
+        after = datetime.now(tz=timezone.utc)
 
         assert record.expires_at is not None
         assert before + ttl <= record.expires_at <= after + ttl
@@ -143,9 +143,9 @@ class TestMakeCompletedRecord:
         assert record.created_at == custom_time
 
     def test_completed_without_created_at_uses_now(self) -> None:
-        before = datetime.now()
+        before = datetime.now(tz=timezone.utc)
         record = make_completed_record("key1", "val", ttl=None)
-        after = datetime.now()
+        after = datetime.now(tz=timezone.utc)
         assert before <= record.created_at <= after
 
     def test_completed_with_input_hash(self) -> None:
@@ -176,9 +176,9 @@ class TestMakeFailedRecord:
 
     def test_failed_with_ttl(self) -> None:
         ttl = timedelta(minutes=5)
-        before = datetime.now()
+        before = datetime.now(tz=timezone.utc)
         record: Record[str] = make_failed_record("key1", "err", ttl=ttl)
-        after = datetime.now()
+        after = datetime.now(tz=timezone.utc)
 
         assert record.expires_at is not None
         assert before + ttl <= record.expires_at <= after + ttl

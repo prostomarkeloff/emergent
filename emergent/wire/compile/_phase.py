@@ -424,12 +424,6 @@ def compile_entity(
 # Lazy imports where needed (pydantic, openapi type mapping).
 
 
-def _pydantic_initial(name: str, field_type: type) -> PydanticContext:
-    from pydantic.fields import FieldInfo as PydanticFieldInfo
-
-    return PydanticContext(name, field_type, PydanticFieldInfo())
-
-
 def _openapi_initial(name: str, field_type: type) -> OpenAPIContext:
     from emergent.wire.compile._schema import type_to_json_schema
 

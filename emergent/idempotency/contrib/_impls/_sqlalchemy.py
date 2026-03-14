@@ -31,7 +31,7 @@ Usage:
             await session.commit()  # Caller commits!
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, TypeVar, Generic, Callable, cast, runtime_checkable
 
 from sqlalchemy import select, String, DateTime, Text
@@ -215,12 +215,13 @@ class SQLAlchemyStore(Generic[M, P]):
 
             model = cast(IdempotentModel, row)
 
-            # Check expiry
-            if (
-                model.idempotency_expires_at
-                and datetime.now() > model.idempotency_expires_at
-            ):
-                return Ok(None)
+            # Check expiry (ensure aware comparison — DB may return naive)
+            expires_at = model.idempotency_expires_at
+            if expires_at is not None:
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if datetime.now(tz=timezone.utc) > expires_at:
+                    return Ok(None)
 
             return Ok(self._to_record(model))
 
@@ -241,7 +242,7 @@ class SQLAlchemyStore(Generic[M, P]):
             # Set expiry if TTL provided
             if ttl:
                 cast(IdempotentModel, model).idempotency_expires_at = (
-                    datetime.now() + ttl
+                    datetime.now(tz=timezone.utc) + ttl
                 )
 
             stmt = self._to_insert(model)
@@ -273,7 +274,7 @@ class SQLAlchemyStore(Generic[M, P]):
             model.idempotency_status = IdempotencyStatus.COMPLETED
             model.idempotency_value = value
             if ttl:
-                model.idempotency_expires_at = datetime.now() + ttl
+                model.idempotency_expires_at = datetime.now(tz=timezone.utc) + ttl
 
             return Ok(None)
 
@@ -301,7 +302,7 @@ class SQLAlchemyStore(Generic[M, P]):
             model.idempotency_status = IdempotencyStatus.FAILED
             model.idempotency_error = str(error)
             if ttl:
-                model.idempotency_expires_at = datetime.now() + ttl
+                model.idempotency_expires_at = datetime.now(tz=timezone.utc) + ttl
 
             return Ok(None)
 
@@ -339,13 +340,18 @@ class SQLAlchemyStore(Generic[M, P]):
         else:
             state = RecordState.PENDING
 
+        # Ensure expires_at is timezone-aware (DB backends like SQLite may strip tzinfo)
+        expires_at = model.idempotency_expires_at
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
         return IdempotencyRecord(
             key=model.idempotency_key,
             state=state,
             value=model.idempotency_value,
             error=model.idempotency_error,
-            created_at=datetime.now(),
-            expires_at=model.idempotency_expires_at,
+            created_at=datetime.now(tz=timezone.utc),
+            expires_at=expires_at,
             input_hash=None,
         )
 

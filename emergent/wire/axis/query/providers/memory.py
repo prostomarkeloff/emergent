@@ -106,9 +106,10 @@ class MemoryRelationalProvider(Generic[T]):
 
     @asynccontextmanager
     async def atomic(self) -> AsyncIterator[None]:
-        """Atomic transaction context.
+        """Atomic transaction context with rollback on error.
 
         All operations within the context are serialized.
+        If an exception occurs, data is restored to pre-transaction state.
 
         Usage:
             async with provider.atomic():
@@ -116,7 +117,12 @@ class MemoryRelationalProvider(Generic[T]):
                 await provider.insert(new_item)
         """
         async with self._lock:
-            yield
+            snapshot = list(self._data)
+            try:
+                yield
+            except BaseException:
+                self._data[:] = snapshot
+                raise
 
     async def next_id(self) -> Any:
         """Generate next ID in sequence.
@@ -173,8 +179,11 @@ class MemoryRelationalProvider(Generic[T]):
         return len(self.execute(query))
 
     async def exists(self, query: RelationalQuerySet[T]) -> bool:
-        """Check existence."""
-        results = self.execute(query)
+        """Check existence (short-circuits after first match)."""
+        from emergent.wire.axis.query._relational import Limit
+
+        limited = query._append(Limit(1))
+        results = self.execute(limited)
         return len(results) > 0
 
     # ─── Mutations ────────────────────────────────────────────────────────
@@ -381,7 +390,7 @@ class MemoryKVProvider(Generic[K, V]):
                 self._data[key] = value
                 return Ok(None)
             case _:
-                return Ok(None)
+                raise TypeError(f"set() requires KVSet op, got {type(query.op)}")
 
     async def delete(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Delete by key."""
@@ -391,7 +400,7 @@ class MemoryKVProvider(Generic[K, V]):
                 self._data.pop(key, None)
                 return Ok(existed)
             case _:
-                return Ok(False)
+                raise TypeError(f"delete() requires KVDelete op, got {type(query.op)}")
 
     async def exists(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Check existence."""
@@ -399,7 +408,7 @@ class MemoryKVProvider(Generic[K, V]):
             case Exists(key=key):
                 return Ok(key in self._data)
             case _:
-                return Ok(False)
+                raise TypeError(f"exists() requires Exists op, got {type(query.op)}")
 
     async def scan(self, query: KVQuerySet[K, V]) -> Result[list[V], Never]:
         """Scan by pattern."""
@@ -408,7 +417,7 @@ class MemoryKVProvider(Generic[K, V]):
                 result = [v for k, v in self._data.items() if fnmatch(str(k), pattern)]
                 return Ok(result)
             case _:
-                return Ok([])
+                raise TypeError(f"scan() requires Scan op, got {type(query.op)}")
 
     async def keys(self, query: KVQuerySet[K, V]) -> Result[list[K], Never]:
         """Get keys by pattern."""
@@ -417,7 +426,7 @@ class MemoryKVProvider(Generic[K, V]):
                 result = [k for k in self._data if fnmatch(str(k), pattern)]
                 return Ok(result)
             case _:
-                return Ok([])
+                raise TypeError(f"keys() requires Keys op, got {type(query.op)}")
 
 
 # ─── Memory API Provider ─────────────────────────────────────────────────────

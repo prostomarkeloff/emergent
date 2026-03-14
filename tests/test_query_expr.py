@@ -348,9 +348,8 @@ class TestRegexEdge:
     def test_invalid_pattern_raises(self):
         import re
 
-        expr = Regex(Field("name"), "[invalid")
         with pytest.raises(re.error):
-            expr.evaluate(ALICE)
+            Regex(Field("name"), "[invalid")
 
 
 # ─── Between Edge Cases ─────────────────────────────────────────────────────

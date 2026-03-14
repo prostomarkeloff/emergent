@@ -55,8 +55,7 @@ def _scope_for_reply(
 
     scope.get(API) returns api_wrapper, scope.get(Update) returns update_wrapper.
     """
-    from telegrinder.api import API as _API
-    from telegrinder.types.objects import Update as _Update
+    from emergent.wire._telegrinder_compat import API as _APIProto, Update as _UpdateProto
 
     api_wrapper = None
     if api is not None:
@@ -69,9 +68,9 @@ def _scope_for_reply(
         update_wrapper.value = update
 
     def get_side_effect(key: type) -> MagicMock | None:
-        if key is _API:
+        if key is _APIProto:
             return api_wrapper
-        if key is _Update:
+        if key is _UpdateProto:
             return update_wrapper
         return None
 

@@ -41,11 +41,13 @@ class BearerExtract(ScopeEnricher):
         """FastAPI: extract Bearer token from Authorization header."""
         import fastapi
 
+        _PREFIX = "Bearer "
         request = scope.get(fastapi.Request)
         if request is not None:
             auth = request.value.headers.get("authorization", "")
-            if auth.startswith("Bearer "):
-                scope.inject(AuthToken, AuthToken(auth[7:]))
+            if auth.startswith(_PREFIX):
+                token = auth.removeprefix(_PREFIX).strip()
+                scope.inject(AuthToken, AuthToken(token))
         return await call(scope)
 
     async def enrich_cli[R](self, call: EnricherNext[R], scope: Scope) -> R:

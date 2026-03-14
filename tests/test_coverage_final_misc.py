@@ -507,7 +507,7 @@ async def test_fetch_record_node_wildcard_match() -> None:
 @pytest.mark.asyncio
 async def test_pending_wait_still_pending_then_timeout() -> None:
     """Lines 507-508: pending_wait wildcard branch when record stays pending."""
-    from datetime import timedelta, datetime
+    from datetime import timedelta, datetime, timezone
     from emergent.idempotency._graph import (
         IdempotencyOutcome,
         OutcomeError,
@@ -523,7 +523,7 @@ async def test_pending_wait_still_pending_then_timeout() -> None:
         state=RecordState.PENDING,
         value=None,
         error=None,
-        created_at=datetime.now(),
+        created_at=datetime.now(tz=timezone.utc),
         expires_at=None,
         input_hash=None,
     )

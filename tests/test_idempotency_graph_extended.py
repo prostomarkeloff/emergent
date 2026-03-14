@@ -12,7 +12,7 @@ Covers the uncovered @case methods in IdempotencyOutcome:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -87,7 +87,7 @@ def make_record(
     expired: bool = False,
     input_hash: str | None = None,
 ) -> IdempotencyRecord[str, str]:
-    now = datetime.now()
+    now = datetime.now(tz=timezone.utc)
     expires_at = now - timedelta(hours=1) if expired else now + timedelta(hours=1)
     return IdempotencyRecord(
         key=key,
