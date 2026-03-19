@@ -232,29 +232,48 @@ class OwnerScoped(SchemaCapability):
             return OwnerContext(getattr(wrapper.value, identity_attr))
 
         inject_enricher = InjectEnricher(type=OwnerContext, factory=_extract_owner)
-        owner_field_type = Annotated[str | int, Retrieve(OwnerContext)]
+        owner_value_type = ctx.fields.get(owner_field, None)
+        base_owner_type = owner_value_type.base_type if owner_value_type is not None else str | int
+        owner_request_type = Annotated[base_owner_type, Retrieve(OwnerContext)]
 
         new_specs = []
         for s in ctx.specs:
             caps = (*s.capabilities, inject_enricher)
-            extra = (*s.extra_op_fields, (owner_field, owner_field_type))
+            extra_op_fields = tuple(
+                field for field in s.extra_op_fields if field[0] != owner_field
+            )
+            extra_request_fields = tuple(
+                field for field in s.extra_request_fields if field[0] != owner_field
+            )
 
-            input_fields = s.input_fields
-            request_fields = s.request_fields
+            input_fields = dict(s.input_fields)
+            request_fields = dict(s.request_fields)
             if has_effect(s.effects, Creates):
-                input_fields = {
-                    k: v for k, v in input_fields.items() if k != owner_field
-                }
-                request_fields = {
-                    k: v for k, v in request_fields.items() if k != owner_field
-                }
+                input_fields.pop(owner_field, None)
+                request_fields.pop(owner_field, None)
+            elif owner_field in request_fields:
+                request_fields[owner_field] = owner_request_type
+
+            if owner_field not in input_fields:
+                extra_op_fields = (*extra_op_fields, (owner_field, base_owner_type))
+
+            if owner_field not in request_fields:
+                extra_request_fields = (
+                    *extra_request_fields,
+                    (owner_field, owner_request_type),
+                )
 
             new_specs.append(
                 replace(
                     s,
                     capabilities=caps,
-                    extra_op_fields=extra,
-                    scope_fields=(*s.scope_fields, owner_field),
+                    extra_op_fields=extra_op_fields,
+                    extra_request_fields=extra_request_fields,
+                    scope_fields=(
+                        s.scope_fields
+                        if owner_field in s.scope_fields
+                        else (*s.scope_fields, owner_field)
+                    ),
                     input_fields=input_fields,
                     request_fields=request_fields,
                 )
