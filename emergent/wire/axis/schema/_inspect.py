@@ -41,6 +41,7 @@ Custom composition:
 from __future__ import annotations
 
 import dataclasses
+import types
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import (
@@ -131,7 +132,9 @@ def unwrap_optional(type_hint: Any) -> tuple[Any, bool]:
     origin = get_origin(type_hint)
 
     # Union type (X | None or Optional[X])
-    if origin is Union:
+    # On Python 3.10-3.13, `int | None` produces types.UnionType (not typing.Union).
+    # Python 3.14 merged them, but we must check both for backwards compatibility.
+    if origin is Union or origin is types.UnionType:
         args = get_args(type_hint)
         non_none = [a for a in args if a is not type(None)]
         if len(non_none) == 1 and type(None) in args:

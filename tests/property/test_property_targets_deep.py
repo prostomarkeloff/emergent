@@ -263,7 +263,7 @@ class TestFastAPIExtractors:
 
     @pytest.mark.anyio
     async def test_json_extractor_with_json_body(self) -> None:
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIJsonExtractor()
         # We test the extractor logic by creating a mock request
@@ -274,13 +274,13 @@ class TestFastAPIExtractors:
             return await ext.extract(request)
 
         assert _test_post is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.post("/test", json={"key": "val"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/test", json={"key": "val"})
         assert resp.json()["key"] == "val"
 
     @pytest.mark.anyio
     async def test_query_extractor(self) -> None:
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIQueryExtractor()
         app = fastapi.FastAPI()
@@ -290,8 +290,8 @@ class TestFastAPIExtractors:
             return await ext.extract(request)
 
         assert _test_get is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.get("/test?foo=bar")
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/test?foo=bar")
         assert resp.json()["foo"] == "bar"
 
     def test_form_extractor_exists(self) -> None:

@@ -25,8 +25,26 @@ from emergent.wire.axis.schema._universal import (
     Doc,
     schema_meta,
 )
+from emergent.wire.axis.schema.dialects.pydantic import PydanticCapability
+from emergent.wire.axis._capability import PydanticContext, pydantic_metadata
 from emergent.wire.compile import targets
 from emergent.wire.compile.targets.fastapi import install_rfc7807_validation_handler
+
+
+@dataclass(frozen=True, slots=True)
+class _NoBoolInt(PydanticCapability):
+    """Reject bool values for int fields (bool is subclass of int in Python,
+    but OpenAPI treats boolean and integer as distinct types)."""
+
+    def compile_pydantic(self, ctx: PydanticContext) -> PydanticContext:
+        from pydantic import BeforeValidator
+
+        def _reject_bool(v: object) -> object:
+            if isinstance(v, bool):
+                raise ValueError("boolean is not a valid integer")
+            return v
+
+        return pydantic_metadata(ctx, BeforeValidator(_reject_bool))
 
 
 def _compile_with_rfc7807(wire_app: Any) -> Any:
@@ -50,7 +68,7 @@ class User:
     id: Annotated[int, Identity]
     name: Annotated[str, MinLen(1), MaxLen(100)]
     email: Annotated[str, Unique, MaxLen(255)]
-    age: Annotated[int, Min(0), Max(200)]
+    age: Annotated[int, _NoBoolInt(), Min(0), Max(200)]
     role: Annotated[str, OneOf("admin", "user", "mod")]
 
 
@@ -60,7 +78,7 @@ class Post:
     id: Annotated[int, Identity]
     title: Annotated[str, MinLen(1), MaxLen(200)]
     body: str
-    author_id: int
+    author_id: Annotated[int, _NoBoolInt()]
 
 
 crud_app = build_application_from_decorated(User, Post)

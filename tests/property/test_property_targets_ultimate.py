@@ -1009,6 +1009,7 @@ class TestFastAPIPydanticSetup:
     async def test_setup_scope_with_pydantic_types(self) -> None:
         from emergent.wire.compile.targets.fastapi import setup_fastapi_scope
         from pydantic import BaseModel
+        from httpx import ASGITransport, AsyncClient
 
         class MyModel(BaseModel):
             name: str
@@ -1027,9 +1028,8 @@ class TestFastAPIPydanticSetup:
                 return {"name": "not-found"}
 
         assert _test_pydantic is not None  # registered via decorator
-        from starlette.testclient import TestClient
-        client = TestClient(app_inner)
-        resp = client.post("/test-pydantic", json={"name": "alice", "age": 30})
+        async with AsyncClient(transport=ASGITransport(app=app_inner), base_url="http://test") as client:
+            resp = await client.post("/test-pydantic", json={"name": "alice", "age": 30})
         assert resp.status_code == 200
         assert resp.json()["name"] == "alice"
 
@@ -1038,6 +1038,7 @@ class TestFastAPIPydanticSetup:
         """When body is invalid JSON and pydantic types exist, scope doesn't crash."""
         from emergent.wire.compile.targets.fastapi import setup_fastapi_scope
         from pydantic import BaseModel
+        from httpx import ASGITransport, AsyncClient
 
         class BadModel(BaseModel):
             x: int
@@ -1052,13 +1053,12 @@ class TestFastAPIPydanticSetup:
                 return "ok"
 
         assert _test_bad is not None  # registered via decorator
-        from starlette.testclient import TestClient
-        client = TestClient(app_inner)
-        resp = client.post(
-            "/bad-pydantic",
-            content=b"not-json",
-            headers={"content-type": "text/plain"},
-        )
+        async with AsyncClient(transport=ASGITransport(app=app_inner), base_url="http://test") as client:
+            resp = await client.post(
+                "/bad-pydantic",
+                content=b"not-json",
+                headers={"content-type": "text/plain"},
+            )
         assert resp.status_code == 200
 
 

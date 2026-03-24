@@ -225,7 +225,7 @@ class TestFastAPIJsonExtractorFormData:
     @pytest.mark.anyio
     async def test_json_extractor_with_json_body(self) -> None:
         from emergent.wire.compile.targets.fastapi import FastAPIJsonExtractor
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIJsonExtractor()
         app = fastapi.FastAPI()
@@ -235,8 +235,8 @@ class TestFastAPIJsonExtractorFormData:
             return await ext.extract(request)
 
         assert _test is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.post("/json-test", json={"field1": "value1"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/json-test", json={"field1": "value1"})
         assert resp.status_code == 200
         assert resp.json()["field1"] == "value1"
 
@@ -244,7 +244,7 @@ class TestFastAPIJsonExtractorFormData:
     async def test_json_extractor_invalid_json_fallback(self) -> None:
         """When request body is not valid JSON, extract returns empty dict."""
         from emergent.wire.compile.targets.fastapi import FastAPIJsonExtractor
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIJsonExtractor()
         app = fastapi.FastAPI()
@@ -254,18 +254,18 @@ class TestFastAPIJsonExtractorFormData:
             return await ext.extract(request)
 
         assert _test is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.post(
-            "/bad-json",
-            content=b"not-json",
-            headers={"content-type": "text/plain"},
-        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/bad-json",
+                content=b"not-json",
+                headers={"content-type": "text/plain"},
+            )
         assert resp.status_code == 200
 
     @pytest.mark.anyio
     async def test_json_extractor_with_path_params(self) -> None:
         from emergent.wire.compile.targets.fastapi import FastAPIJsonExtractor
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIJsonExtractor(include_path_params=True)
         app = fastapi.FastAPI()
@@ -275,8 +275,8 @@ class TestFastAPIJsonExtractorFormData:
             return await ext.extract(request)
 
         assert _test is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.post("/items/42", json={"name": "test"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/items/42", json={"name": "test"})
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("name") == "test"
@@ -289,7 +289,7 @@ class TestFastAPIJsonExtractorNoPathParams:
     @pytest.mark.anyio
     async def test_no_path_params(self) -> None:
         from emergent.wire.compile.targets.fastapi import FastAPIJsonExtractor
-        from starlette.testclient import TestClient
+        from httpx import ASGITransport, AsyncClient
 
         ext = FastAPIJsonExtractor(include_path_params=False)
         app = fastapi.FastAPI()
@@ -299,8 +299,8 @@ class TestFastAPIJsonExtractorNoPathParams:
             return await ext.extract(request)
 
         assert _test is not None  # registered via decorator
-        client = TestClient(app)
-        resp = client.post("/items/42", json={"name": "test"})
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/items/42", json={"name": "test"})
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("name") == "test"

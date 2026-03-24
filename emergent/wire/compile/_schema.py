@@ -8,8 +8,9 @@
 
 from __future__ import annotations
 
+import types
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, TYPE_CHECKING, cast
+from typing import Any, Union, TYPE_CHECKING, cast
 
 from emergent.wire.compile._core import Axes
 from emergent.wire.compile._phase import (
@@ -111,8 +112,8 @@ def type_to_json_schema(
                 "items": type_to_json_schema(item_type, type_map) if item_type is not Any else {},
             }
 
-    # Union types
-    if origin is type(int | str):  # UnionType
+    # Union types (types.UnionType on 3.10-3.13 for X | Y, typing.Union for Union[X, Y])
+    if origin is Union or origin is types.UnionType:
         args = getattr(py_type, "__args__", ())
         schemas = [type_to_json_schema(t, type_map) for t in args]
         null_schemas = [s for s in schemas if s.get("type") == "null"]

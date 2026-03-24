@@ -115,9 +115,10 @@ async def execute_stateful_done(
             return _call_from_domain(response_type, op_result)
 
         # Union type — find member implementing FromDomain
+        import types as _types
         from typing import get_origin, get_args, Union
         origin = get_origin(response_type)
-        if origin is Union:
+        if origin is Union or origin is _types.UnionType:
             for member in get_args(response_type):
                 if isinstance(member, type) and _has_from_domain(member):
                     return _call_from_domain(member, op_result)
