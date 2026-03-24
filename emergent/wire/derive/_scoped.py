@@ -47,10 +47,14 @@ class Scoped(SchemaCapability):
     generator: SchemaCapability
     caps: tuple[SchemaCapability, ...]
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         # Phase 1: delegate to inner generator
-        gen: DeriveGeneratable = self.generator  # type: ignore[assignment]
-        ctx = gen.compile_derive_generate(ctx)
+        if not isinstance(self.generator, DeriveGeneratable):
+            raise TypeError(
+                f"Scoped.generator must implement DeriveGeneratable, "
+                f"got {type(self.generator).__name__}"
+            )
+        ctx = self.generator.compile_derive_generate(ctx)
 
         # Apply scoped modifiers and augmenters
         caps_list = list(self.caps)

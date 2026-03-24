@@ -38,7 +38,7 @@ Transport-agnostic via @op + MethodDialect::
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, get_args, get_origin, get_type_hints
 
@@ -52,6 +52,7 @@ from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
 from emergent.wire.derive._codegen import (
+    FieldSpec,
     HasAnnotations,
     annotate_handler,
     create_dataclass,
@@ -60,9 +61,11 @@ from emergent.wire.derive._codegen import (
 )
 from emergent.wire.derive._effects import DerivationEffect
 from emergent.wire.derive._error_caps import ERROR_CAPS
+from emergent.wire.derive._errors import DomainError
 
 if TYPE_CHECKING:
-    from emergent.wire.derive._ctx import DeriveCtx
+    from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
+    from emergent.wire.derive._opspec import Op
     from emergent.wire.derive._trigger import TriggerGen
 
 F = Callable[..., object]
@@ -203,9 +206,14 @@ def _enhance_trigger_with_args(
 
     from typing import Annotated
 
+    from emergent.wire._telegrinder_compat import ABCRule as ABCRuleProto
     from emergent.wire.axis.schema.dialects.tg import CommandArg
-    from telegrinder.bot.rules.abc import ABCRule
+    from emergent.wire.axis.surface.triggers.telegrinder import TelegrinderTrigger
     from telegrinder.bot.rules.command import Argument, Command
+
+    # Re-narrow with concrete type so pyright sees .rules/.view
+    if not isinstance(trigger, TelegrinderTrigger):
+        return trigger
 
     args: list[Argument] = []
     has_greedy = False
@@ -228,10 +236,10 @@ def _enhance_trigger_with_args(
     if not args:
         return trigger
 
-    new_rules: list[ABCRule] = []
+    new_rules: list[ABCRuleProto] = []
     for rule in trigger.rules:
         if isinstance(rule, Command) and not rule.arguments:
-            enhanced = Command(
+            enhanced: ABCRuleProto = Command(
                 rule.names,
                 *args,
                 prefixes=rule.prefixes,
@@ -244,7 +252,7 @@ def _enhance_trigger_with_args(
         else:
             new_rules.append(rule)
 
-    return _TelegrindTrigger(*new_rules, view=trigger.view)
+    return TelegrinderTrigger(*new_rules, view=trigger.view)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -260,18 +268,20 @@ def _build_method_operation(
     suffix: str,
     description: str | None = None,
     order: int = 100,
-) -> tuple[type, Callable[..., object], Exposure]:
+) -> Operation[object, DomainError]:
     """Build (OpType, annotated_handler, Exposure) from a decorated method."""
-    method_fn = getattr(service, method_name)
+    method_fn: Callable[..., object] = getattr(service, method_name)
     hints = get_type_hints(method_fn, include_extras=True)
     sig = inspect.signature(method_fn)
 
-    raw_attr = inspect.getattr_static(service, method_name)
+    raw_attr: Callable[..., object] = inspect.getattr_static(service, method_name)
     is_static = isinstance(raw_attr, staticmethod)
     is_classmethod = isinstance(raw_attr, classmethod)
 
     # Validate the method is async — sync methods will crash at await
-    raw_fn = raw_attr.__func__ if isinstance(raw_attr, (classmethod, staticmethod)) else raw_attr
+    # Extract __func__ from classmethod/staticmethod descriptors
+    _has_func = hasattr(raw_attr, "__func__")
+    raw_fn: Callable[..., object] = getattr(raw_attr, "__func__") if _has_func else raw_attr
     if not inspect.iscoroutinefunction(raw_fn):
         raise TypeError(
             f"{service.__name__}.{method_name} must be async. "
@@ -286,16 +296,20 @@ def _build_method_operation(
         fields[name] = hints[name]
         params.append(name)
 
-    _method_fn, _params = method_fn, params
+    # We validated that raw_fn is a coroutine function above, so method_fn
+    # (the bound/resolved version from getattr) returns Awaitable at runtime.
+    # getattr returns object, which cannot express async — Callable[..., Awaitable[...]]
+    # is the tightest annotation that preserves type safety without cast.
+    _method_fn: Callable[..., Awaitable[Result[object, DomainError]]] = getattr(service, method_name)
+    _params = params
 
-    async def handler(op: object) -> Result[object, object]:
+    async def handler(op: object) -> Result[object, DomainError]:
         kw = {n: getattr(op, n) for n in _params}
-        raw_result = (
+        return (
             await _method_fn(**kw)
             if is_static or is_classmethod
             else await _method_fn(None, **kw)
         )
-        return raw_result
 
     op_name = f"{service.__name__}{method_name.title()}{suffix}"
 
@@ -317,21 +331,22 @@ def _build_method_operation(
     trigger = _enhance_trigger_with_args(trigger, fields)
 
     # Build Op type — ALL fields (compose.Node fields resolved by build_request)
+    field_items: list[FieldSpec] = list(fields.items())
     op_type = create_dataclass(
         op_name + "Op",
-        list(fields.items()),
+        field_items,
         frozen=True,
     )
 
     # Build Request type — ALL fields (compose.Node handled by build_field_value)
     request_type = create_request_type(
         op_name + "Request",
-        list(fields.items()),
+        field_items,
         op_type,
     )
 
     # Build Response type
-    response_fields_list = list(
+    response_fields_list: list[FieldSpec] = list(
         _result_type_fields(result_type).items()
     )
 
@@ -356,7 +371,7 @@ def _build_method_operation(
     )
 
     # Build annotated handler
-    annotated_handler = annotate_handler(handler, op_type)
+    annotated_handler: OperationHandler[object, DomainError] = annotate_handler(handler, op_type)
 
     # Build Exposure
     codec = rrc(request_type, response_type)
@@ -387,14 +402,15 @@ def _result_type_fields(result_type: type) -> dict[str, type]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _stub_op(name: str, effects: tuple[DerivationEffect, ...]) -> object:
+def _stub_op(name: str, effects: tuple[DerivationEffect, ...]) -> Op:
     """Create a minimal Op for TriggerGen dispatch. Only .name and .effects matter."""
+    from emergent.wire.derive._handler import HandlerSpec
     from emergent.wire.derive._opspec import Op
     from emergent.wire.derive._project import NoFields, OkResponse
 
     @dataclass(frozen=True, slots=True)
     class _NullTemplate:
-        def build(self, spec: object) -> object:
+        def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[object, DomainError]:
             raise RuntimeError("_NullTemplate should never be called")
 
     return Op(
@@ -425,21 +441,22 @@ class Methods(SchemaCapability):
 
     capabilities: tuple[SurfaceCapability, ...] = ERROR_CAPS
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         entity = ctx.entity
 
         for name in dir(entity):
             if name.startswith("_"):
                 continue
-            raw = inspect.getattr_static(entity, name, None)
+            raw: Callable[..., object] | None = inspect.getattr_static(entity, name, None)
             if raw is None:
                 continue
-            fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
+            _has_func = hasattr(raw, "__func__")
+            fn: Callable[..., object] = getattr(raw, "__func__") if _has_func else raw
 
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             for i, entry in enumerate(entries):
                 suffix = f"_{i}" if len(entries) > 1 else ""
-                op_type, handler, exposure_obj = _build_method_operation(
+                operation: Operation[object, DomainError] = _build_method_operation(
                     service=entity,
                     method_name=name,
                     trigger=entry.trigger,
@@ -448,7 +465,7 @@ class Methods(SchemaCapability):
                     description=entry.description,
                     order=entry.order,
                 )
-                ctx = ctx.add_operation((op_type, handler, exposure_obj))
+                ctx = ctx.add_operation(operation)
 
         return ctx
 
@@ -476,34 +493,35 @@ class MethodDialect(SchemaCapability):
     triggers: TriggerGen
     capabilities: tuple[SurfaceCapability, ...] = ERROR_CAPS
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         entity = ctx.entity
 
         for method_name in dir(entity):
             if method_name.startswith("_"):
                 continue
-            raw = inspect.getattr_static(entity, method_name, None)
+            raw: Callable[..., object] | None = inspect.getattr_static(entity, method_name, None)
             if raw is None:
                 continue
-            fn = raw.__func__ if isinstance(raw, (classmethod, staticmethod)) else raw
+            _has_func = hasattr(raw, "__func__")
+            fn: Callable[..., object] = getattr(raw, "__func__") if _has_func else raw
 
             entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
             if entry is None:
                 continue
 
             stub = _stub_op(entry.name, entry.effects)
-            trigger = self.triggers(entity, stub)  # type: ignore[arg-type]
+            trigger = self.triggers(entity, stub)
             if trigger is None:
                 continue
 
-            op_type, handler, exposure_obj = _build_method_operation(
+            operation: Operation[object, DomainError] = _build_method_operation(
                 service=entity,
                 method_name=method_name,
                 trigger=trigger,
                 capabilities=(*self.capabilities, *entry.capabilities),
                 suffix="",
             )
-            ctx = ctx.add_operation((op_type, handler, exposure_obj))
+            ctx = ctx.add_operation(operation)
 
         return ctx
 

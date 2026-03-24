@@ -68,6 +68,96 @@ from emergent.wire.derive._trigger import (
     PrefixedTriggerGen,
 )
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# High-level helpers (ported from derivelib)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def derive(*caps: object) -> type:
+    """Decorator: attach capabilities to entity class.
+
+    Alias for ``@schema_meta(*caps)``.
+
+        @derive(http_crud("/users", Users))
+        @dataclass
+        class User:
+            id: Annotated[int, Identity]
+            name: str
+    """
+    from emergent.wire.axis.schema._universal import schema_meta
+    return schema_meta(*caps)
+
+
+def memory_node(key_field: str = "id", auto_id: bool = True) -> type:
+    """Create a nodnod scalar_node backed by in-memory relational provider.
+
+        Users = memory_node()
+
+        @derive(http_crud("/users", Users))
+        @dataclass
+        class User:
+            id: Annotated[int, Identity]
+            name: str
+    """
+    from typing import Any as _Any
+
+    from nodnod import scalar_node
+
+    from emergent.wire.axis.query._provider import (
+        MutatingRelationalProvider,
+        SequenceNextId,
+    )
+    from emergent.wire.axis.query.providers.memory import MemoryRelationalProvider
+
+    next_id = SequenceNextId() if auto_id else None
+    store: MemoryRelationalProvider[_Any] = MemoryRelationalProvider(
+        key_fn=lambda x: getattr(x, key_field),
+        next_id=next_id,
+    )
+
+    @scalar_node
+    class _Node:
+        @classmethod
+        def __compose__(cls) -> MutatingRelationalProvider[_Any]:
+            return store
+
+    return _Node
+
+
+def build_application_from_decorated(*entities: type) -> "Application":
+    """Compile @derive-decorated entities into a wire Application.
+
+        Users = memory_node()
+
+        @derive(http_crud("/users", Users))
+        @dataclass
+        class User: ...
+
+        app = build_application_from_decorated(User)
+        fastapi_app = targets.fastapi.compile(app)
+    """
+    from emergent.wire.axis.surface._app import Application, application
+
+    endpoints = []
+    for entity in entities:
+        for ctx in compile_derive(entity):
+            endpoints.append(materialize(ctx))
+    app = application()
+    for ep in endpoints:
+        app = app.mount(ep)
+    return app
+
+
+def endpoint_count(app: "Application") -> int:
+    """Count total exposures across all endpoints."""
+    return sum(len(ep.exposures) for ep in app.endpoints)
+
+
+if __import__("typing").TYPE_CHECKING:
+    from emergent.wire.axis.surface._app import Application
+
+
 __all__ = (
     # Core
     "DeriveCtx",
@@ -142,4 +232,9 @@ __all__ = (
     "explain_derive",
     "explain_entity",
     "derive_dict",
+    # High-level helpers
+    "derive",
+    "memory_node",
+    "build_application_from_decorated",
+    "endpoint_count",
 )

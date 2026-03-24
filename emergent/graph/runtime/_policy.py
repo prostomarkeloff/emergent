@@ -121,7 +121,7 @@ class WorkStealing:
     def build_agent(self, nodes: set[type[Node]]) -> Agent:
         from emergent.wire.compile._core import fold_schema
         from emergent.graph.runtime._helpers import build_graph_info
-        from emergent.graph.runtime._threaded import _WorkStealingAgent
+        from emergent.graph.runtime._threaded import build_work_stealing_agent, resolve_worker_count
 
         graph_info = build_graph_info(nodes)
 
@@ -133,8 +133,8 @@ class WorkStealing:
             if ctx != WorkStealingContext():
                 traits[node] = ctx
 
-        n_workers = _WorkStealingAgent._resolve_workers(len(graph_info.all_nodes), self.workers)
-        return _WorkStealingAgent(graph_info=graph_info, n_workers=n_workers, traits=traits)
+        n_workers = resolve_worker_count(len(graph_info.all_nodes), self.workers)
+        return build_work_stealing_agent(graph_info=graph_info, n_workers=n_workers, traits=traits)
 
 
 @dataclass(frozen=True, slots=True)

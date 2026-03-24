@@ -150,14 +150,14 @@ def _assemble_pydantic(
         if schema_field_info.is_optional:
             base_type = ctx.field_type | None
 
-        # Build Field() kwargs from FieldInfo
+        # Collect annotated_types markers (Ge, Le, MinLen, MaxLen, etc.)
+        # These MUST go directly in Annotated[], NOT in Field(metadata=...)
+        # Pydantic v2 ignores Field(metadata=...) for validation.
+        annotated_markers: list[object] = list(ctx.field_info.metadata) if ctx.field_info.metadata else []
+
+        # Build Field() kwargs from FieldInfo (non-constraint properties only)
         field_kwargs: dict[str, object] = {}
 
-        # Copy constraints from ctx.field_info metadata
-        if ctx.field_info.metadata:
-            field_kwargs["metadata"] = list(ctx.field_info.metadata)
-
-        # Copy capability-set properties from compiled FieldInfo
         if ctx.field_info.alias is not None:
             field_kwargs["alias"] = ctx.field_info.alias
         if ctx.field_info.json_schema_extra:
@@ -182,9 +182,16 @@ def _assemble_pydantic(
         elif schema_field_info.is_optional:
             field_kwargs["default"] = None
 
-        # Use Annotated[type, Field(...)] for proper Pydantic v2 model creation
+        # Build Annotated[type, *markers, Field(...)]
+        # Markers go directly in Annotated for pydantic v2 validation enforcement.
+        ann_args: list[object] = list(annotated_markers)
         if field_kwargs:
-            annotations[name] = Annotated[base_type, Field(**field_kwargs)]  # type: ignore[assignment]
+            # field_kwargs is heterogeneous (str, bool, dict, callable) — Field() accepts
+            # these via **kwargs but pyright can't narrow dict[str, object] to each param.
+            ann_args.append(Field(**field_kwargs))  # type: ignore[arg-type]
+
+        if ann_args:
+            annotations[name] = Annotated[tuple([base_type, *ann_args])]  # type: ignore[assignment]
         else:
             annotations[name] = base_type  # type: ignore[assignment]
 

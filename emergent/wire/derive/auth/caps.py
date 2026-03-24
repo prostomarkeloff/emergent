@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
 from nodnod import Scope
 
@@ -22,12 +22,12 @@ from emergent.wire.axis.schema._universal import SchemaCapability
 from emergent.wire.axis.surface.capabilities import EnricherNext, ScopeEnricher, SurfaceCapability
 
 from .errors import AuthorizationFailed
-from .extractors import AuthToken
 from .openapi import AuthOpenAPI
 from .validate import TokenValidate
 
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx
+    from emergent.wire.derive._opspec import OpSpec
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -72,7 +72,7 @@ class Authenticated(SchemaCapability):
         object.__setattr__(self, "effect", effect)
         object.__setattr__(self, "openapi", openapi)
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Public, has_effect
 
         all_caps: tuple[SurfaceCapability, ...] = (
@@ -81,7 +81,7 @@ class Authenticated(SchemaCapability):
             self.openapi,
         )
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if has_effect(s.effects, Public):
                 new_specs.append(s)
@@ -139,7 +139,7 @@ class RoleRequired(SchemaCapability):
     role_getter: Callable[..., set[str]]
     effect: type | None = None
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         enricher = RequireRole(
             self.identity_type, frozenset({self.role}), self.role_getter
         )
@@ -163,8 +163,8 @@ class AuthorizeOps(SchemaCapability):
     role_getter: Callable[..., set[str]]
     strict: bool = True
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:
-        new_specs = []
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if s.name in self.role_map:
                 enricher = RequireRole(
@@ -214,9 +214,10 @@ class OwnerScoped(SchemaCapability):
     owner_field: str = "owner_id"
     identity_attr: str = "id"
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.axis.schema.dialects.compose import Retrieve
         from emergent.wire.axis.surface.enrichers._impl import Inject as InjectEnricher
+        from emergent.wire.derive._codegen import AnnotationValue
         from emergent.wire.derive._effects import Creates, has_effect
 
         identity_type = self.identity_type
@@ -234,9 +235,13 @@ class OwnerScoped(SchemaCapability):
         inject_enricher = InjectEnricher(type=OwnerContext, factory=_extract_owner)
         owner_value_type = ctx.fields.get(owner_field, None)
         base_owner_type = owner_value_type.base_type if owner_value_type is not None else str | int
-        owner_request_type = Annotated[base_owner_type, Retrieve(OwnerContext)]
+        # Build Annotated type at runtime — Annotated is a special form that pyright
+        # doesn't model as type/UnionType/GenericAlias, so we construct it via getattr.
+        import typing as _typing
+        _annotated_getitem: Callable[..., AnnotationValue] = getattr(_typing, "Annotated").__getitem__
+        owner_request_type: AnnotationValue = _annotated_getitem((base_owner_type, Retrieve(OwnerContext)))
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             caps = (*s.capabilities, inject_enricher)
             extra_op_fields = tuple(
@@ -247,7 +252,7 @@ class OwnerScoped(SchemaCapability):
             )
 
             input_fields = dict(s.input_fields)
-            request_fields = dict(s.request_fields)
+            request_fields: dict[str, AnnotationValue] = dict(s.request_fields)
             if has_effect(s.effects, Creates):
                 input_fields.pop(owner_field, None)
                 request_fields.pop(owner_field, None)

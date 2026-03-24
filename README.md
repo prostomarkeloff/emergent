@@ -252,16 +252,12 @@ A story-driven, 27-chapter walkthrough — from first API to handing your codeba
 | [`docs/intro_ru.md`](docs/intro_ru.md) | Введение (RU) |
 | [`docs/essence.md`](docs/essence.md) | The essence — one function, one operator |
 | [`docs/philosophy.md`](docs/philosophy.md) | Design philosophy |
-| [`docs/architecture.md`](docs/architecture.md) | Architecture — theory, invariants, algebraic properties |
-| [`docs/wire-reference.md`](docs/wire-reference.md) | Wire reference — axes, capabilities, compile, bridge |
-| [`docs/cheatsheet.md`](docs/cheatsheet.md) | Cheatsheet — all axes, every import, every pattern |
-| [`docs/derivelib.md`](docs/derivelib.md) | derivelib reference (deprecated) |
-| [`docs/universal-derivation.md`](docs/universal-derivation.md) | Universal derivation — fold_schema, three-phase compilation |
-| [`docs/compiler-deep-dive.md`](docs/compiler-deep-dive.md) | Compiler deep-dive — developing & tuning custom compilers |
-| [`docs/multi_runtime.md`](docs/multi_runtime.md) | Multi-runtime — open-world graph execution |
-| [`docs/property-based.md`](docs/property-based.md) | Property-based testing from entity schemas |
-| [`docs/tg-patterns.md`](docs/tg-patterns.md) | Telegram patterns — TGApp, inline, callbacks |
-| [`docs/emergent-and-ai.md`](docs/emergent-and-ai.md) | emergent + AI agents |
+| [`docs/architecture/`](docs/architecture/) | Architecture — theory, invariants, algebraic properties |
+| [`docs/reference/wire-reference.md`](docs/reference/wire-reference.md) | Wire reference — axes, capabilities, compile, bridge |
+| [`docs/reference/cheatsheet.md`](docs/reference/cheatsheet.md) | Cheatsheet — all axes, every import, every pattern |
+| [`docs/reference/universal-derivation.md`](docs/reference/universal-derivation.md) | Derivation — entity → endpoints via fold |
+| [`docs/architecture/compiler-deep-dive.md`](docs/architecture/compiler-deep-dive.md) | Compiler deep-dive — developing custom compilers |
+| [`docs/architecture/emergent-and-ai.md`](docs/architecture/emergent-and-ai.md) | emergent + AI agents |
 
 ---
 

@@ -152,11 +152,11 @@ def create_response_type(
 
     def __str__(self: HasAnnotations) -> str:
         if len(_fields) == 1:
-            field_name = _fields[0][0] if isinstance(_fields[0], tuple) else _fields[0]
+            field_name = _fields[0][0]
             return str(getattr(self, field_name))
-        parts = [str(getattr(self, f[0] if isinstance(f, tuple) else f))
+        parts = [str(getattr(self, f[0]))
                  for f in _fields
-                 if getattr(self, f[0] if isinstance(f, tuple) else f) is not None]
+                 if getattr(self, f[0]) is not None]
         return "\n".join(parts)
 
     cls = create_dataclass(name, fields, frozen=frozen, namespace={"from_domain": from_domain, "__str__": __str__})
@@ -173,9 +173,14 @@ def annotate_handler[T, E](
     handler: OperationHandler[T, E],
     op_type: type,
 ) -> OperationHandler[T, E]:
-    """Wrap handler with proper __annotations__ for emergent.ops runner."""
+    """Wrap handler with proper __annotations__ for emergent.ops runner.
 
-    async def annotated(op: op_type) -> Result[T, E]:  # type: ignore[valid-type]
+    Creates a wrapper with a positional `op` parameter whose runtime type
+    annotation is set to `op_type` via __annotations__.  The inner function
+    takes a single positional arg to preserve dispatch semantics.
+    """
+
+    async def annotated(op: object) -> Result[T, E]:
         return await handler(op)
 
     annotated.__annotations__ = {'op': op_type}

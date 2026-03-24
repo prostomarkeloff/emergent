@@ -36,23 +36,26 @@ class ErrorTransform(ResponseTransform):
 
 @dataclass(frozen=True, slots=True)
 class ProblemResponse(ResponseTransform):
-    """Wraps ProblemDetail (status_code + dataclass fields) in JSONResponse."""
+    """Wraps ProblemDetail in JSONResponse per RFC 9457.
+
+    Uses ``to_dict()`` to serialize — omits None fields (e.g. ``instance``
+    when not set). This ensures the response body matches PROBLEM_SCHEMA.
+    """
 
     media_type: str = "application/problem+json"
 
     def apply_response(self, response: object) -> object:
+        to_dict = getattr(response, "to_dict", None)
         status_code = getattr(response, "status_code", None)
-        dc_fields: dict[str, type] | None = getattr(response, "__dataclass_fields__", None)
-        if status_code is not None and dc_fields is not None:
+        if callable(to_dict) and status_code is not None:
             try:
                 from starlette.responses import JSONResponse
             except ImportError:
                 return response
 
-            content = {name: getattr(response, name) for name in dc_fields}
             return JSONResponse(
                 status_code=status_code,
-                content=content,
+                content=to_dict(),
                 media_type=self.media_type,
             )
         return response

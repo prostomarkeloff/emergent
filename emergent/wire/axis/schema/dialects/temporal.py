@@ -247,7 +247,7 @@ class Timestamps(TemporalCapability):
             server_default=func.now(), onupdate=func.now(),
         ))
 
-    def compile_derive_modify(self, ctx: "DeriveCtx") -> "DeriveCtx":  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: "DeriveCtx[T]") -> "DeriveCtx[T]":
         """Replace Create/Update handlers with timestamp-aware versions."""
         from emergent.wire.derive._effects import Creates, Updates
         from emergent.wire.derive._handler import TimestampInsert, TimestampUpdate
@@ -288,14 +288,21 @@ class SoftDelete(TemporalCapability):
             self.field_name, DateTime,
         ))
 
-    def compile_derive_modify(self, ctx: "DeriveCtx") -> "DeriveCtx":  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: "DeriveCtx[T]") -> "DeriveCtx[T]":
         """Replace Delete handler with SoftDeleteMark, filter base_query."""
         from emergent.wire.derive._effects import Deletes
         from emergent.wire.derive._handler import SoftDeleteMark
+        from emergent.wire.axis.query._proxy import EntityProxy, FieldProxy
+        from emergent.wire.axis.query._expr import Expr
 
         field = self.field_name
         ctx = ctx.replace_handler(Deletes, SoftDeleteMark(field))
-        ctx = ctx.filter_query(lambda e, _f=field: getattr(e, _f).is_null())
+
+        def _soft_delete_filter(e: EntityProxy[T]) -> Expr:
+            proxy: FieldProxy = getattr(e, field)
+            return proxy.is_null()
+
+        ctx = ctx.filter_query(_soft_delete_filter)
         return ctx
 
 

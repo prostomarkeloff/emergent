@@ -25,10 +25,9 @@ from emergent.wire.derive._effects import Creates
 from emergent.wire.derive._handler import HandlerSpec, HasProvider
 from emergent.wire.derive._opspec import Op
 from emergent.wire.derive._project import CustomResponse, SelectFields
-from emergent.wire.derive._trigger import HTTPTriggers
+from emergent.wire.derive._trigger import HTTPTriggers, RouteSpec  # noqa: TC001
 
 if TYPE_CHECKING:
-    from emergent.wire.axis.query import RelationalQuerySet
     from emergent.wire.derive._ctx import DeriveCtx, OperationHandler
     from emergent.wire.derive._errors import DomainError
 
@@ -116,9 +115,7 @@ class IssueToken[V]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-from emergent.wire.axis.surface.triggers.http import Method
-
-LOGIN_ROUTES: dict[str, tuple[Method, bool]] = {"Login": ("POST", False)}
+LOGIN_ROUTES: dict[str, RouteSpec] = {"Login": ("POST", False)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,9 +133,9 @@ class LoginOp[V](SchemaCapability):
     token_fn: Callable[..., str] | None = None
     identity_fn: Callable[..., V] | None = None
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.axis.query import relational
-        from emergent.wire.derive._crud import _provider_fields
+        from emergent.wire.derive._crud import provider_fields
 
         login_op = Op(
             "Login",
@@ -161,7 +158,7 @@ class LoginOp[V](SchemaCapability):
 
         from emergent.wire.derive._query_strategy import ProviderInjection, RelationalStrategy
 
-        prov_op_field, prov_req_field = _provider_fields(self.provider_node)
+        prov_op_field, prov_req_field = provider_fields(self.provider_node)
         ctx = dc_replace(
             ctx,
             query_strategy=RelationalStrategy(

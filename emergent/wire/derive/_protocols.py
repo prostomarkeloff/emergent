@@ -27,7 +27,7 @@ class DeriveGeneratable(Protocol):
     fold_schema folds these via compile_derive_generate.
     """
 
-    def compile_derive_generate(self, ctx: "DeriveCtx") -> "DeriveCtx": ...
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]: ...
 
 
 @runtime_checkable
@@ -41,7 +41,7 @@ class DeriveModifiable(Protocol):
     fold_schema folds these via compile_derive_modify.
     """
 
-    def compile_derive_modify(self, ctx: "DeriveCtx") -> "DeriveCtx": ...
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]: ...
 
 
 @runtime_checkable
@@ -55,7 +55,7 @@ class DeriveAugmentable(Protocol):
     fold_schema folds these via compile_derive_augment.
     """
 
-    def compile_derive_augment(self, ctx: "DeriveCtx") -> "DeriveCtx": ...
+    def compile_derive_augment[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]: ...
 
 
 __all__ = (

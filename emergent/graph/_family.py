@@ -32,13 +32,6 @@ from types import MappingProxyType
 from nodnod import Scope
 
 
-_EMPTY_BINDINGS: MappingProxyType[type, object] = MappingProxyType({})
-
-
-def _empty_bindings[K]() -> Mapping[type, K]:
-    return _EMPTY_BINDINGS  # type: ignore[return-value]
-
-
 @dataclass(frozen=True, slots=True)
 class ScopeFamily[K]:
     """Free algebra: composable type→tier mapping.
@@ -50,7 +43,7 @@ class ScopeFamily[K]:
     Interpretation via .materialize() → dict[type, Scope].
     """
 
-    bindings: Mapping[type, K] = field(default_factory=_empty_bindings)
+    bindings: Mapping[type, K] = field(default_factory=lambda: MappingProxyType({}))
 
     def bind(self, key: K, *types: type) -> ScopeFamily[K]:
         """Bind types to a tier key.

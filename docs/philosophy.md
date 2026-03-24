@@ -1,236 +1,113 @@
 # Philosophy
 
-`emergent` is the top layer of a functional stack for Python backends.
+## One function
 
----
-
-## The Core Insight
-
-Traditional programs are **instructions**:
+emergent is one function:
 
 ```python
-profile = await get_profile(user_id)
-loyalty = await get_loyalty(user_id)  # Waits for profile to finish
-items = [await get_item(i) for i in cart.items]  # Sequential
+def fold(items, initial, protocol, method):
+    ctx = initial
+    for item in items:
+        if isinstance(item, protocol):
+            ctx = getattr(item, method)(ctx)
+    return ctx
 ```
 
-`emergent` programs are **topologies**:
+`items` are frozen dataclasses that carry `compile_*` methods. `initial` is an immutable accumulator. `protocol` is a `@runtime_checkable Protocol`. `method` is auto-derived from the protocol.
+
+Everything in emergent — compilation, verification, derivation, query execution, explanation — is this function applied to different data. There is no second mechanism.
+
+## The encoding
+
+A capability is a frozen dataclass that knows how to compile itself to multiple targets:
 
 ```python
-@G.node
-class ProfileNode:
-    @classmethod
-    async def __compose__(cls, cart: CartNode) -> ProfileNode: ...
+@dataclass(frozen=True, slots=True)
+class MaxLen(Capability):
+    value: int
 
-@G.node
-class LoyaltyNode:
-    @classmethod
-    async def __compose__(cls, cart: CartNode) -> LoyaltyNode: ...
+    def compile_pydantic(self, ctx):
+        return replace(ctx, max_length=self.value)
 
-@G.node
-class CheckoutNode:
-    @classmethod
-    async def __compose__(
-        cls,
-        profile: ProfileNode,   # ┐
-        loyalty: LoyaltyNode,   # ┘ Framework knows: no dependency → parallel
-    ) -> CheckoutNode: ...
+    def compile_openapi(self, ctx):
+        return replace(ctx, maxLength=self.value)
+
+    def compile_argparse(self, ctx):
+        return replace(ctx, validator=lambda s: len(s) <= self.value)
 ```
 
-You declare **what depends on what**. The framework figures out **how to execute**.
-
----
-
-## The Tower
-
-```
-Level 6: YOUR CODE      — business logic, domain invariants
-Level 5: emergent       — domain patterns (saga, cache, graph)
-Level 4: nodnod         — programs as dependency graphs
-Level 3: combinators.py — resilience (retry, timeout, fallback)
-Level 2: kungfu         — explicit errors (Result[T, E])
-Level 1: Python 3.13    — type foundations
-```
-
-Each layer builds on the previous. Each can be used independently.
-
-**Level 6 is YOUR code** — services, tasks, business rules. You compose nodes into workflows. You define invariants. You don't touch retry logic or compensators or parallelization. Those live below.
-
-**nodnod** is the key layer. It transforms:
-- Types → Graph nodes
-- Signatures → Graph edges
-- Resolution → Automatic parallelization
-
----
-
-## Three Principles
-
-### 1. Composition Over Configuration
+Capabilities attach to fields via `Annotated`:
 
 ```python
-# Configuration (hidden in decorators, middleware, config files)
-@retry(times=3)
-@cache(ttl=300)
-@trace("get_user")
-async def get_user(user_id): ...
-
-# Composition (explicit in node structure)
-@G.node
-class UserNode:
-    @classmethod
-    async def __compose__(cls, cart: CartNode, cache: UserCache) -> UserNode:
-        # Cache: explicit
-        result = await cache.get(cart.user_id)
-        return cls(result.unwrap().value)
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: Annotated[str, MinLen(1), MaxLen(100)]
+    email: Annotated[str, Unique, MaxLen(255)]
 ```
 
-Decorators are fixed. Nodes compose infinitely.
+`fold` reads the capabilities and produces correct output for each target. One declaration, N outputs.
 
-### 2. Locality
+## Four properties
 
-Every piece of logic should be understandable by reading that piece alone.
+This encoding has four properties that no surveyed system (12 systems, 1991–2025) achieves simultaneously:
 
-**No globals. No singletons. No implicit context.**
+**Self-compiling.** Each capability carries its own compilation methods. No external visitor traverses the data — the data compiles itself.
+
+**Multi-target.** The same `MaxLen(100)` produces Pydantic validation, OpenAPI schema, CLI argparse, and SQL column type. Not variants of one target — completely independent targets.
+
+**Inspectable data.** Capabilities are frozen dataclasses — immutable, hashable, serializable, printable. Not opaque closures. You can `explain_schema(User)` and see every capability on every field.
+
+**Open-world.** Add a new capability or a new target without modifying existing code. `isinstance(item, protocol)` dispatch means if your capability implements the protocol, fold picks it up. No registration.
+
+## Why this matters
+
+Traditional frameworks scatter meaning across files. A `User` lives in a model, a serializer, a view, a URL config, a migration. Each can be independently wrong. Each must be manually kept in sync.
+
+emergent inverts this. Everything about a field is on the field:
 
 ```python
-# Hidden dependencies (bad)
-async def checkout():
-    user = current_user.get()  # Where does this come from?
-    db = get_db()              # Magic singleton?
-
-# Explicit dependencies (good)
-@G.node
-class CheckoutNode:
-    @classmethod
-    async def __compose__(cls, user: UserNode, db: DatabaseNode) -> CheckoutNode:
-        # Everything is in the signature
-        ...
+email: Annotated[str,
+    Unique,              # database constraint
+    MaxLen(255),         # validation + schema + column type
+    Doc("User email"),   # documentation
+]
 ```
 
-If you see a function, you know exactly what it needs.
+One change propagates to all targets. Not by convention — by construction. `fold` over `Annotated` capabilities is a catamorphism. It's mathematically guaranteed to visit every capability exactly once and produce deterministic output.
 
-### 3. Explicit Boundaries
+## The algebra
 
-System boundaries are where clean code meets chaos: databases, APIs, queues.
-
-`emergent` patterns for boundaries:
-
-| Boundary | Pattern | Module |
-|----------|---------|--------|
-| Multi-service transactions | Saga with compensation | `saga` |
-| Latency vs freshness | Multi-tier caching | `cache` |
-| Complex dependencies | Computation graphs | `graph` |
-
----
-
-## The Graph Abstraction
-
-Everything is a graph:
-
-```
-nodnod:     DI Graph         (nodes = components, edges = deps)
-Flow:       Computation Graph (nodes = ops, edges = sequence)
-Saga:       Transaction Graph (nodes = steps, edges = compensate)
-Cache:      Tier Graph        (nodes = tiers, edges = fallback)
-```
-
-**Insight**: All complex systems are graphs. DSLs are ways to build and analyze graphs. Compilers execute graphs on specific runtimes.
-
----
-
-## LLMs and Constrained Grammars
-
-LLMs hallucinate when code hides failure modes. They guess—and guess wrong.
-
-This stack constrains the grammar:
+Compilers compose algebraically:
 
 ```python
-# LLM sees explicit types
-async def fetch_user(uid: int) -> Result[User, DBError | TimeoutError]: ...
+FASTAPI_SCHEMA = PYDANTIC_PHASE + OPENAPI_PHASE
+CLI_SCHEMA = ARGPARSE_PHASE
+FULL = FASTAPI_SCHEMA + CLI_SCHEMA + STORAGE_SCHEMA
 
-# LLM generates correct handling
-match await fetch_user(42):
-    case Ok(user): return user
-    case Error(DBError()): return fallback()
-    case Error(TimeoutError()): retry()
+# Algebraic laws hold:
+# A + A == A                (idempotent)
+# (A + B) + C == A + (B + C)  (associative)
+# A + empty == A              (identity)
+# A | B overrides A with B    (right-biased merge)
+# A - B removes B from A      (restriction)
+# A & B keeps only shared      (intersection)
 ```
 
-The type system becomes a **constraint solver**. Pyright becomes a **fitness function**:
+This isn't an analogy. `SchemaCompiler` and `TargetCompiler` are algebraic structures with proven laws. Tests verify these laws with hypothesis on random compiler combinations.
 
-```
-LLM generates → Pyright rejects → LLM fixes → Pyright accepts
-```
+## For humans and machines
 
-Each iteration improves correctness. Patterns breed across the codebase.
+emergent is designed for bounded observers — agents (human or AI) that can't hold the entire program in working memory.
 
----
+For humans: locality. All concerns for a field live on that field. You never need to find a second file to understand what `MaxLen(100)` does.
 
-## Juniors and LLMs
+For AI: determinism. The compilation is a pure function. Same input → same output. An LLM doesn't need to understand the whole codebase to make a correct change — it modifies one declaration and fold handles the rest. The entity declaration is ~50 tokens. The equivalent Django code is ~5,000 tokens.
 
-The paradox: declarative APIs look scary, then become liberating.
+For verification: `verify(User)` catches contradictions at import time. `Min(100), Max(50)` → error before your code runs. No runtime surprises.
 
-**Scary:**
-```python
-saga = S.step(reserve, release).then(lambda _: S.step(charge, refund))
-```
+## What emergent is not
 
-**Liberating:**
-```python
-@G.node
-class MyFeature:
-    @classmethod
-    async def __compose__(cls, user: UserNode, config: ConfigNode) -> MyFeature:
-        # I just declare what I need
-        return cls(...)
-```
+emergent is not a web framework. It doesn't serve HTTP requests — FastAPI does. emergent doesn't talk to databases — SQLAlchemy does. emergent doesn't parse CLI args — argparse does.
 
-Why it works for juniors:
-- **Locality**: read one function, understand it completely
-- **No hidden state**: dependencies are in the signature
-- **Type safety**: Pyright catches mistakes before runtime
-- **Patterns**: same structure everywhere
-
-Why it works for LLMs:
-- **Constrained grammar**: fewer ways to be wrong
-- **Type-driven**: signatures are specifications
-- **Compositional**: add a node = add a parameter
-
-**The stack separates concerns:**
-
-| Role | Level | Does |
-|------|-------|------|
-| Platform engineers | 1-4 | Build foundations |
-| Domain engineers | 5 | Build patterns (saga, cache) |
-| App developers | 6 | Compose business logic |
-| Juniors | 6 | Write nodes, compose services |
-| LLMs | 5-6 | Generate patterns + logic |
-
-Everyone works at their level. Nobody touches below.
-
----
-
-## Why This Works
-
-1. **Types as contracts**: Virtual nodes define WHAT, not HOW. Type system enforces correctness.
-
-2. **Graphs as structure**: Dependencies = edges. Parallelism = topological analysis. Scheduling = graph traversal.
-
-3. **Composition as mechanism**: Small graphs → big graphs. Same primitives at all scales.
-
-4. **Deferred binding**: Virtual → Concrete at composition time. Same graph, different implementations.
-
----
-
-## Summary
-
-| Traditional | emergent |
-|-------------|----------|
-| Decorators, middleware | Nodes with `__compose__` |
-| Globals, singletons | Explicit parameters |
-| try/except, hope | saga, cache, graph |
-| Hidden failures | Constrained grammar |
-| Instructions | Topologies |
-
----
-
-> "Constrain the grammar. Let correctness emerge."
+emergent is a **compiler**. It takes your type declarations and compiles them to whatever target you need. The targets do the actual work. emergent makes them agree on what work to do.

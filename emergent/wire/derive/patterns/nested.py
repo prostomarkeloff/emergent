@@ -38,7 +38,7 @@ from emergent.wire.derive._handler import (
     InsertNew,
     UpdateExisting,
 )
-from emergent.wire.derive._opspec import Op, OpLike, generate_specs
+from emergent.wire.derive._opspec import Op, generate_specs
 from emergent.wire.derive._project import (
     all_fields,
     entity_response,
@@ -122,7 +122,7 @@ class NestedCRUD(SchemaCapability):
     child_segment: str | None = None
     capabilities: tuple[SurfaceCapability, ...] = ERROR_CAPS
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         if not ctx.identity_fields:
             raise ValueError(
                 f"{ctx.entity.__name__} needs Annotated[T, Identity] for NestedCRUD"
@@ -135,9 +135,9 @@ class NestedCRUD(SchemaCapability):
         child_seg = self.child_segment or ctx.entity.__name__.lower() + "s"
         triggers = NestedHTTPTriggers(self.parent_path, scope, child_seg)
 
-        from emergent.wire.derive._crud import _provider_fields
+        from emergent.wire.derive._crud import provider_fields
 
-        prov_op_field, prov_req_field = _provider_fields(self.provider_node)
+        prov_op_field, prov_req_field = provider_fields(self.provider_node)
 
         ctx = replace(
             ctx,

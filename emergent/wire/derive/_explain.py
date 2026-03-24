@@ -94,7 +94,7 @@ def spec_dict(spec: OpSpec) -> ExplainDict:
     }
 
 
-def derive_dict(ctx: DeriveCtx) -> ExplainDict:
+def derive_dict[T](ctx: DeriveCtx[T]) -> ExplainDict:
     """DeriveCtx -> full explain dict."""
     return {
         "entity": ctx.entity.__name__,
@@ -138,7 +138,7 @@ def explain_spec(spec: OpSpec) -> str:
     return f"  {spec.name}: {trigger}{effects} ({fields_str})"
 
 
-def explain_derive(ctx: DeriveCtx) -> str:
+def explain_derive[T](ctx: DeriveCtx[T]) -> str:
     """DeriveCtx -> human-readable multi-line summary."""
     lines: list[str] = []
     lines.append(f"Entity: {ctx.entity.__name__}")
@@ -168,7 +168,7 @@ def explain_derive(ctx: DeriveCtx) -> str:
     return "\n".join(lines)
 
 
-def explain_entity(entity: type) -> str:
+def explain_entity[T](entity: type[T]) -> str:
     """Compile and explain an entity."""
     from emergent.wire.derive._compile import compile_derive
 

@@ -101,9 +101,12 @@ class FastAPIJsonExtractor:
             body: dict[str, object] = dict(await request.form())
         else:
             try:
-                body = await request.json()
+                raw_json: object = await request.json()
             except ValueError:
-                body = {}
+                raw_json = {}
+            from typing import cast as _cast
+            # request.json() returns Any; isinstance narrows to dict[Unknown, Unknown]
+            body: dict[str, object] = _cast(dict[str, object], raw_json) if isinstance(raw_json, dict) else {}
         if self.include_path_params:
             return {**body, **dict(request.path_params)}
         return body
@@ -1037,6 +1040,50 @@ def wrap_delegate_fastapi(
 
 # Old context name alias
 FastAPIPipelineContext = FastAPIWrapContext
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RFC 7807 validation error handler — opt-in helper
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def install_rfc7807_validation_handler(app: fastapi.FastAPI) -> None:
+    """Register exception handler that converts FastAPI's 422 to RFC 7807 format.
+
+    By default FastAPI returns ``{"detail": [...]}``. This replaces it with
+    RFC 7807 Problem Detail (``{"type", "title", "status", "detail"}``),
+    matching the OpenAPI schema declared by ``ProblemResponse``.
+
+    Call AFTER ``fastapi_compile``::
+
+        fapi = fastapi_compile(wire_app, axes)
+        install_rfc7807_validation_handler(fapi)
+    """
+    from fastapi.exceptions import RequestValidationError
+    from starlette.responses import JSONResponse
+
+    async def _handler(
+        request: fastapi.Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        errors = exc.errors()
+        fields = [
+            f"{'.'.join(str(loc) for loc in e.get('loc', ()))}: {e.get('msg', '')}"
+            for e in errors
+        ]
+        return JSONResponse(
+            status_code=422,
+            content={
+                "type": "urn:emergent:error:validation",
+                "title": "Validation Error",
+                "status": 422,
+                "detail": "; ".join(fields),
+                "instance": str(request.url.path),
+            },
+            media_type="application/problem+json",
+        )
+
+    app.add_exception_handler(RequestValidationError, _handler)  # type: ignore[arg-type]
 
 
 # Alias for cleaner API

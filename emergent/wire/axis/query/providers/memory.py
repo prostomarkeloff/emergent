@@ -180,9 +180,7 @@ class MemoryRelationalProvider(Generic[T]):
 
     async def exists(self, query: RelationalQuerySet[T]) -> bool:
         """Check existence (short-circuits after first match)."""
-        from emergent.wire.axis.query._relational import Limit
-
-        limited = query._append(Limit(1))
+        limited = query.limit(1)
         results = self.execute(limited)
         return len(results) > 0
 

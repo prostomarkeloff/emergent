@@ -13,9 +13,8 @@ All derivelib transforms expressed as capabilities using DeriveCtx methods.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 from emergent.wire.axis.schema._universal import SchemaCapability
 from emergent.wire.derive._effects import (
@@ -34,7 +33,103 @@ from emergent.wire.derive._effects import (
 )
 
 if TYPE_CHECKING:
-    from emergent.wire.derive._ctx import DeriveCtx
+    from kungfu import Result
+
+    from nodnod import Scope
+
+    from emergent.wire.axis.query._expr import Expr
+    from emergent.wire.axis.query._proxy import EntityProxy
+    from emergent.wire.derive._ctx import DeriveCtx, OperationHandler
+    from emergent.wire.derive._errors import DomainError
+    from emergent.wire.derive._handler import HandlerSpec
+    from emergent.wire.derive._opspec import OpSpec
+
+
+def _is_list_of_objects(val: object) -> TypeGuard[list[object]]:
+    """TypeGuard that narrows object to list[object] instead of list[Unknown].
+
+    isinstance(x, list) narrows to list[Unknown] in pyright strict mode,
+    making all element access produce Unknown-typed values. This TypeGuard
+    avoids that by narrowing directly to list[object].
+    """
+    return isinstance(val, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Wrapper helpers — proper WrapperFn-satisfying classes for in-memory transforms
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class _FilterWrapperFn:
+    """WrapperFn for in-memory field filtering."""
+
+    fields: tuple[str, ...]
+
+    def __call__[EntityT](
+        self,
+        inner: OperationHandler[object, DomainError],
+        spec: HandlerSpec[EntityT],
+    ) -> OperationHandler[object, DomainError]:
+        ff = self.fields
+
+        async def handler(**kwargs: object) -> Result[object, DomainError]:
+            from kungfu import Ok
+
+            result: Result[object, DomainError] = await inner(**kwargs)
+            if not isinstance(result, Ok):
+                return result
+            val = result.value
+            if not _is_list_of_objects(val):
+                return result
+            op = kwargs.get("op")
+            filtered: list[object] = val
+            for fname in ff:
+                fval = getattr(op, f"filter_{fname}", None)
+                if fval is not None:
+                    filtered = [
+                        item for item in filtered
+                        if str(getattr(item, fname, "")) == str(fval)
+                    ]
+            return Ok(filtered)
+
+        return handler
+
+
+@dataclass(frozen=True, slots=True)
+class _SearchWrapperFn:
+    """WrapperFn for in-memory full-text search."""
+
+    fields: tuple[str, ...]
+
+    def __call__[EntityT](
+        self,
+        inner: OperationHandler[object, DomainError],
+        spec: HandlerSpec[EntityT],
+    ) -> OperationHandler[object, DomainError]:
+        sf = self.fields
+
+        async def handler(**kwargs: object) -> Result[object, DomainError]:
+            from kungfu import Ok
+
+            result: Result[object, DomainError] = await inner(**kwargs)
+            if not isinstance(result, Ok):
+                return result
+            op = kwargs.get("op")
+            q_val: str | None = getattr(op, "q", None) if op is not None else None
+            if q_val is None:
+                return result
+            val = result.value
+            if not _is_list_of_objects(val):
+                return result
+            q_lower = str(q_val).lower()
+            matched: list[object] = [
+                item for item in val
+                if any(q_lower in str(getattr(item, f, "")).lower() for f in sf)
+            ]
+            return Ok(matched)
+
+        return handler
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -51,11 +146,11 @@ class Paginated(SchemaCapability):
 
     page_size: int = 20
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._handler import PaginatedFetchMany
         from emergent.wire.derive._project import PaginatedResponse
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if has_effect(s.effects, Pageable):
                 eff = get_effect(s.effects, Pageable)
@@ -87,10 +182,10 @@ class Sorted(SchemaCapability):
     default_sort: str | None = None
     default_order: str = "asc"
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._handler import SortedFetchMany
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if has_effect(s.effects, Sortable):
                 eff = get_effect(s.effects, Sortable)
@@ -127,7 +222,7 @@ class Readonly(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), Readonly())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         return ctx.reject_by_effect(Mutation)
 
 
@@ -138,7 +233,7 @@ class MutationsOnly(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), MutationsOnly())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         return ctx.select_by_effect(Mutation)
 
 
@@ -149,7 +244,7 @@ class WithoutDelete(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), WithoutDelete())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         return ctx.reject_by_effect(Deletes)
 
 
@@ -168,21 +263,19 @@ class ProjectResponse(SchemaCapability):
     exclude: tuple[str, ...]
     effect: type[DerivationEffect] = Read
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._project import EntityResponse, ListResponse
 
         exclude = self.exclude
 
-        def _project(s: object) -> object:
-            from emergent.wire.derive._opspec import OpSpec
-            assert isinstance(s, OpSpec)
+        def _project(s: OpSpec) -> OpSpec:
             if isinstance(s.response_spec, ListResponse):
                 return replace(s, response_spec=ListResponse(exclude=exclude))
             if isinstance(s.response_spec, EntityResponse):
                 return replace(s, response_spec=EntityResponse(exclude=exclude))
             return s
 
-        return ctx.map_specs_by_effect(self.effect, _project)  # type: ignore[arg-type]
+        return ctx.map_specs_by_effect(self.effect, _project)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -203,12 +296,10 @@ class Filtered(SchemaCapability):
 
     fields: tuple[str, ...] = ()
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
-        from kungfu import Ok
-
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._handler import WrappedTemplate
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if not has_effect(s.effects, Read):
                 new_specs.append(s)
@@ -230,36 +321,13 @@ class Filtered(SchemaCapability):
                 (f"filter_{name}", str | None, None) for name in ffields
             )
 
-            captured_fields = ffields
-
-            def _make_wrapper(ff: tuple[str, ...]) -> Callable[..., object]:
-                def wrapper(inner: object, spec: object) -> object:
-                    async def handler(op: object) -> object:
-                        result = await inner(op=op)  # type: ignore[misc]
-                        if not isinstance(result, Ok):
-                            return result
-                        val = result.value
-                        if not isinstance(val, list):
-                            return result
-                        filtered = list(val)
-                        for fname in ff:
-                            fval = getattr(op, f"filter_{fname}", None)
-                            if fval is not None:
-                                filtered = [
-                                    e for e in filtered
-                                    if str(getattr(e, fname, "")) == str(fval)
-                                ]
-                        return Ok(filtered)
-                    return handler
-                return wrapper
-
             s = replace(
                 s,
                 extra_op_fields=(*s.extra_op_fields, *filter_params),
                 extra_request_fields=(*s.extra_request_fields, *filter_params),
                 handler_template=WrappedTemplate(
                     inner=s.handler_template,
-                    wrapper=_make_wrapper(captured_fields),
+                    wrapper=_FilterWrapperFn(fields=ffields),
                 ),
             )
             new_specs.append(s)
@@ -279,12 +347,10 @@ class Searchable(SchemaCapability):
 
     fields: tuple[str, ...] = ()
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
-        from kungfu import Ok
-
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._handler import WrappedTemplate
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             if not has_effect(s.effects, Read):
                 new_specs.append(s)
@@ -302,35 +368,13 @@ class Searchable(SchemaCapability):
                 new_specs.append(s)
                 continue
 
-            captured_fields = sfields
-
-            def _make_wrapper(sf: tuple[str, ...]) -> Callable[..., object]:
-                def wrapper(inner: object, spec: object) -> object:
-                    async def handler(op: object) -> object:
-                        result = await inner(op=op)  # type: ignore[misc]
-                        if not isinstance(result, Ok):
-                            return result
-                        q = getattr(op, "q", None)
-                        if q is None:
-                            return result
-                        val = result.value
-                        if not isinstance(val, list):
-                            return result
-                        q_lower = str(q).lower()
-                        return Ok([
-                            e for e in val
-                            if any(q_lower in str(getattr(e, f, "")).lower() for f in sf)
-                        ])
-                    return handler
-                return wrapper
-
             s = replace(
                 s,
                 extra_op_fields=(*s.extra_op_fields, ("q", str | None, None)),
                 extra_request_fields=(*s.extra_request_fields, ("q", str | None, None)),
                 handler_template=WrappedTemplate(
                     inner=s.handler_template,
-                    wrapper=_make_wrapper(captured_fields),
+                    wrapper=_SearchWrapperFn(fields=sfields),
                 ),
             )
             new_specs.append(s)
@@ -351,7 +395,7 @@ class WithTimeout(SchemaCapability):
 
     seconds: float
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.axis.surface.enrichers import Timeout
 
         return ctx.add_spec_capability(Timeout(seconds=self.seconds))
@@ -366,7 +410,7 @@ class WithRetry(SchemaCapability):
 
     max_retries: int = 3
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from combinators.control import RetryPolicy
         from emergent.wire.axis.surface.enrichers import Retry
 
@@ -385,7 +429,7 @@ class WithRateLimit(SchemaCapability):
 
     rpm: int
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from combinators.concurrency import RateLimitPolicy
         from emergent.wire.axis.surface.enrichers import RateLimit
 
@@ -405,11 +449,11 @@ class EffectRateLimited(SchemaCapability):
 
     rpm: int | None = None
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from combinators.concurrency import RateLimitPolicy
         from emergent.wire.axis.surface.enrichers import RateLimit
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             eff = get_effect(s.effects, RateLimitedEffect)
             rate = self.rpm if self.rpm is not None else (eff.rpm if eff else None)
@@ -427,7 +471,7 @@ class EffectDeprecated(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), EffectDeprecated())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.axis.surface.capabilities import ScopeEnricher, EnricherNext
 
         @dataclass(frozen=True, slots=True)
@@ -440,11 +484,11 @@ class EffectDeprecated(SchemaCapability):
             since: str = ""
             message: str = ""
 
-            async def enrich[R](self, call: EnricherNext[R], scope: object) -> R:
-                scope.inject(DeprecationInfo, DeprecationInfo(since=self.since, message=self.message))  # type: ignore[union-attr]
+            async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+                scope.inject(DeprecationInfo, DeprecationInfo(since=self.since, message=self.message))
                 return await call(scope)
 
-        new_specs = []
+        new_specs: list[OpSpec] = []
         for s in ctx.specs:
             eff = get_effect(s.effects, DeprecatedEffect)
             if eff is not None:
@@ -468,13 +512,20 @@ class SoftDelete(SchemaCapability):
 
     deleted_field: str = "deleted_at"
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Creates
         from emergent.wire.derive._handler import SoftDeleteMark
 
         field = self.deleted_field
         ctx = ctx.replace_handler(Deletes, SoftDeleteMark(field))
-        ctx = ctx.filter_query(lambda e, _f=field: getattr(e, _f) is None)
+
+        def _soft_delete_filter(e: EntityProxy[T]) -> Expr:
+            from emergent.wire.axis.query._proxy import FieldProxy
+
+            proxy: FieldProxy = getattr(e, field)
+            return proxy.is_null()
+
+        ctx = ctx.filter_query(_soft_delete_filter)
         return ctx.exclude_fields(Creates, frozenset({field}))
 
 
@@ -488,7 +539,7 @@ class Timestamped(SchemaCapability):
     created_field: str = "created_at"
     updated_field: str = "updated_at"
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Creates, Updates
         from emergent.wire.derive._handler import TimestampInsert, TimestampUpdate
 
@@ -510,7 +561,7 @@ class WithoutCreate(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), WithoutCreate())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Creates
 
         return ctx.reject_by_effect(Creates)
@@ -523,7 +574,7 @@ class CreateOnly(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), CreateOnly())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Creates
 
         return ctx.select_by_effect(Creates)
@@ -536,7 +587,7 @@ class UpdateOnly(SchemaCapability):
         @schema_meta(http_crud("/api/users", P), UpdateOnly())
     """
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.derive._effects import Updates
 
         return ctx.select_by_effect(Updates)
@@ -551,7 +602,7 @@ class OnlyOps(SchemaCapability):
 
     ops: tuple[str, ...]
 
-    def compile_derive_modify(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         allowed = frozenset(self.ops)
         return replace(ctx, specs=tuple(s for s in ctx.specs if s.name in allowed))
 

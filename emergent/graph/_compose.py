@@ -9,12 +9,26 @@ Wraps scope + agent_cls and provides compose/retrieve operations.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from collections.abc import Mapping
+from typing import Any, cast
 
-from kungfu import Some, Nothing
+from kungfu import Some
 from nodnod import Scope, EventLoopAgent
 from nodnod.agent.base import Agent
+from nodnod.node import Node
+
+
+def _as_node_set(typ: type[object]) -> set[type[Node]]:
+    """Widen an arbitrary type to set[type[Node]] for Agent.build().
+
+    At runtime, callers always pass Node subclasses. This helper
+    bridges the static type gap: compose[T]() accepts unconstrained T
+    (so callers don't need `T: Node` bounds), but Agent.build() requires
+    set[type[Node]]. No static way to express this without cast —
+    the bound lives in the runtime contract, not the type signature.
+    """
+    return {cast(type[Node], typ)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +45,7 @@ class Composer:
 
     scope: Scope
     agent_cls: type[Agent]
-    mapped_scopes: Mapping[type, Scope] = field(default_factory=dict)
+    mapped_scopes: Mapping[type, Scope] = field(default_factory=lambda: dict[type, Scope]())
 
     @classmethod
     def create(
@@ -88,7 +102,9 @@ class Composer:
         Returns (success, value_or_error).
         """
         try:
-            agent = self.agent_cls.build({node_type})
+            # node_type is always a Node subclass at runtime; build a typed set
+            # via _as_node_set to satisfy Agent.build's signature.
+            agent = self.agent_cls.build(_as_node_set(node_type))
             await agent.run(
                 local_scope=self.scope,
                 mapped_scopes=dict(self.mapped_scopes),
@@ -113,7 +129,7 @@ class Composer:
 
     async def resolve_params(
         self,
-        handler: object,
+        handler: Callable[..., Any],
     ) -> dict[str, object]:
         """Resolve handler params using compose dialect.
 

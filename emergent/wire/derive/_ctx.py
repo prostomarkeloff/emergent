@@ -14,11 +14,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Never
 
 from emergent.wire.axis._capability import Capability
 from emergent.wire.axis.query import RelationalQuerySet
-from emergent.wire.axis.schema import FieldInfo, inspect_type, fields_with_capability
+from emergent.wire.axis.query._expr import Expr  # noqa: TC001
+from emergent.wire.axis.query._proxy import EntityProxy  # noqa: TC001
+from emergent.wire.axis.schema import FieldInfo, fields_with_capability, inspect_type
 from emergent.wire.axis.surface import Exposure
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.derive._query_strategy import (
@@ -47,6 +49,7 @@ if TYPE_CHECKING:
     from kungfu import Result
 
     from emergent.wire.derive._errors import DomainError
+    from emergent.wire.derive._handler import WrapperFn
     from emergent.wire.derive._opspec import OpSpec
 
 
@@ -73,12 +76,15 @@ class DeriveCtx[EntityT]:
         default_factory=lambda: dict[str, FieldInfo]()
     )
     # Query axis
+    # NoQueryStrategy is a phantom-typed empty frozen dataclass — covariant.
+    # Never is the bottom type, so NoQueryStrategy[Never] is a subtype of
+    # QueryStrategy[EntityT] for any EntityT.
     query_strategy: QueryStrategy[EntityT] = dataclass_field(
-        default_factory=NoQueryStrategy
+        default_factory=lambda: NoQueryStrategy[Never]()
     )
     # Surface axis
     specs: tuple[OpSpec, ...] = ()
-    operations: tuple[Operation[EntityT, DomainError], ...] = ()
+    operations: tuple[Operation[object, DomainError], ...] = ()
     capabilities: tuple[SurfaceCapability, ...] = ()
 
     # ─── Backward-compat properties (query axis) ─────────────────
@@ -160,11 +166,11 @@ class DeriveCtx[EntityT]:
 
     # ─── Surface helpers (from SurfaceCtx) ───────────────────────────
 
-    def add_spec(self, spec: "OpSpec") -> DeriveCtx[EntityT]:
+    def add_spec(self, spec: OpSpec) -> DeriveCtx[EntityT]:
         """Return new ctx with OpSpec appended."""
         return replace(self, specs=(*self.specs, spec))
 
-    def add_operation(self, op: "Operation[EntityT, DomainError]") -> DeriveCtx[EntityT]:
+    def add_operation(self, op: Operation[object, DomainError]) -> DeriveCtx[EntityT]:
         """Return new ctx with direct operation appended."""
         return replace(self, operations=(*self.operations, op))
 
@@ -214,7 +220,7 @@ class DeriveCtx[EntityT]:
 
     def filter_query(
         self,
-        fn: Callable[..., object],
+        fn: Callable[[EntityProxy[EntityT]], Expr],
     ) -> DeriveCtx[EntityT]:
         """Apply filter function to base_query. No-op if not relational.
 
@@ -276,7 +282,7 @@ class DeriveCtx[EntityT]:
     def wrap_handler(
         self,
         effect: type,
-        wrapper: object,
+        wrapper: WrapperFn,
     ) -> DeriveCtx[EntityT]:
         """Wrap handler on specs matching effect with WrappedTemplate.
 
@@ -294,7 +300,7 @@ class DeriveCtx[EntityT]:
     def map_specs_by_effect(
         self,
         effect: type,
-        fn: "Callable[[OpSpec], OpSpec]",
+        fn: Callable[[OpSpec], OpSpec],
     ) -> DeriveCtx[EntityT]:
         """Transform specs matching effect with a function.
 

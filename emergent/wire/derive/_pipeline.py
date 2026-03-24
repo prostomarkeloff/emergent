@@ -33,7 +33,7 @@ from emergent.wire.derive._query_helpers import (
 )
 
 if TYPE_CHECKING:
-    from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet
+    from emergent.wire.axis.query import RelationalQuerySet
     from emergent.wire.derive._ctx import OperationHandler
     from emergent.wire.derive._handler import HandlerSpec, HasProvider
 
@@ -63,7 +63,7 @@ class PipelineContext[EntityT]:
     entity_data: dict[str, object] | None = None
     items: list[EntityT] | None = None
     result: object = None
-    extras: dict[str, object] = dataclass_field(default_factory=dict)
+    extras: dict[str, object] = dataclass_field(default_factory=lambda: dict[str, object]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

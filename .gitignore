@@ -1,36 +1,41 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
 *.egg-info
-.env
-REAL_LIFE
-# Virtual environments
+build/
+wheels/
+
+# Environments
 .venv
-.data/*
-# deployme generated Dockerfile (transient, written by ComposeTarget)
-.deployme.Dockerfile
-deployme.py
-algosik
-botbot
-teleflow
-_telegrinder_clone
+.env
+
+# Tools
+.hypothesis
 .ruff_cache
 .pytest_cache
-.emergent
-.data
+.coverage
+*.db
+*.db-shm
+*.db-wal
+
+# Archive — old experiments, kept locally, not shipped
+archive/
+
+# Build artifacts
+dist/
+
+# IDE / OS
+.DS_Store
 .claude
-emergent_research
-llmify
-mmkr
-py2rust
-deployme.py
-theworld
+.data
+.emergent
+research
+
+# Project-specific transient
+.deployme.Dockerfile
 _sematest
-emergent_meta
 _semman_test
 examples/tictactoe/data/
-emergent_tmp
-openemergent
+
+# mmkr is a separate project, not part of emergent
+mmkr

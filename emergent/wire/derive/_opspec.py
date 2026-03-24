@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard  # noqa: TC003
 
 from emergent.wire.axis.surface import Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
@@ -32,7 +32,7 @@ from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
 from emergent.wire.derive._effects import DerivationEffect
 from emergent.wire.derive._errors import DomainError
 from emergent.wire.derive._handler import DescriptiveTemplate, HandlerSpec, HandlerTemplate
-from emergent.wire.derive._project import ResponseSpec, response_converter, response_fields
+from emergent.wire.derive._project import FieldProjection, ResponseSpec, response_converter, response_fields  # noqa: TC001
 
 if TYPE_CHECKING:
     from emergent.wire.derive._trigger import TriggerGen
@@ -55,7 +55,7 @@ class Op:
     """
 
     name: str
-    input_proj: "FieldProjection"  # noqa: F821
+    input_proj: FieldProjection
     output: ResponseSpec
     handler_template: HandlerTemplate
     capabilities: tuple[SurfaceCapability, ...] = ()
@@ -100,10 +100,12 @@ class OpSpec:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[EntityT, DomainError]:
+def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[object, DomainError]:
     """Build Op type, handler, and Exposure from an OpSpec.
 
     Takes DeriveCtx directly — no SurfaceCtx bridging needed.
+    Returns Operation[object, DomainError] because handler templates produce
+    OperationHandler[object, DomainError] (handlers return varying result types).
     """
     # Op fields = projected input + extra (plain types for handler dispatch)
     op_field_list: list[FieldSpec] = [*spec.input_fields.items(), *spec.extra_op_fields]
@@ -145,7 +147,7 @@ def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation
 
     # Build handler from template, annotate with op_type for runner dispatch
     handler = spec.handler_template.build(handler_spec)
-    annotated_handler: OperationHandler[EntityT, DomainError] = annotate_handler(handler, op_type)
+    annotated_handler: OperationHandler[object, DomainError] = annotate_handler(handler, op_type)
 
     # Build exposure
     codec_fn = spec.codec_factory if spec.codec_factory is not None else rrc
@@ -178,6 +180,20 @@ def normalize_op(item: OpLike) -> Op:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Trigger helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _is_trigger_tuple(result: Trigger | tuple[Trigger, ...]) -> TypeGuard[tuple[Trigger, ...]]:
+    """TypeGuard: check if trigger result is a tuple (from MultiTriggerGen).
+
+    Trigger is aliased to ``object``, so isinstance(x, tuple) narrows to
+    tuple[Unknown, ...] in strict mode. This TypeGuard provides clean narrowing.
+    """
+    return isinstance(result, tuple)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # generate_specs — common OpSpec materialization loop
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -185,7 +201,7 @@ def normalize_op(item: OpLike) -> Op:
 def generate_specs[EntityT](
     ctx: DeriveCtx[EntityT],
     ops: tuple[OpLike, ...],
-    triggers: "TriggerGen",
+    triggers: TriggerGen,
     capabilities: tuple[SurfaceCapability, ...] = (),
     source: str = "",
     extra_op_fields: tuple[FieldSpec, ...] = (),
@@ -202,7 +218,9 @@ def generate_specs[EntityT](
         trigger_result = triggers(ctx.entity, op)
         if trigger_result is None:
             continue
-        trigger_list = trigger_result if isinstance(trigger_result, tuple) else (trigger_result,)
+        trigger_list: tuple[Trigger, ...] = (
+            trigger_result if _is_trigger_tuple(trigger_result) else (trigger_result,)
+        )
         in_fields = op.input_proj.project(ctx)
         annotated_fields = ctx.annotated_field_types(only=set(in_fields.keys()))
         for trigger in trigger_list:

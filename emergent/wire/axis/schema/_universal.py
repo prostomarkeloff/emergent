@@ -475,6 +475,11 @@ class OneOf(UniversalCapability):
     def __init__(self, *values: EnumValue) -> None:
         object.__setattr__(self, "values", values)
 
+    def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
+        from typing import Literal
+        literal_type = Literal[self.values]  # type: ignore[valid-type]
+        return replace(ctx, field_type=literal_type)
+
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, enum=list(self.values))
 

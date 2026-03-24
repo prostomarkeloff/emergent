@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import os
-import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -34,10 +33,47 @@ from nodnod.value import Value
 
 from emergent.graph.runtime._helpers import GraphInfo as _GraphInfo
 from emergent.graph.runtime._helpers import build_graph_info as _build_graph_info
-from emergent.graph.runtime._spawnable import Spawnable
 
 if TYPE_CHECKING:
     from emergent.graph.runtime._policy import WorkStealingContext
+
+
+def _is_result_node(node: type[Node]) -> bool:
+    """Check if node is a ResultNode without narrowing the type."""
+    from nodnod.interface.result_node import ResultNode
+
+    return issubclass(node, ResultNode)
+
+
+def _is_sequential_either(node: type[Node]) -> bool:
+    """Check if node is a sequential Either without narrowing the type."""
+    from nodnod.interface.either import Either
+
+    return issubclass(node, Either) and not node.is_concurrent
+
+
+def _get_either_members(node: type[Node]) -> tuple[type[Node], ...]:
+    """Get __either__ members from an Either node.
+
+    Assumes caller has verified node is an Either via _is_sequential_either.
+    """
+    from nodnod.interface.either import Either
+
+    if not issubclass(node, Either):
+        return ()
+    return node.__either__
+
+
+def _get_from_node(node: type[Node]) -> type[Node]:
+    """Get __from_node__ from a ResultNode.
+
+    Assumes caller has verified node is a ResultNode via _is_result_node.
+    """
+    from nodnod.interface.result_node import ResultNode
+
+    if not issubclass(node, ResultNode):
+        raise TypeError(f"{node} is not a ResultNode")
+    return node.__from_node__
 
 
 @dataclass(slots=True)
@@ -143,8 +179,6 @@ def _on_node_complete(
     graph_info: _GraphInfo,
 ) -> None:
     """Called when a node completes. Decrements dependent counters and submits ready tasks."""
-    from nodnod.interface.result_node import ResultNode
-
     _signal_node_completed(run_state, node)
 
     deps = graph_info.dependents.get(node, frozenset())
@@ -174,8 +208,6 @@ def _on_node_failed(
     graph_info: _GraphInfo,
 ) -> None:
     """Called when a node fails. Decrements all dependents; queues ResultNode dependents, propagates error for others."""
-    from nodnod.interface.result_node import ResultNode
-
     _signal_node_completed(run_state, node)
 
     deps = graph_info.dependents.get(node, frozenset())
@@ -186,7 +218,7 @@ def _on_node_failed(
             run_state.pending[dependent] -= 1
             ready = run_state.pending[dependent] == 0
 
-        if issubclass(dependent, ResultNode):
+        if _is_result_node(dependent):
             if ready:
                 node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
                 _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
@@ -234,13 +266,13 @@ async def _execute_sequential_either(
     graph_info: _GraphInfo,
 ) -> None:
     """Execute sequential either: try members one by one until one succeeds."""
-    from nodnod.interface.either import Either
-
     node = task.node
-    either_members = node.__either__
+    either_members = _get_either_members(node)
+    if not either_members:
+        return
     errors: list[NodeError] = []
 
-    first = either_members[0]
+    first: type[Node] = either_members[0]
     first_result = task.node_scope.retrieve(first)
 
     if kungfu.is_some(first_result):
@@ -315,10 +347,8 @@ async def _execute_result_node_task(
     graph_info: _GraphInfo,
 ) -> None:
     """Execute a ResultNode — wraps parent node's success/failure into Result."""
-    from nodnod.interface.result_node import ResultNode
-
     node = task.node
-    from_node = node.__from_node__
+    from_node = _get_from_node(node)
     parent_value = task.local_scope.retrieve(from_node)
 
     if kungfu.is_some(parent_value):
@@ -341,20 +371,17 @@ async def _execute_task(
     graph_info: _GraphInfo,
 ) -> None:
     """Dispatch task execution based on node type."""
-    from nodnod.interface.either import Either
-    from nodnod.interface.result_node import ResultNode
-
     if run_state.done_event.is_set() and run_state.error is not None:
         return
 
     node = task.node
 
     try:
-        if issubclass(node, Either) and not node.is_concurrent:
+        if _is_sequential_either(node):
             await _execute_sequential_either(task, run_state, pool, graph_info)
             return
 
-        if issubclass(node, ResultNode):
+        if _is_result_node(node):
             await _execute_result_node_task(task, run_state, pool, graph_info)
             return
 
@@ -606,4 +633,32 @@ class _WorkStealingAgent(Agent):
         return frozenset(self._living)
 
 
-__all__ = ("_WorkStealingAgent",)
+def resolve_worker_count(n_nodes: int, workers: int | None) -> int:
+    """Compute effective worker count: min(cpu_count, node_count), at least 1.
+
+    Public module-level function for use by _policy.py.
+    """
+    if workers is None:
+        cpu_count = os.cpu_count()
+        n_workers = min(
+            cpu_count if cpu_count is not None else 4,
+            n_nodes,
+        )
+    else:
+        n_workers = workers
+    return max(n_workers, 1)
+
+
+def build_work_stealing_agent(
+    graph_info: _GraphInfo,
+    n_workers: int,
+    traits: Mapping[type[Node], WorkStealingContext] | None = None,
+) -> _WorkStealingAgent:
+    """Public factory for _WorkStealingAgent.
+
+    Used by _policy.py to construct the agent without accessing the private class directly.
+    """
+    return _WorkStealingAgent(graph_info=graph_info, n_workers=n_workers, traits=traits)
+
+
+__all__ = ("_WorkStealingAgent", "resolve_worker_count", "build_work_stealing_agent")

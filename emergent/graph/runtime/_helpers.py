@@ -27,6 +27,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 import kungfu
 from nodnod.agent.base import Agent
@@ -37,7 +38,16 @@ from nodnod.node import Node
 from nodnod.scope import Scope, validate_local_scope_is_linked_to_node_scopes
 from nodnod.value import Value
 
-from emergent.graph.runtime._spawnable import Spawnable
+if TYPE_CHECKING:
+    from nodnod.interface.either import Either
+
+
+
+def _is_result_node(node: type[Node]) -> bool:
+    """Check if node is a ResultNode without narrowing the type."""
+    from nodnod.interface.result_node import ResultNode
+
+    return issubclass(node, ResultNode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,7 +255,6 @@ class CallbackAgent(Agent):
         Idempotent: skips nodes already in futures dict (safe for incremental spawn).
         """
         from nodnod.interface.either import Either
-        from nodnod.interface.result_node import ResultNode
 
         for node in graph_info.all_nodes:
             if node in futures:
@@ -271,7 +280,7 @@ class CallbackAgent(Agent):
                         local_scope=local_scope,
                         execute=self._execute,
                     ))
-            elif issubclass(node, ResultNode):
+            elif _is_result_node(node):
                 dep_futures = [futures[dep] for dep in node.__dependencies__]
                 futures[node] = asyncio.ensure_future(_result_node_coroutine(
                     node, dep_futures, node_scope, local_scope, self._execute
@@ -298,14 +307,14 @@ async def _compose_coroutine(
 
 
 async def _concurrent_either_coroutine(
-    node: type[Node],
+    node: type[Either],
     dep_futures: list[asyncio.Future[kungfu.Result[Value, NodeError]]],
     node_scope: Scope,
     local_scope: Scope,
     execute: NodeExecutor,
 ) -> kungfu.Result[Value, NodeError]:
     results = await asyncio.gather(*dep_futures)
-    for dep, result in zip(node.__either__, results):
+    for _member, result in zip(node.__either__, results):
         if kungfu.is_ok(result):
             return await execute(node, node_scope, local_scope)
     return results[-1]

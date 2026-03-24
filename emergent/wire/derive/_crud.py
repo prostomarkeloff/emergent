@@ -53,7 +53,6 @@ from emergent.wire.derive._project import (
     ok_response,
     optional_non_id,
 )
-from emergent.wire.derive._query_helpers import provider_field
 from emergent.wire.derive._trigger import CLITriggers, HTTPTriggers, TriggerGen
 
 
@@ -79,7 +78,7 @@ READ_CRUD_OPS: tuple[OpLike, ...] = (LIST, GET)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _provider_fields(
+def provider_fields(
     provider_node: type,
 ) -> tuple[tuple[str, type], tuple[str, type]]:
     """Create provider field pair: (op_field, request_field).
@@ -120,14 +119,14 @@ class CRUD(SchemaCapability):
     ops: tuple[OpLike, ...] = ALL_CRUD_OPS
     capabilities: tuple[SurfaceCapability, ...] = ERROR_CAPS
 
-    def compile_derive_generate(self, ctx: DeriveCtx) -> DeriveCtx:  # type: ignore[type-arg]
+    def compile_derive_generate[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         """Phase 1: generate OpSpecs from entity schema + ops."""
         if not ctx.identity_fields:
             raise ValueError(
                 f"{ctx.entity.__name__} needs Annotated[T, Identity] field for CRUD"
             )
 
-        prov_op_field, prov_req_field = _provider_fields(self.provider_node)
+        prov_op_field, prov_req_field = provider_fields(self.provider_node)
         ctx = replace(
             ctx,
             query_strategy=RelationalStrategy(

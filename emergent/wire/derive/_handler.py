@@ -102,9 +102,9 @@ class WrapperFn(Protocol):
 
     def __call__[EntityT](
         self,
-        inner: "OperationHandler[EntityT, DomainError]",
+        inner: "OperationHandler[object, DomainError]",
         spec: HandlerSpec[EntityT],
-    ) -> "OperationHandler[EntityT, DomainError]": ...
+    ) -> "OperationHandler[object, DomainError]": ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,7 +114,7 @@ class WrappedTemplate:
     inner: HandlerTemplate
     wrapper: WrapperFn
 
-    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[EntityT, DomainError]":
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[object, DomainError]":
         handler = self.inner.build(spec)
         return self.wrapper(handler, spec)
 
@@ -321,8 +321,8 @@ class PaginatedFetchMany:
             assert base is not None
             query = scoped_query(base, op, sf)
             total = await op.provider.count(query)
-            page: int = getattr(op, "page", 1)
-            page_size: int = getattr(op, "page_size", default_ps)
+            page: int = max(1, getattr(op, "page", 1))
+            page_size: int = max(1, getattr(op, "page_size", default_ps))
             paginated_query = query.paginate(page, page_size)
             items = await op.provider.fetch_many(paginated_query)
             return Ok({
