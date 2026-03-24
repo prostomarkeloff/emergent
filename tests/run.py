@@ -33,10 +33,13 @@ BASE_ARGS = [
 ]
 
 
-def _run(cmd: list[str], label: str) -> bool:
+def _run(cmd: list[str], label: str, profile: str | None = None) -> bool:
     print(f"\n  {label}")
     start = time.monotonic()
-    result = subprocess.run(cmd, cwd=str(ROOT))
+    env = {**__import__("os").environ}
+    if profile:
+        env["HYPOTHESIS_PROFILE"] = profile
+    result = subprocess.run(cmd, cwd=str(ROOT), env=env)
     elapsed = time.monotonic() - start
     status = "✓" if result.returncode == 0 else "✗"
     print(f"  {status} {elapsed:.0f}s")
@@ -48,16 +51,14 @@ def light() -> bool:
     return _run([
         *BASE_ARGS,
         "-m", "not slow",
-        "--hypothesis-profile=light",
-    ], "All tests (light)")
+    ], "All tests (light)", profile="light")
 
 
 def medium() -> bool:
     """~3min: all tests, hypothesis=50, + pyright."""
     ok = _run([
         *BASE_ARGS,
-        "--hypothesis-profile=medium",
-    ], "All tests (medium)")
+    ], "All tests (medium)", profile="medium")
     ok &= _run(["uv", "run", "pyright", "emergent/"], "Pyright")
     return ok
 
