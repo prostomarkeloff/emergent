@@ -12,6 +12,8 @@
     endpoint = materialize(ctx)
 """
 
+from __future__ import annotations
+
 from emergent.wire.derive._builders import ExposureBuilder, endpoint_builder, exposure
 from emergent.wire.derive._codegen import DirectMapper, ResultConversion
 from emergent.wire.derive._compile import compile_derive
@@ -69,12 +71,21 @@ from emergent.wire.derive._trigger import (
 )
 
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+from emergent.wire.axis.schema._universal import SchemaCapability
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.surface._app import Application
+    from emergent.wire.axis.surface._endpoint import Endpoint
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # High-level helpers (ported from derivelib)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def derive(*caps: object) -> type:
+def derive[T](*caps: SchemaCapability) -> Callable[[T], T]:
     """Decorator: attach capabilities to entity class.
 
     Alias for ``@schema_meta(*caps)``.
@@ -125,7 +136,7 @@ def memory_node(key_field: str = "id", auto_id: bool = True) -> type:
     return _Node
 
 
-def build_application_from_decorated(*entities: type) -> "Application":
+def build_application_from_decorated(*entities: type) -> Application:
     """Compile @derive-decorated entities into a wire Application.
 
         Users = memory_node()
@@ -137,11 +148,12 @@ def build_application_from_decorated(*entities: type) -> "Application":
         app = build_application_from_decorated(User)
         fastapi_app = targets.fastapi.compile(app)
     """
-    from emergent.wire.axis.surface._app import Application, application
+    from emergent.wire.axis.surface._app import application
 
-    endpoints = []
+    endpoints: list[Endpoint] = []
     for entity in entities:
-        for ctx in compile_derive(entity):
+        derive_ctxs: list[DeriveCtx[object]] = compile_derive(entity)
+        for ctx in derive_ctxs:
             endpoints.append(materialize(ctx))
     app = application()
     for ep in endpoints:
@@ -149,13 +161,11 @@ def build_application_from_decorated(*entities: type) -> "Application":
     return app
 
 
-def endpoint_count(app: "Application") -> int:
+def endpoint_count(app: Application) -> int:
     """Count total exposures across all endpoints."""
     return sum(len(ep.exposures) for ep in app.endpoints)
 
 
-if __import__("typing").TYPE_CHECKING:
-    from emergent.wire.axis.surface._app import Application
 
 
 __all__ = (
