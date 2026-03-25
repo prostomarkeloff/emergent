@@ -4,51 +4,35 @@
 >
 > — John Locke, *An Essay Concerning Human Understanding* (1690)
 
-We are about to study the idea of a *compilation process*. Compilation processes are abstract beings that inhabit programs. As they evolve, processes transform abstract things called *capabilities* into concrete things called *artifacts* — Pydantic models, OpenAPI schemas, SQL tables, HTTP endpoints, CLI parsers, Telegram commands. The evolution of a compilation process is directed by a pattern of rules called *fold*. People create capabilities to direct fold. In effect, we describe meaning and let fold produce the plumbing.
+There is a fact about your system that you must express five times: in the data model, the API schema, the database DDL, the validation layer, and the CLI help text. Each expression uses a different notation. None of them knows about the others. When the fact changes, you edit five files. When you forget one, the system develops a fracture — the kind that passes tests but corrupts data in production.
 
-A compilation process is indeed much like a sorcerer's idea of a spirit. It cannot be seen or touched while it runs. However, it is very real. It can produce a working REST API from three lines of annotation. It can produce a distributed multi-agent system from a tuple of frozen dataclasses. It can verify at import time that your field constraints don't contradict each other. The capabilities we use to direct compilation processes are like a sorcerer's spells. They are carefully composed from frozen dataclasses in arcane and esoteric type annotations that prescribe the artifacts we want our compilation processes to produce.
+This is the *scattered meaning* problem: the same fact about a field must be manually transcribed into different formalisms that cannot share a source of truth. It is not a tooling problem. It is a *language* problem — the absence of a primitive that lets you state a fact once and have it interpreted by different evaluation regimes.
 
-A compilation process, when fed consistent capabilities, produces correct artifacts precisely and deterministically. The same capabilities, the same fold, the same result — always. Thus, like the sorcerer's apprentice, novice programmers must learn to understand and to anticipate the consequences of their capabilities. Even small contradictions (usually called *schema errors*) in capabilities can have complex and unanticipated consequences — a field that is simultaneously read-only and required, an endpoint that accepts data the database will reject, a query that returns non-deterministic results.
+This chapter introduces that primitive. We call it a *capability*: a frozen dataclass that carries a fact and knows how to compile itself for each target. The mechanism that consumes capabilities is called *fold*: six lines of Python that iterate, dispatch by protocol, and accumulate a context. Together they form a complete system for building abstractions about software meaning — abstractions that scale from a single field constraint to a full REST API.
 
-Fortunately, learning to compose capabilities is considerably less dangerous than learning to write compilers by hand, because the fold that consumes them is contained: it is six lines of Python, it always terminates, and when contradictions arise, the verification phases catch them before any server starts.
-
-Master software engineers have the ability to organize capabilities so that they can be reasonably sure that the resulting compilation will produce the artifacts intended. They can visualize the behavior of their systems in advance — because capabilities are frozen data, printable and inspectable, and `explain()` produces a trace of every fold step. They know how to structure capabilities so that unanticipated problems do not lead to catastrophic consequences: orthogonal axes ensure that a bug in one dimension cannot propagate to another. Well-designed capability systems, like well-designed computational systems, are designed in a modular manner, so that the capabilities can be constructed, replaced, and debugged separately.
-
-## Programming in emergent
-
-We need an appropriate language for describing compilation processes, and we will use for this purpose the Python framework emergent. Just as our everyday thoughts are usually expressed in natural language, and descriptions of quantitative phenomena are expressed with mathematical notations, our compilational thoughts will be expressed in emergent.
-
-emergent was begun in January 2026 as a formalism for reasoning about the use of certain kinds of frozen dataclasses, called *capabilities*, as a model for multi-target compilation. The framework is based on a paper by Meijer, Fokkinga, and Paterson (1991) — not cited in its design, but discovered to formalize what it was already doing — which showed that every inductive data type admits a unique structurally recursive consumer called a *catamorphism*. In emergent, capabilities are the data type and fold is the catamorphism.
-
-Despite its inception as a compilation framework, emergent is a practical tool. An emergent interpreter — `fold` — is a function that carries out compilation processes described in emergent capabilities. The first emergent fold was six lines of Python. Emergent, whose name reflects the property that complex artifacts *emerge* from simple declarations, was designed to provide capability-manipulating facilities for attacking the problem of scattered meaning: the endemic situation in software where a single fact about a field must be manually transcribed into five files.
-
-emergent was not the product of a concerted design effort. Instead, it evolved informally in response to the author's needs and to pragmatic implementation considerations. This evolution, together with the flexibility and elegance of the initial conception — frozen dataclasses with compile_* methods, dispatched by Protocol isinstance checks — has enabled emergent to continually adapt to encompass the most modern ideas about software construction: from web APIs to symbolic algebra to distributed multi-agent systems.
-
-Because of its experimental character and its emphasis on capability manipulation, emergent was at first applicable only to web API generation. Over time, however, the same encoding — frozen dataclass + compile_* methods + fold — was found to apply to query compilation, schema verification, program derivation, runtime scheduling, and distributed computation. If emergent was not initially designed for these applications, why are we using it as the framework for our discussion of compilation thinking? Because the framework possesses unique features that make it an excellent medium for studying important compilation constructs and data structures and for relating them to the linguistic features that support them. The most significant of these features is the fact that emergent descriptions of compilation processes, called *capabilities*, can themselves be represented and manipulated as emergent data. The importance of this is that there are powerful program-design techniques that rely on the ability to blur the traditional distinction between "passive" data and "active" compilation processes. As we shall discover, emergent's flexibility in handling capabilities as data makes it one of the most convenient frameworks in existence for exploring these techniques. The ability to represent compilation processes as data also makes emergent an excellent framework for writing programs that must manipulate other programs as data, such as the derivation engine that generates REST endpoints from dataclass annotations, or the theworld runtime that generates a distributed agent system from a tuple of capabilities.
+We will proceed from simple to complex. By the end of this chapter, you will be able to trace fold in your head, predict what a set of capabilities will produce, and understand why capabilities are not annotations on data but a primitive that generates *all* computation through fold.
 
 ---
 
 ## 1.1 The Elements of Compilation
 
-A powerful compilation framework is more than just a means for generating boilerplate. The framework also serves as a framework within which we organize our ideas about what software *means*. Thus, when we describe a compilation framework, we should pay particular attention to the means that the framework provides for combining simple ideas to form more complex ideas. Every powerful compilation framework has three mechanisms for accomplishing this:
+Every powerful compilation framework provides three mechanisms:
 
-- **primitive capabilities**, which represent the simplest facts the framework is concerned with,
-- **means of combination**, by which compound capabilities are built from simpler ones, and
-- **means of abstraction**, by which compound capabilities can be named and manipulated as units.
+- **primitive capabilities** — the simplest facts the framework is concerned with,
+- **means of combination** — by which compound descriptions are built from simpler ones, and
+- **means of abstraction** — by which compound descriptions can be named and manipulated as units.
 
-In compilation, we deal with two kinds of elements: capabilities and contexts. (Later we will discover that they are really not so distinct.) Informally, capabilities are the "meaning" that we want to compile, and contexts are the accumulation targets that carry the compilation state for each target. Thus, any powerful compilation framework should be able to describe primitive capabilities and primitive contexts and should have methods for combining and abstracting capabilities and contexts.
-
-In this chapter we will deal only with simple schema capabilities so that we can focus on the rules for building compilation processes. In later chapters we will see that these same rules allow us to build compilation processes for queries, verification, derivation, and distributed computation as well.
+In emergent, we deal with two kinds of elements: capabilities and contexts. Capabilities are the facts we want to express — "maximum length is 255," "this field is the primary key," "this field must be unique." Contexts are the accumulation targets that carry the compilation state for each target — PydanticContext, OpenAPIContext, SQLAlchemyContext. Each fold begins with an initial context and ends with a transformed one. The capability is the input. The context is the output. fold is the process that connects them.
 
 ### 1.1.1 Capabilities
 
-One easy way to get started at compilation is to examine some typical interactions with fold for emergent capabilities. Imagine that you have a field on a dataclass. You annotate it with a capability:
+Consider a field on a dataclass:
 
 ```python
 email: Annotated[str, MaxLen(255)]
 ```
 
-MaxLen(255) is a *capability*. It is a frozen dataclass with a `value` field:
+`MaxLen(255)` is a capability. It is a frozen dataclass:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -56,115 +40,137 @@ class MaxLen(UniversalCapability):
     value: int
 ```
 
-If you present fold with this capability and a Pydantic context, fold will respond by producing a new context with the max_length set:
+One field. One fact: this string has a maximum length of 255. The capability is *data* — you can print it, compare it, put it in a set. `MaxLen(255) == MaxLen(255)` is True. `MaxLen(100) == MaxLen(255)` is False. There is no hidden state, no side effects, no identity apart from the value.
+
+If you present fold with this capability and a Pydantic context, fold produces a new context with the constraint applied:
 
 ```python
 ctx = PydanticContext(field_name="email", field_type=str, field_info=FieldInfo())
 result = fold([MaxLen(255)], ctx, PydanticCompilable, "compile_pydantic")
-# result.field_info now has max_length=255
+# result.field_info now carries max_length=255
 ```
 
-Capabilities can be combined with other capabilities to form compound annotations that represent the application of multiple constraints to a field. For example:
+The call to fold takes four arguments: the items to fold over, the initial context, the protocol to dispatch on, and the method name to call. fold iterates the items, checks each against the protocol via `isinstance`, and calls the method if it matches. That is all fold does. We will examine its six-line implementation shortly.
+
+Capabilities combine. Multiple capabilities on one field express multiple facts:
 
 ```python
 email: Annotated[str, MaxLen(255), Unique]
 ```
 
+fold processes them in sequence:
+
 ```python
 result = fold([MaxLen(255), Unique()], ctx, PydanticCompilable, "compile_pydantic")
 ```
 
-Annotations such as these, formed by placing a list of capabilities within `Annotated`, are called *combinations*. The base type (`str`) is the carrier, and the capabilities are the elements. The result of compiling a combination is obtained by applying fold to the list of capabilities with an initial context — each capability transforms the context in turn.
+Before reading on, predict: what does the result contain? `MaxLen(255)` has a `compile_pydantic` method — it will participate. `Unique` has no `compile_pydantic` — fold will skip it (open-world). The result: a PydanticContext with `max_length=255` and nothing else. Unique is invisible to Pydantic.
 
-A second advantage of capability combination is that it extends in a straightforward way to allow capabilities to be nested — that is, to have capabilities that attach not just to fields but to entire entities:
+Now predict what happens if we switch to SQLAlchemy:
 
 ```python
-@schema_meta(SchemaName("users"), Timestamps("created_at", "updated_at"))
+result = fold([MaxLen(255), Unique()], sa_ctx, SQLAlchemyCompilable, "compile_sqlalchemy")
+```
+
+Both participate. `MaxLen(255)` refines `Text` to `String(255)`. `Unique` sets `unique=True`. Same two capabilities, different fold — different result. This is the fundamental observation that the rest of the chapter will develop.
+
+Each capability transforms the context left by the previous one. The result is the context after all capabilities have had their say.
+
+Combination extends to entities. Capabilities can attach not just to fields but to entire classes:
+
+```python
+@schema_meta(SchemaName("users"), Timestamps())
 @dataclass
 class User:
     id: Annotated[int, Identity]
     email: Annotated[str, MaxLen(255), Unique]
 ```
 
-There is no limit (in principle) to the number of capabilities on a field or on an entity. It is we humans who get confused by still relatively simple annotations. We can help ourselves by keeping the annotations short and using patterns — pre-composed capability bundles — for common cases.
-
-Even with complex annotations, fold always operates in the same basic cycle: it iterates the capability list, checks isinstance against the protocol, calls the compile_* method, and accumulates the context. This mode of operation is often expressed by saying that fold performs a *catamorphism* over the capability list.
+Field-level capabilities (Identity, MaxLen, Unique) describe individual fields. Schema-level capabilities (SchemaName, Timestamps) describe the entity as a whole. Both are consumed by fold — field-level capabilities by `fold_field`, schema-level by `fold_schema`. The mechanism is identical.
 
 ### 1.1.2 Naming and the Context
 
-A critical aspect of a compilation framework is the means it provides for using names to refer to compilation objects. We say that a name identifies a *phase* whose *value* is a complete fold configuration.
-
-In emergent, we name fold configurations with CompilationPhase:
+A critical aspect of a compilation framework is the means it provides for naming compilation configurations. In emergent, we name fold configurations with `CompilationPhase`:
 
 ```python
 PYDANTIC_PHASE = CompilationPhase(
-    PydanticContext, PydanticCompilable, _pydantic_initial,
+    PydanticContext, PydanticCompilable, _pydantic_initial
 )
 ```
 
-causes the framework to associate the context type `PydanticContext`, the protocol `PydanticCompilable`, and the initial factory into a single named object. Once this association is made, we can refer to the entire fold configuration by name:
+This associates a context type, a protocol, and an initial factory into a single named object. Once this association exists, we refer to the entire fold configuration by name.
+
+Further phases:
 
 ```python
-OPENAPI_PHASE = CompilationPhase(
-    OpenAPIContext, OpenAPICompilable, _openapi_initial,
-)
-```
-
-Here are further examples:
-
-```python
+OPENAPI_PHASE = CompilationPhase(OpenAPIContext, OpenAPICompilable, _openapi_initial)
 ARGPARSE_PHASE = CompilationPhase(ArgparseContext, ArgparseCompilable, _argparse_initial)
 CONSTRAINTS_PHASE = CompilationPhase(ConstraintsContext, ConstraintsCompilable, _constraints_initial)
-STORAGE_FIELD_PHASE = CompilationPhase(StorageFieldContext, StorageFieldCompilable, _storage_field_initial)
 ```
 
-CompilationPhase is our framework's simplest means of abstraction, for it allows us to use simple names to refer to the results of compound fold configurations. In general, compilation objects may have very complex structures, and it would be extremely inconvenient to have to remember and repeat their protocol, context type, and initial factory each time we want to use them. Indeed, complex compilation systems are constructed by building, step by step, compilation objects of increasing complexity. The framework makes this step-by-step construction particularly convenient because phases can be composed incrementally into SchemaCompilers:
+`CompilationPhase` is the simplest means of abstraction in the framework. It lets us use a name where we would otherwise need a triple. Phases compose into `SchemaCompiler`:
 
 ```python
 FASTAPI_SCHEMA = SchemaCompiler(phases=(PYDANTIC_PHASE, OPENAPI_PHASE))
 CLI_SCHEMA = SchemaCompiler(phases=(ARGPARSE_PHASE,))
-FULL = FASTAPI_SCHEMA + CLI_SCHEMA + STORAGE_SCHEMA
+FULL = FASTAPI_SCHEMA + CLI_SCHEMA
 ```
 
-This feature encourages the incremental development and testing of compilation systems and is largely responsible for the fact that an emergent compilation usually consists of a large number of relatively simple phases.
-
-It should be clear that the possibility of associating fold configurations with names and later composing them means that the framework must maintain some sort of structure that keeps track of the phase identities. This structure is the SchemaCompiler — a keyed set of phases, identified by context type, with algebraic operations (+, -, &, |) that mirror set operations.
+`SchemaCompiler` is a keyed set of phases, identified by context type, with algebraic operations (`+`, `-`, `&`, `|`) that mirror set operations. `+` is left-biased union. `FULL.compile(User, axes)` runs all three phases in one pass.
 
 ### 1.1.3 Evaluating Combinations
 
-One of our goals in this chapter is to isolate issues about thinking compilationally. As a case in point, let us consider that, in compiling combinations, fold is itself following a procedure.
+When fold compiles a combination, it follows a simple rule:
 
-> To compile a combination, do the following:
->
-> 1. Iterate the capabilities of the combination.
-> 2. For each capability, check whether it implements the target protocol (isinstance).
-> 3. If it does, call the compile_* method, passing the current context. Replace the context with the result.
+> 1. Iterate the capabilities.
+> 2. For each capability, check whether it implements the target protocol (`isinstance`).
+> 3. If it does, call the `compile_*` method, passing the current context. Replace the context with the result.
 > 4. If it does not, skip the capability.
 > 5. Return the final context.
 
-Even this simple rule illustrates some important points about compilation in general. First, observe that the rule is *flat* — it is a loop, not a recursion. Capabilities are a list, not a tree. The composition is sequential: each capability sees the context left by the previous one. But because capabilities are frozen and each writes to an independent part of the context, the order does not matter. This is the *commutativity* property, and it holds because capabilities form a *free monoid* — the algebra with the fewest identifications.
+Here is fold — the entire implementation:
 
-Second, observe that step 4 — skipping — is the *open-world* property. A capability that does not implement the target protocol is not an error. It is simply irrelevant to this target. `sql.Index()` is invisible to the Pydantic fold. `tg.CommandArg` is invisible to the SQL fold. Each target's fold contains only what is relevant to that target. Adding a new capability never breaks an existing target. Adding a new target never requires modifying existing capabilities.
+```python
+def fold(items, initial, protocol, method, handlers=None, *, trace=None):
+    ctx = initial
+    for item in items:
+        item_cls = item.__class__
+        if handlers and item_cls in handlers:
+            ctx = handlers[item_cls](item, ctx)
+        elif isinstance(item, protocol):
+            ctx = getattr(item, method)(ctx)
+    return ctx
+```
 
-Third, observe that the rule is *total* — it always terminates. The capability list is finite. The loop runs once per capability. There are no recursive calls, no infinite loops, no divergence. This is Meijer's catamorphism: the unique structurally recursive consumer of a finite data type. Termination is guaranteed by the structure of the data, not by the logic of the code.
+Six lines of logic (the trace branch delegates to a separate function; the hot path is untouched). This is the universal primitive. Every compilation in emergent — Pydantic models, OpenAPI schemas, SQL tables, argparse specs, Telegram renderers, verification checks, CRUD endpoint generation — passes through these six lines.
+
+Three properties follow from this rule:
+
+**Flat.** The rule is a loop, not a recursion. Capabilities are a list, not a tree. Each capability sees the context left by the previous one.
+
+**Open-world.** A capability that does not implement the target protocol is not an error — it is simply irrelevant to this target. `Unique` has no `compile_pydantic` method; when fold compiles for Pydantic, Unique is skipped. But `Unique` *does* have `compile_sqlalchemy`; when fold compiles for SQLAlchemy, it participates. Adding a new capability never breaks an existing target. Adding a new target never requires modifying existing capabilities.
+
+**Total.** The capability list is finite. The loop runs once per capability. No recursive calls, no infinite loops, no divergence. This is what Meijer, Fokkinga, and Paterson (1991) call a *catamorphism* — the unique structurally recursive consumer of a finite data type. Termination is guaranteed by the structure of the data, not by the logic of the code.
 
 ### 1.1.4 Compound Capabilities
 
-We have identified in emergent some of the elements that must appear in any powerful compilation framework:
+We have identified the elements of compilation:
 
-- MaxLen, Identity, Unique and other annotations are primitive capabilities.
-- Annotated provides a means of combining capabilities on a field.
-- CompilationPhase provides a limited means of abstraction.
+- MaxLen, Identity, Unique — primitive capabilities
+- `Annotated[T, cap1, cap2, ...]` — means of combination
+- `CompilationPhase` — a limited means of abstraction
 
-Now we will learn about *compound capabilities*, a much more powerful abstraction technique by which a compound compilation operation can be given a name and then referred to as a unit.
+Now we introduce *compound capabilities*: a powerful abstraction technique by which a compound compilation operation can be given a name and used as a unit.
 
-We begin by examining how to express the idea of "CRUD for users." We might say, "To create a CRUD API, inspect the entity schema, generate OpSpecs for each operation (list, get, create, update, delete), and attach HTTP triggers." This is expressed in emergent as:
+To create a CRUD API, we say:
 
 ```python
 http_crud("/users", provider_node=Users)
 ```
 
-We have here a *compound capability*, which has been given the name `http_crud`. The capability represents the operation of generating CRUD endpoints from an entity schema. The path and the data provider are given as arguments. Compiling the combination:
+This is a compound capability. It is a frozen dataclass — `CRUD` — that implements `DeriveGeneratable`, meaning fold will call its `compile_derive_generate` method during Phase 1 of derivation. Inside that method, it inspects the entity's fields, generates operation specifications for List, Get, Create, Update, Patch, and Delete, and accumulates them into the `DeriveCtx`.
+
+We use it with the `@derive` decorator:
 
 ```python
 @derive(http_crud("/users", provider_node=Users))
@@ -175,19 +181,7 @@ class User:
     email: Annotated[str, MaxLen(255), Unique]
 ```
 
-creates this compound capability and attaches it to the entity class via @schema_meta. The general form of a compound capability is a frozen dataclass that implements one or more of the derivation protocols (DeriveGeneratable, DeriveModifiable, DeriveAugmentable).
-
-http_crud is a SchemaCapability. It implements `compile_derive_generate` — the method that fold calls during Phase 1 of derivation. Inside that method, it reads the entity's fields, generates OpSpecs for LIST, GET, CREATE, UPDATE, PATCH, DELETE, attaches HTTPRouteTriggers, and accumulates them into the DeriveCtx.
-
-Having defined http_crud, we can now use it:
-
-```python
-app = build_application_from_decorated(User)
-fastapi_app = targets.fastapi.compile(app)
-# 7 REST endpoints — list, get, create, update, patch, delete, upsert
-```
-
-We can also use http_crud as a building block in defining other compilation operations. For example, we might want to add pagination and soft delete:
+Compound capabilities compose with other capabilities:
 
 ```python
 @derive(http_crud("/users", provider_node=Users), Paginated(20), SoftDelete("deleted_at"))
@@ -199,55 +193,107 @@ class User:
     deleted_at: datetime | None = None
 ```
 
-Now we can use this as a building block for constructing further compilations:
+`Paginated(20)` and `SoftDelete("deleted_at")` are also compound capabilities — they implement `DeriveModifiable`, meaning fold will call them during Phase 2 (Modify) after the CRUD operations have been generated. fold does not distinguish between primitive and compound capabilities. It dispatches on `isinstance`. Any capability that implements the protocol participates.
+
+### 1.1.5 The Fold Model: A Worked Trace
+
+We now trace a complete compilation step by step — the emergent equivalent of SICP's substitution model applied to `(f 5)`. The reader should be able to reproduce this trace by hand for any combination of capabilities.
+
+**The entity:**
 
 ```python
-@derive(
-    http_crud("/users", provider_node=Users),
-    cli_crud("user", provider_node=Users),
-    Paginated(20),
-    SoftDelete("deleted_at"),
-    Authenticated(BearerExtract(), TokenValidate(AuthUser, lookup)),
-)
-```
-
-Compound capabilities are used in exactly the same way as primitive capabilities. Indeed, one could not tell by looking at the `@derive` decorator whether `Paginated` was built into emergent, like `MaxLen`, or defined as a compound capability. The compilation process does not distinguish — fold dispatches on isinstance, and all capabilities that implement the protocol participate equally.
-
-### 1.1.5 The Fold Model for Capability Compilation
-
-To compile a combination whose capabilities include compound capabilities, fold follows much the same process as for combinations whose capabilities are primitive. That is, fold iterates the capabilities and calls the compile_* method on each that implements the target protocol.
-
-We can assume that the mechanism for compiling primitive capabilities is built into the capability itself — each has its compile_* methods. For compound capabilities, the compilation process is as follows:
-
-> To compile a compound capability, fold calls its compile_derive_generate (or compile_derive_modify, or compile_derive_augment) method, passing the current DeriveCtx. The compound capability examines the entity schema, generates or transforms OpSpecs, and returns a new DeriveCtx.
-
-To illustrate this process, let us trace the compilation of:
-
-```python
-@derive(http_crud("/users", Users), Paginated(20))
+@derive(http_crud("/users", provider_node=Users), Paginated(20))
 @dataclass
 class User:
     id: Annotated[int, Identity]
     name: str
+    email: Annotated[str, MaxLen(255), Unique]
 ```
 
-compile_derive retrieves the @schema_meta capabilities: `(CRUD(...), Paginated(20))`. It performs three fold passes:
+**Phase 1 — Field-level compilation (Pydantic).**
 
-**Phase 1 (Generate):** fold iterates capabilities with protocol DeriveGeneratable. CRUD implements it. CRUD.compile_derive_generate inspects User's fields, finds id (Identity) and name (str), generates OpSpecs: List, Get, Create, Update, Patch, Delete. Each OpSpec carries a handler template, input/output field specs, trigger (HTTPRouteTrigger), and effects (Read, Creates, Deletes, etc.). Paginated(20) does not implement DeriveGeneratable — skipped.
+`compile_fields` iterates each field and runs `fold_field` through `PYDANTIC_PHASE`. Before reading the trace below, predict: for each field, which capabilities will participate and which will be skipped? What will the PydanticContext contain after each field's fold completes? Try to answer before reading on.
 
-**Phase 2 (Modify):** fold iterates with protocol DeriveModifiable. CRUD does not implement it — skipped. Paginated(20) implements it. Paginated.compile_derive_modify finds the OpSpec with Pageable effect (the List op), replaces its handler template with PaginatedFetchMany(page_size=20), adds page and page_size fields to the request type.
+*Field: id*
+- Capabilities: `(Identity,)`
+- Initial context: `PydanticContext(field_name="id", field_type=int, field_info=FieldInfo())`
+- Step 1: `Identity` — `isinstance(Identity, PydanticCompilable)`? Identity has no `compile_pydantic`. **Skipped.**
+- Final context: unchanged. PydanticContext for `id` has no constraints.
 
-**Phase 3 (Augment):** fold iterates with protocol DeriveAugmentable. Neither capability implements it — both skipped.
+*Field: name*
+- Capabilities: `()` (no capabilities)
+- fold iterates zero items. Context unchanged.
 
-Result: DeriveCtx with six OpSpecs, one of them modified with pagination. materialize() builds the types, handlers, and exposures. build_application_from_decorated() produces the wire Application. fastapi.compile() turns it into a FastAPI app with routes.
+*Field: email*
+- Capabilities: `(MaxLen(255), Unique)`
+- Initial context: `PydanticContext(field_name="email", field_type=str, field_info=FieldInfo())`
+- Step 1: `MaxLen(255)` — `isinstance(MaxLen, PydanticCompilable)`? Yes. Calls `MaxLen.compile_pydantic(ctx)`. Inside: imports `MaxLen` from `annotated_types`, adds it to `ctx.field_info.metadata`. Context now carries `max_length=255`.
+- Step 2: `Unique` — `isinstance(Unique, PydanticCompilable)`? No `compile_pydantic` on Unique. **Skipped.**
+- Final context: PydanticContext with max_length=255.
 
-The purpose of the fold model is to help us think about capability compilation, not to provide a description of how emergent really works in every detail. In practice, the compilation is accomplished by the six-line fold function with isinstance dispatch. Over the course of this book, we will present increasingly elaborate models of what compilation processes produce, culminating with a distributed multi-agent system in theworld. The fold model is only the first of these — a way to get started thinking formally about the compilation process.
+`assemble_pydantic` takes these three FieldCompilations and builds a Pydantic model with `email: Annotated[str, MaxLen(max_length=255)]`.
 
-### 1.1.6 Protocol Dispatch and the Open World
+**Phase 1 — Field-level compilation (SQLAlchemy) — same fields, different fold:**
 
-The expressive power of the class of compilations that we can define at this point is notable, because we have a way to make tests — isinstance — and to perform different compilations depending on the result of a test.
+Now predict again: the same three fields, but the fold protocol is `SQLAlchemyCompilable` instead of `PydanticCompilable`. Which capabilities participate this time? The answer will be different — and that difference is the subject of Section 1.2.
 
-Consider: when fold encounters a capability, it must determine how to dispatch. The rule is:
+*Field: id*
+- Step 1: `Identity` — `isinstance(Identity, SQLAlchemyCompilable)`? Yes. Calls `Identity.compile_sqlalchemy(ctx)`. Sets `primary_key=True`.
+- Final context: SQLAlchemyContext with primary_key=True.
+
+*Field: email*
+- Step 1: `MaxLen(255)` — Yes. Calls `MaxLen.compile_sqlalchemy(ctx)`. Since `field_type is str`, replaces `column_type` with `String(255)`.
+- Step 2: `Unique` — Yes. Calls `Unique.compile_sqlalchemy(ctx)`. Sets `unique=True`.
+- Final context: SQLAlchemyContext with `String(255), unique=True`.
+
+Pause and observe. The same two capabilities — `MaxLen(255)` and `Unique` — produced different results under different folds:
+
+| | Pydantic fold | SQLAlchemy fold |
+|---|---|---|
+| MaxLen(255) | max_length metadata | String(255) column type |
+| Unique | skipped | unique=True |
+
+MaxLen participated in both but produced different artifacts. Unique participated only in SQLAlchemy. The capability did not change. The fold changed — specifically, the protocol and method name changed.
+
+**Phase 2 — Derivation (three-phase fold over schema_meta).**
+
+`compile_derive` retrieves the schema_meta capabilities: `(CRUD(...), Paginated(20))`.
+
+*Phase 2a — Generate:* fold iterates with protocol `DeriveGeneratable`.
+- `CRUD(...)` — implements `DeriveGeneratable`. Calls `CRUD.compile_derive_generate(ctx)`. Inside: inspects User's fields, finds `id` (Identity) and two other fields. Generates six OpSpecs: List, Get, Create, Update, Patch, Delete. Each carries a handler template, trigger (`HTTPRouteTrigger`), input/output fields, and effects.
+- `Paginated(20)` — does not implement `DeriveGeneratable`. **Skipped.**
+- DeriveCtx after Phase 2a: `specs = (List, Get, Create, Update, Patch, Delete)`.
+
+*Phase 2b — Modify:* fold iterates with protocol `DeriveModifiable`.
+- `CRUD(...)` — does not implement `DeriveModifiable`. **Skipped.**
+- `Paginated(20)` — implements `DeriveModifiable`. Calls `Paginated.compile_derive_modify(ctx)`. Inside: iterates `ctx.specs`, finds the List spec (which has the `Pageable` effect), replaces its handler with `PaginatedFetchMany(page_size=20)`, adds `page` and `page_size` fields to the request type.
+- DeriveCtx after Phase 2b: `specs` still has 6 operations, but List now has pagination.
+
+*Phase 2c — Augment:* fold iterates with protocol `DeriveAugmentable`.
+- Neither implements it. Both **skipped.**
+
+Final DeriveCtx: six OpSpecs, one modified with pagination. `materialize()` builds the types and handlers. `targets.fastapi.compile()` produces a FastAPI app with routes.
+
+The purpose of the fold model is to help us think about capability compilation, not to describe how emergent really works in every implementation detail. In practice, the compilation is accomplished by the six-line fold function with isinstance dispatch. Over the course of this book, we will present increasingly elaborate models of what compilation processes produce — from data structures to programs to distributed systems to the compiler that compiles itself.
+
+One property of this model is worth noting now. Because capabilities are frozen and contexts are replaced (via `dataclasses.replace`) rather than mutated, the fold model is *permanently valid*. SICP introduces the substitution model in Chapter 1, then abandons it in Chapter 3 when assignment enters — the model breaks because substitution cannot account for mutable state. The fold model has no such limitation. Capabilities cannot be assigned to. Contexts are never modified in place. `replace()` returns a new frozen object. The model we have just introduced will remain correct through all five chapters of this book. This is a direct consequence of the frozen-dataclass design, and it is why there is no "environment model" chapter in this book — we never need one.
+
+**Exercise 1.1.** Trace fold for each annotation through PydanticCompilable. For each capability, state whether it participates or is skipped, and what the final context contains:
+
+```python
+a) Annotated[str, MaxLen(100)]
+b) Annotated[int, Min(0), Max(1000)]
+c) Annotated[str, MaxLen(255), Unique]
+d) Annotated[float, Min(-40), Max(125)]
+```
+
+Now trace the same annotations through SQLAlchemyCompilable. Which produce different results? Which capabilities participate in one target but not the other?
+
+**Exercise 1.2.** The open-world property means unknown capabilities are silently skipped. What would break if fold raised an error instead? Consider: (a) adding a new target, (b) adding a new capability, (c) composing capabilities from independent libraries.
+
+### 1.1.6 Protocol Dispatch
+
+When fold encounters a capability, it must determine how to dispatch. The code is:
 
 ```python
 if handlers and item.__class__ in handlers:
@@ -257,488 +303,548 @@ elif isinstance(item, protocol):
 # else: skip
 ```
 
-This is a case analysis with three branches. First, the handler map is checked — custom per-type overrides take priority. Second, isinstance checks whether the capability implements the target protocol — the standard path. Third, if neither applies, the capability is skipped.
+Three branches:
 
-The third branch — skipping — is the *open-world* property. By default, it is not an error for a capability to lack a protocol. It means the capability is irrelevant to this target. `sql.Index()` has no `compile_pydantic` method; it is not PydanticCompilable; fold skips it when compiling for Pydantic. But it IS SQLAlchemyCompilable, and when fold compiles for SQLAlchemy, it participates.
+1. **Handler map** — custom per-type overrides take priority. The handler is keyed by exact class, not by isinstance. This means a handler for `MaxLen` matches only `MaxLen`, not subclasses.
+2. **Protocol dispatch** — `isinstance` checks whether the capability implements the target protocol. This is the standard path.
+3. **Skip** — neither applies. The capability is irrelevant to this target.
 
-But "by default" is important. The open-world skip is a *choice*, not a fate. If you want a capability that REFUSES to be skipped — that raises an error when compiled for an unsupported target — you can do so. The handler map is the mechanism:
-
-```python
-def _require_memory(item, ctx):
-    raise TypeError(f"{type(item).__name__} does not support in-memory execution. "
-                    f"Use a SQL or HTTP backend.")
-
-# Register as handler for the memory backend
-memory_handlers = {
-    FullTextSearch: _require_memory,
-}
-
-# fold will call the handler instead of skipping
-fold(query.ops, MemoryQueryContext(data), MemoryQueryCompilable, "compile_memory_query",
-     handlers=memory_handlers)
-```
-
-The handler has priority over both protocol dispatch and skip. When fold encounters FullTextSearch in the handler map, it calls `_require_memory` — which raises TypeError. The user gets an explicit, descriptive error: "FullTextSearch does not support in-memory execution. Use a SQL or HTTP backend."
-
-This is the key distinction: fold's DEFAULT is open-world (skip unknown capabilities). But the programmer CONTROLS the behavior at the fold site via the handler map. Some deployments want strict mode — every capability must be handled. Others want permissive mode — unknown capabilities are tolerated. The handler map gives you both. The framework doesn't decide; you do.
-
-A capability can also enforce its own requirements by implementing the protocol with an explicit error:
+The handler map exists for cases where the standard compile_* method is insufficient. A deployment might want strict mode (reject unknown capabilities), logging (trace every dispatch), or custom behavior for specific capability-target pairs:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class FullTextSearch:
-    query: str
-    fields: tuple[str, ...]
+def _require_sql(item, ctx):
+    raise TypeError(f"{type(item).__name__} requires SQL backend")
 
-    def compile_sa_query(self, ctx):
-        # Full implementation for SQL
-        return replace(ctx, stmt=ctx.stmt.where(func.to_tsvector(...)))
-
-    def compile_http_api(self, ctx):
-        ctx.params["q"] = self.query
-        return ctx
-
-    def compile_memory_query(self, ctx):
-        raise NotImplementedError(
-            f"FullTextSearch requires a backend with full-text indexing. "
-            f"In-memory backend does not support this. "
-            f"Use SQLAlchemy with tsvector or an HTTP API with search support."
-        )
+memory_handlers = {SomeCapability: _require_sql}
+fold(caps, ctx, MemoryCompilable, "compile_memory", handlers=memory_handlers)
 ```
 
-Here the capability DOES implement the protocol — isinstance returns True — but the implementation raises. fold calls the method, the method raises, the user gets a clear error. This is not the open-world skip. This is the capability *choosing* to reject a target.
-
-The three options:
-1. **Don't implement the protocol** → fold skips (open-world default). Good for capabilities that are simply irrelevant to a target (sql.Index is irrelevant to Pydantic).
-2. **Implement the protocol with a raise** → fold calls it, it raises. Good for capabilities that COULD be relevant but the backend lacks a feature (FullTextSearch on memory).
-3. **Register a handler** → fold calls the handler. Good for deployment-specific policies (strict mode, logging, fallback behavior).
-
-This three-way dispatch — handlers, protocol, skip — may be compared with the conditional expressions `cond` and `if` in Scheme. But where Scheme's conditionals test values for truth or falsity, fold's dispatch tests capabilities for *protocol conformance*. The question is not "is this true?" but "does this capability know how to compile itself for this target?" And the answer is not binary — it is one of three: "yes, and here's how" (protocol), "yes, but it's an error" (protocol + raise), or "this question is irrelevant to me" (skip).
-
-In addition to primitive protocol dispatch, there are logical composition operations which enable us to construct compound protocol tests. The most frequently used are these:
-
-- `isinstance(item, PydanticCompilable)` — does it compile to Pydantic?
-- `isinstance(item, DeriveGeneratable)` — does it generate OpSpecs?
-- `isinstance(effect, Mutation)` — is this effect a mutation? (hierarchy: Creates, Updates, Deletes are all Mutations)
-
-The hierarchy of effects enables dispatch at multiple levels of specificity:
+A capability can also enforce its own requirements by implementing the protocol with a raise:
 
 ```python
-has_effect(spec.effects, Mutation)   # matches Creates, Updates, Deletes
-has_effect(spec.effects, Deletes)    # matches only Deletes
-isinstance(effect, Pageable)         # matches Pageable with its data (default_size, etc.)
+def compile_memory_query(self, ctx):
+    raise NotImplementedError("Requires SQL backend with full-text indexing")
 ```
 
-### 1.1.7 Example: Mortal Workers by Append-Only Coordination
+Three options, one mechanism. The fold site controls the behavior: permissive (default skip), strict (handler that raises), or custom (handler that transforms). The framework does not decide; you do.
 
-Capabilities, as introduced above, are much like ordinary database annotations — they specify a constraint that is determined by one or more parameters. But there is an important difference between database annotations and emergent capabilities. Capabilities must be *active* — they carry their own compilation methods. And this difference changes what is possible.
+**Exercise 1.3.** Design a scenario where handler dispatch is essential — where protocol dispatch alone would produce an incorrect result. Then design the handler that corrects it. Why is the handler keyed by exact type (`item.__class__`) rather than by isinstance?
 
-As a case in point, consider the problem of multiplying two 1500×1500 matrices. This is a simple computation — 2.25 million dot products — but we will perform it under a constraint that makes it interesting: the workers that compute the rows *die* every 30 seconds.
+### 1.1.7 Capabilities as Black-Box Abstractions
 
-Not "might fail occasionally." Die. Deterministically. Every worker has a 30-second lifetime. When the lifetime expires, the worker raises RuntimeError and is gone. Supervised restarts it. A new worker — a new generation — takes over. The old worker's in-memory state is lost.
+We have established that compound capabilities like `http_crud` and `Paginated` are used in exactly the same way as primitive capabilities. A user of `Paginated(20)` need not know its implementation — only that it modifies list operations to add pagination. The details of which specs it modifies, how it replaces handler templates, what request fields it adds — all suppressed behind the protocol interface.
 
-The question is: can the computation complete correctly? Can mortal workers produce immortal results?
-
-**Declarative description.** We define two event types — facts about the computation:
+This is the principle of black-box abstraction: a capability should be usable without knowledge of its implementation. The `scoped()` combinator supports this by isolating capabilities within a boundary:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class RowChunk:
-    start: int = 0
-    end: int = 0
-
-@dataclass(frozen=True, slots=True)
-class RowResult:
-    start: int = 0
-    data: tuple[tuple[float, ...], ...] = ()
-```
-
-RowChunk means "rows start through end need computing." RowResult means "rows start through end have been computed, and here is the data." These are the only two facts in the system. They are frozen dataclasses. They live in the Log — append-only, never modified, never deleted.
-
-**Imperative description — the conventional approach.** In a conventional distributed system (MapReduce, Spark, Celery, Dask), a *coordinator* manages the computation:
-
-1. The coordinator maintains a mutable assignment table: which chunks are assigned to which workers.
-2. Workers lease chunks from the coordinator. The coordinator tracks timeouts.
-3. When a worker dies, the coordinator detects the timeout and re-assigns the chunk.
-4. The coordinator must handle its own failure — which requires consensus (Raft, Paxos) or manual intervention.
-
-The coordinator is mutable state. The assignment table is mutable state. The timeout tracking is mutable state. Every piece of mutable state is a source of bugs, a complication for testing, and a failure mode for the system.
-
-**Declarative description — the emergent approach.** There is no coordinator. There is no assignment table. There is no timeout tracking. There is only the Log and a stateless function:
-
-```python
-async def _find_unclaimed(log):
-    done_starts = {r.data.start for r in await log.query(Lens().of_type(RowResult))}
-    all_chunks = await log.query(Lens().of_type(RowChunk))
-    return [c.data for c in all_chunks if c.data.start not in done_starts]
-```
-
-"What needs doing?" — all RowChunk events. "What has been done?" — all RowResult events. "What's left?" — the difference. This is a pure function over the Log. No state. No mutation. No side effects (besides the query itself). Any worker, at any time, calling this function, gets the correct answer — the set of unclaimed chunks as of that moment.
-
-The worker itself:
-
-```python
-async def mortal_worker(log, name, a, b_t):
-    deadline = time.monotonic() + LIFETIME  # 30 seconds
-    computed = 0
-    while time.monotonic() < deadline:
-        unclaimed = await _find_unclaimed(log)
-        if not unclaimed:
-            break
-        chunk = unclaimed[0]
-        rows = compute_rows(chunk, a, b_t, deadline)
-        if rows is None:
-            break  # died mid-chunk — chunk stays unclaimed
-        await put(log, RowResult(start=chunk.start, data=rows))
-        computed += 1
-    raise RuntimeError(f"{name} lifetime expired ({computed} chunks)")
-```
-
-The `computed` counter is local — for tracing only. Remove it and the worker is a pure function: query → compute → emit. No state that persists between calls. No state that must be migrated between generations. The worker's "memory" is the Log.
-
-**What happens when a worker dies.** The worker has been computing for 28 seconds. It has emitted three RowResults. At second 30, it raises RuntimeError. Supervised catches it. A new worker starts — same function, same arguments, fresh deadline.
-
-The new worker calls `_find_unclaimed(log)`. The Log has the three RowResults from the previous generation. The unclaimed set is smaller by three. The new worker picks the next unclaimed chunk and continues.
-
-No handoff protocol. No state transfer. No recovery procedure. The new worker simply *asks the Log what has been done* and *does what hasn't*.
-
-**What happens when two workers grab the same chunk.** Worker A and worker B both call `_find_unclaimed` at the same moment. Both see chunk 7 as unclaimed. Both compute it. Both emit RowResult(start=7, data=...).
-
-The Log now has two RowResult events for start=7. The coordinator (which is just an observer, not a controller) queries `done_starts = {r.data.start for r in ...}`. It's a set. Two entries for start=7 produce one element in the set. No conflict. No duplicate detection logic. No distributed lock. Append-only makes duplication safe by construction — because both results are identical (pure computation, same inputs, deterministic).
-
-**What happens when a worker dies mid-chunk.** Worker A starts computing chunk 7. At row 3 of 10, the deadline expires. `compute_rows` returns None (it checks the deadline after each row). The worker breaks out of the loop without emitting. Chunk 7 has no RowResult in the Log. Next generation sees it as unclaimed. Picks it up. Computes all 10 rows. Emits.
-
-No partial results in the Log. No cleanup. No rollback. The only side effect of a mid-chunk death is wasted computation — the 3 rows computed but never emitted. The correctness of the system does not depend on every computation completing. It depends on the Log — which only contains complete, correct results.
-
-**The result.**
-
-```
-  [   2.4s]  3/150  ( 2.0%)  1.3/s  1 gen
-  [  14.5s]  21/150  (14.0%)  1.4/s  1 gen
-  [  29.3s]  43/150  (28.7%)  1.5/s  1 gen
-  ☠ w1.gen1 died (14 chunks)
-  ☠ w0.gen1 died (15 chunks)
-  ☠ w2.gen1 died (14 chunks)
-  [  34.2s]  49/150  (32.7%)  1.4/s  2 gen
-  ...
-  ☠ w0.gen2 died (15 chunks)
-  ☠ w1.gen2 died (16 chunks)
-  ☠ w2.gen2 died (16 chunks)
-  [  63.9s]  97/150  (64.7%)  1.5/s  3 gen
-  ...
-  [ 101.3s]  150/150  (100.0%)  1.5/s  4 gen
-
-  ✓ 1500/1500 rows computed, max error: 0.00e+00
-  ✓ 5 snapshots, 150 result events
-  ✓ 12 worker generations
-```
-
-Four generations. Twelve worker instances (3 workers × 4 generations). 150 chunks. Zero lost rows. Error: 0.00e+00 — mathematically exact. Not one line of coordination code.
-
-**The declarative-imperative distinction.** The contrast between the declarative approach (Log + query) and the imperative approach (coordinator + assignment table + timeout) is a reflection of the general distinction between describing *properties of things* and describing *how to do things*. In the declarative approach, RowChunk means "this needs computing" and RowResult means "this is done." The coordination — which chunk to pick, how to handle failure, how to avoid duplication — *emerges* from these facts and the append-only property of the Log. In the imperative approach, the coordination is explicit: assignment tables, leases, heartbeats, re-assignment logic, consensus.
-
-The declarative approach is not merely more concise. It is *safer*. The imperative coordinator can be in an inconsistent state (assigned a chunk to a dead worker, lease expired but not yet detected, re-assignment race with a slow worker). The declarative approach has no state that can be inconsistent — the Log is append-only, and `_find_unclaimed` is a pure function.
-
-The `mortal_worker` program also illustrates that the simple capability framework we have introduced so far is sufficient for writing distributed, fault-tolerant computational systems. This might seem surprising, since we have not included any coordination primitives — no locks, no leases, no consensus protocols. `mortal_worker`, on the other hand, demonstrates how coordination can be accomplished using no special construct other than the ordinary ability to query an append-only log and emit frozen events.
-
-### 1.1.8 Capabilities as Black-Box Abstractions
-
-The mortal worker example is our first example of a system defined by a set of interacting capabilities and computations. Notice that the pattern — query Log, compute, emit — is *compositional*: each worker is a self-contained unit that can be understood without reference to other workers. The entire system can be viewed as a cluster of computations that mirrors the decomposition of the problem into subproblems.
-
-The importance of this decomposition strategy is not simply that one is dividing the program into parts. Rather, it is crucial that each capability accomplishes an identifiable task that can be used as a module in defining other compilations. For example, when we define `Supervised(max_restarts=5)` in terms of restart logic, we are able to regard the supervision capability as a "black box." We are not at that moment concerned with how it restarts crashed computations, only with the fact that it provides fault tolerance. The details of how supervision is implemented can be suppressed, to be considered at a later time. Indeed, as far as the World is concerned, `Supervised` is not quite a capability but rather an abstraction of a capability — a so-called *capability abstraction*. At this level of abstraction, any supervision strategy with the same interface is equally good.
-
-Thus, considering only the WorldContext they produce, the following two supervision capabilities should be indistinguishable:
-
-```python
-Supervised(max_restarts=5, backoff=1.0)
-
-AdaptiveSupervision(initial_strategy="one_for_one", max_restarts=5)
-```
-
-So a capability definition should be able to suppress detail. The users of the capability may not have written the capability themselves, but may have obtained it from another programmer or from an earlier version of the system. A user should not need to know how the capability is implemented in order to use it.
-
-**Scope and the scoped combinator.** One detail of a capability's compilation that should not matter to users outside its scope is which other capabilities it affects. Thus, `scoped()` provides a fold boundary:
-
-```python
-world = World(log=log, computations=(
+@derive(
     scoped(
-        life("worker-0", ...), life("worker-1", ...), life("worker-2", ...),
-        Supervised(max_restarts=50),
+        http_crud("/users", provider_node=Users),
+        Readonly(),
+        ProjectResponse(exclude=("secret",)),
     ),
-    Script(fn=coordinator),  # NOT supervised
-))
+    scoped(
+        http_crud("/admin/users", provider_node=Users),
+        Authenticated(BearerExtract(), TokenValidate(AuthUser, lookup)),
+    ),
+)
 ```
 
-`Supervised` inside `scoped()` wraps only the workers. The coordinator, outside the scope, is not affected. This is the emergent analog of block structure in Scheme: definitions that are local to a scope do not leak to the enclosing environment.
+Each `scoped()` creates a self-contained derivation: the generator runs, then the modifiers apply — only to the specs produced by that generator. `Readonly()` affects `/users` but not `/admin/users`. `Authenticated` affects `/admin/users` but not `/users`. This is the emergent analog of block structure: definitions local to a scope do not leak to the enclosing environment.
 
-The `scoped()` combinator is basically the right solution to the simplest capability-packaging problem. But there is a better idea lurking here. In addition to isolating capabilities within a scope, we can simplify them. Since the Log is bound in the definition of World, the computations that are defined internally have access to it — it is injected into their scope automatically. Thus, it is not necessary to pass the Log explicitly to each computation. Instead, the Log is available as a free variable in the computation's scope, getting its value from the World that created it. This discipline — automatic injection of shared values through scope hierarchy — is what emergent calls *nodnod scope resolution*, and it is analogous to lexical scoping in Scheme.
+The mechanism is simple. `Scoped` implements `DeriveGeneratable`. Its `compile_derive_generate` delegates to the inner generator, then folds the local modifiers through the result:
+
+```python
+class Scoped(SchemaCapability):
+    generator: SchemaCapability
+    caps: tuple[SchemaCapability, ...]
+
+    def compile_derive_generate(self, ctx):
+        ctx = self.generator.compile_derive_generate(ctx)
+        ctx = fold(list(self.caps), ctx, DeriveModifiable, "compile_derive_modify")
+        ctx = fold(list(self.caps), ctx, DeriveAugmentable, "compile_derive_augment")
+        return ctx
+```
+
+fold inside fold. The outer fold (compile_derive) encounters Scoped and calls its generate method. Inside, Scoped runs its own folds over its local capabilities. The outer fold does not know this happened — it sees only the transformed context that Scoped returns. Black-box abstraction, accomplished by the same six-line primitive.
+
+**Exercise 1.4.** The three-mechanism framework (primitives, combination, abstraction) applies at every level of emergent. Identify the three mechanisms for the derivation language: what are the primitives, the means of combination, and the means of abstraction?
 
 ---
 
 ## 1.2 Capabilities and the Compilations They Generate
 
-We have now considered the elements of compilation: We have used primitive capabilities, we have combined these capabilities into annotations, and we have abstracted these composite capabilities by defining them as compound capabilities like http_crud. But that is not enough to enable us to say that we know how to compile. Our situation is analogous to that of someone who has learned the rules for how the pieces move in chess but knows nothing of typical openings, tactics, or strategy. Like the novice chess player, we don't yet know the common patterns of compilation in the domain. We lack the knowledge of which capabilities are worth composing (which compilation phases are worth defining). We lack the experience to predict the consequences of composing a capability (executing a fold).
+We have now considered the elements of compilation: primitive capabilities, combinations, compound capabilities, the fold rule, and protocol dispatch. But this is not enough to say we know how to compile. We are like someone who has learned how the pieces move in chess but knows nothing of openings, tactics, or strategy.
 
-The ability to visualize the consequences of the capabilities under consideration is crucial to becoming an expert compiler designer, just as it is in any synthetic, creative activity. In becoming an expert photographer, one must learn how to look at a scene and know how it will appear on a print for each choice of exposure. So it is with compilation, where we are planning the compilation to be performed by fold and where we control fold by means of capabilities. To become experts, we must learn to visualize the compilations generated by various types of capabilities. Only after we have developed such a skill can we learn to reliably construct capability systems that exhibit the desired behavior.
+The ability to visualize the consequences of a capability combination is crucial to becoming an expert compilation designer. To become experts, we must learn to see the compilations generated by various types of capabilities. Only after we develop this skill can we reliably construct capability systems that produce the intended artifacts.
 
-A capability is a pattern for the *local transformation* of a compilation context. It specifies how one step of the compilation is built upon the previous step. We would like to be able to make statements about the overall, or *global*, behavior of a compilation whose local transformations have been specified by capabilities. This is straightforward to do, because fold is a catamorphism — its global behavior is determined by the local behavior of the capabilities and the algebraic laws (fusion, banana split, universality) that govern their composition.
+A capability is a pattern for the *local transformation* of a compilation context. It specifies how one step of compilation is built upon the previous step. We want to make statements about the *global* behavior of a compilation whose local transformations have been specified by capabilities. This is straightforward because fold is a catamorphism — its global behavior is determined by the local behavior of the capabilities and the algebraic laws that govern their composition.
 
-In this section we will examine some common "shapes" for compilations generated by capabilities. We will also investigate the resources these compilations consume, and the artifacts they produce. The capabilities we will consider are simple. Their role is like that played by test patterns in photography: as prototypical patterns, rather than practical examples in their own right.
+### 1.2.1 The Compilation That a Capability Generates
 
-### 1.2.1 Single-Phase Compilation
-
-We begin by considering the simplest compilation: one phase, one field, several capabilities. Consider a field:
+Consider a User with three fields:
 
 ```python
-email: Annotated[str, MaxLen(255), Unique, sql.Index()]
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: str
+    email: Annotated[str, MaxLen(255), Unique]
 ```
 
-and the Pydantic compilation phase. fold iterates three capabilities:
-
-```
-Step 1: MaxLen(255)  — isinstance(PydanticCompilable) → True
-        compile_pydantic(ctx) → ctx' with max_length=255
-Step 2: Unique()     — isinstance(PydanticCompilable) → False → skip
-Step 3: sql.Index()  — isinstance(PydanticCompilable) → False → skip
-Result: PydanticContext with max_length=255
-```
-
-The compilation is *linear* — fold processes each capability once, in order. The total work is proportional to the number of capabilities. But the result is independent of the order. If we permute the capabilities:
+We compile this through two phases — Pydantic and SQLAlchemy — using `SchemaCompiler`:
 
 ```python
-email: Annotated[str, sql.Index(), MaxLen(255), Unique]
+FULLSTACK = PYDANTIC_PHASE + OPENAPI_PHASE
+ec = FULLSTACK.compile(User, axes)
 ```
 
-the result is identical. This is because each capability writes to an independent part of the context. MaxLen writes to max_length. Unique writes to unique. sql.Index writes to index. They do not interfere. This *commutativity* is a consequence of the free monoid structure — the algebra with no equations between generators.
+`compile_fields` inside `SchemaCompiler.compile()` iterates each field. For each field, it iterates each phase. For each phase, it calls `fold_field`. The result is a `FieldCompilation` per field — a dict of contexts keyed by phase.
 
-Now consider the same field compiled through the SQLAlchemy phase:
+Let us trace every step. For each field, predict which capabilities participate in each phase before reading the table.
 
+**Field: id. Capabilities: (Identity,)**
+
+| Phase | Capability | isinstance? | Action | Context change |
+|-------|-----------|-------------|--------|----------------|
+| Pydantic | Identity | No compile_pydantic | Skip | none |
+| OpenAPI | Identity | No compile_openapi | Skip | none |
+
+Identity has no Pydantic or OpenAPI methods. It is a storage-layer capability. It is invisible here — open-world.
+
+**Field: name. Capabilities: ()**
+
+No capabilities. Both phases produce default contexts. `name` will appear as a plain `str` in the Pydantic model and a default string entry in the OpenAPI schema.
+
+**Field: email. Capabilities: (MaxLen(255), Unique)**
+
+| Phase | Capability | isinstance? | Action | Context change |
+|-------|-----------|-------------|--------|----------------|
+| Pydantic | MaxLen(255) | Yes | compile_pydantic | metadata += MaxLen(max_length=255) |
+| Pydantic | Unique | No compile_pydantic | Skip | none |
+| OpenAPI | MaxLen(255) | Yes | compile_openapi | schema["maxLength"] = 255 |
+| OpenAPI | Unique | No compile_openapi | Skip | none |
+
+Unique has no Pydantic or OpenAPI methods. It is purely a storage/constraint capability.
+
+Now add the SQLAlchemy phase:
+
+**Field: id. Capabilities: (Identity,)**
+
+| Phase | Capability | isinstance? | Action | Context change |
+|-------|-----------|-------------|--------|----------------|
+| SQLAlchemy | Identity | Yes | compile_sqlalchemy | primary_key=True |
+
+Identity *does* have `compile_sqlalchemy`. It sets the column as the primary key. The same capability that was invisible to Pydantic is now active.
+
+**Field: email. Capabilities: (MaxLen(255), Unique)**
+
+| Phase | Capability | isinstance? | Action | Context change |
+|-------|-----------|-------------|--------|----------------|
+| SQLAlchemy | MaxLen(255) | Yes | compile_sqlalchemy | column_type: Text -> String(255) |
+| SQLAlchemy | Unique | Yes | compile_sqlalchemy | unique=True |
+
+Both participate. The result: `Column(String(255), unique=True)`.
+
+**Summary across all three phases:**
+
+| Capability | Pydantic | OpenAPI | SQLAlchemy |
+|-----------|----------|---------|------------|
+| Identity | skip | skip | primary_key=True |
+| MaxLen(255) | max_length metadata | maxLength: 255 | String(255) |
+| Unique | skip | skip | unique=True |
+
+Three capabilities. Three folds. Nine dispatch decisions. The same frozen data, interpreted differently by each evaluation regime.
+
+### 1.2.2 The Crisis: One Fact, Four Evaluators
+
+We are now in a position to confront the central insight of this chapter.
+
+Look again at `MaxLen(255)`. It is a frozen dataclass with one field: `value: int`. How many compile methods does it carry? Before reading on, look at the summary table above and count the targets where MaxLen participated. Now consider: what if there are targets beyond Pydantic, OpenAPI, and SQLAlchemy?
+
+MaxLen carries *five* compile methods:
+
+```python
+class MaxLen(UniversalCapability):
+    value: int
+
+    def compile_pydantic(self, ctx):       # → Pydantic metadata: max_length=255
+    def compile_openapi(self, ctx):        # → OpenAPI schema: {"maxLength": 255}
+    def compile_sqlalchemy(self, ctx):     # → Column type: String(255)
+    def compile_constraints(self, ctx):    # → Constraint: max_length=255
+    def compile_verify_length(self, ctx):  # → Verification: max_length=255
 ```
-Step 1: MaxLen(255)  — isinstance(SQLAlchemyCompilable) → True
-        compile_sqlalchemy(ctx) → ctx' with column_type=String(255)
-Step 2: Unique()     — isinstance(SQLAlchemyCompilable) → True
-        compile_sqlalchemy(ctx') → ctx'' with unique=True
-Step 3: sql.Index()  — isinstance(SQLAlchemyCompilable) → True
-        compile_sqlalchemy(ctx'') → ctx''' with index=True
-Result: SQLAlchemyContext with String(255), unique=True, index=True
-```
 
-Same capabilities. Different protocol. Different number of capabilities participating (all three vs one). Different result. The open-world dispatch determines which capabilities participate — and the same capability can participate in multiple targets.
+Each method takes a different context type and produces a different artifact from the same fact.
 
-### 1.2.2 Multi-Phase Compilation (Banana Split)
+The reader who has been following along has likely been thinking of capabilities as "smart annotations" — metadata that attaches to fields and gets read by different backends. Annotations with methods. This understanding is incomplete.
 
-When we compile one field through multiple phases — say, Pydantic AND OpenAPI — we could run fold twice:
+Consider: `MaxLen(255)` compiled through Pydantic produces a runtime validation constraint. Through OpenAPI, it produces a documentation artifact. Through SQLAlchemy, it produces a DDL instruction that physically constrains the column width. Through Constraints, it produces a checkable proposition. Through verification, it produces an assertion about consistency.
+
+These are not different "output formats." They are different *processes*. Pydantic validation runs at request time, rejecting strings longer than 255. OpenAPI documentation is consumed by API clients at design time. SQLAlchemy DDL runs at migration time, altering the physical storage. Verification runs at import time, before any server starts.
+
+**This is not four different features. This is ONE fact — maximum length is 255 — interpreted by four different evaluation regimes. The capability is the meaning. The fold is the evaluator. The protocol determines the semantics.**
+
+In 1972, John Reynolds showed that a lambda closure and a record carrying the closure's free variables are interchangeable representations — a transformation he called *defunctionalization*. The lambda `(lambda (s) (if (> (string-length s) 255) (error "too long") s))` and the record `MaxLen(value=255)` are two representations of the same decision: "this string cannot exceed 255 characters." The lambda carries the decision as *code*. The record carries it as *data*.
+
+Reynolds proved the transformation is reversible. Neither representation is more fundamental. But there is a profound practical difference: the record can be *inspected*. You can ask `MaxLen(255)` what its value is. You can put it in a set, serialize it, compare it. You cannot do any of these things with a lambda. And — crucially — the record can be consumed by *multiple* evaluators. A lambda is bound to one evaluation: the one that applies it. A record can be consumed by any fold that speaks the right protocol.
+
+`MaxLen(255)` is Reynolds' defunctionalized closure. `value=255` is the free variable. The `compile_*` methods are the lambda bodies. fold is Reynolds' `apply` function — but with a critical inversion. In Reynolds, `apply` dispatches on the record type and contains all the logic. In emergent, each record carries its own methods. fold dispatches via isinstance and calls whatever it finds. The knowledge lives *in the capability*, not in the fold.
+
+This is the crisis of Chapter 1. Capabilities are not annotations. They are *defunctionalized decisions* — data representations of facts that generate different processes through different folds. The frozen dataclass IS a program. The compile methods are its instruction set. fold is the evaluator. And just as different interpreters give different semantics to the same program text, different folds give different semantics to the same capability.
+
+**Exercise 1.5.** `Unique` has `compile_sqlalchemy` (sets unique=True on the column) and `compile_constraints` (sets is_unique=True in the constraint context) but no `compile_pydantic`. Should it? What would Pydantic-level uniqueness mean? Why is it fundamentally different from database-level uniqueness? (Hint: uniqueness is a property of a *collection*, not of a single value.)
+
+**Exercise 1.6.** Reynolds (1972) showed that defunctionalization is reversible — given a set of records with dispatch, you can reconstruct the original closures (*refunctionalization*). Apply this to emergent: given `MaxLen(255)` (the record) and `fold` (the dispatch), what function does `MaxLen(255)` defunctionalize? What are its "free variables" (Reynolds' environment)? What is the "lambda body"?
+
+### 1.2.3 Multi-Phase Compilation and the Banana Split
+
+When we compile one field through multiple phases — say, Pydantic AND OpenAPI — we *could* traverse the capability list twice:
 
 ```python
 pydantic_ctx = fold(caps, pydantic_initial, PydanticCompilable, "compile_pydantic")
 openapi_ctx  = fold(caps, openapi_initial, OpenAPICompilable, "compile_openapi")
 ```
 
-Two traversals of the same capability list. But Meijer's *banana split* theorem tells us these can be combined into one traversal producing a pair:
+But Meijer's *banana split* theorem tells us: two folds over the same list combine into one fold producing a pair. `compile_fields` exploits this:
 
 ```python
-# compile_fields does this internally
 for phase in phases:
     ctx = phase.initial(name, field_type)
     ctx = fold_field(info, ctx, phase.protocol, phase.method)
     contexts[phase.context_type] = ctx
 ```
 
-The result is a FieldCompilation — a dict of contexts keyed by phase. One traversal per field (iterating phases inside), not one traversal per phase. This is why adding a new compilation phase does not add a new traversal of the capability list — it adds one more entry to the inner loop.
+One traversal per field (iterating phases in the inner loop), not one traversal per phase. The result is a `FieldCompilation` — a dict of contexts keyed by phase. Adding a new phase adds one inner-loop iteration, not a new outer-loop traversal.
 
 The SchemaCompiler algebra makes this explicit:
 
 ```python
-FASTAPI_SCHEMA = PYDANTIC_PHASE + OPENAPI_PHASE
+FASTAPI_SCHEMA = PYDANTIC_PHASE + OPENAPI_PHASE     # 2 phases
+FULL = FASTAPI_SCHEMA + ARGPARSE_PHASE               # 3 phases
+ec = FULL.compile(User, axes)                         # one pass
 ```
 
-`+` is left-biased union of phase sets. `FASTAPI_SCHEMA.compile(User, axes)` runs both phases in one pass. Adding `+ ARGPARSE_PHASE` adds one more inner-loop iteration, not one more outer-loop traversal.
+The algebraic laws hold: `A + A == A` (idempotent — adding the same phase twice has no effect), `(A + B) + C == A + (B + C)` (associative), `A + empty == A` (identity). These are not design choices. They follow from the structure: phases are keyed by context type, and the operations are set operations on those keys.
 
-### 1.2.3 Derivation: Fold Generating Programs
+### 1.2.4 Derivation: Fold Generating Programs
 
-The most interesting compilation shape is *derivation* — a compilation that produces not data structures but *programs*. compile_derive takes a class with @schema_meta capabilities and produces OpSpecs — descriptions of operations that, when materialized, become endpoints with handlers, request types, and response types.
+The most interesting compilation shape is *derivation* — a compilation that produces not data structures but *programs*. `compile_derive` takes a class with `@schema_meta` capabilities and produces `OpSpec`s — descriptions of operations that, when materialized, become HTTP endpoints with handlers, request types, and response types.
 
-This is a fold that generates programs which generate programs. The DeriveCtx accumulator starts empty and fills with OpSpecs. Each OpSpec describes one endpoint: name, fields, handler template, trigger, effects. materialize() turns OpSpecs into actual Python types (frozen dataclasses for request/response) and async handler functions.
+This is a fold that generates programs which generate programs. The `DeriveCtx` accumulator starts empty and fills with `OpSpec`s. Each `OpSpec` describes one endpoint: name, fields, handler template, trigger, effects. `materialize()` turns `OpSpec`s into actual Python types and async handler functions.
 
-The derivation process has three phases, each a separate fold over the same capability list:
+The derivation has three phases, each a separate fold over the same capability list:
 
+```python
+# Phase 1: CRUD generates OpSpecs
+ctx = fold_schema(cls, ctx, DeriveGeneratable, "compile_derive_generate")
+
+# Phase 2: Paginated/SoftDelete transform the OpSpecs
+ctx = fold_schema(cls, ctx, DeriveModifiable, "compile_derive_modify")
+
+# Phase 3: Augmenters post-process
+ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
 ```
-Phase 1 (Generate):  http_crud produces 6 OpSpecs
-Phase 2 (Modify):    Paginated transforms the List OpSpec
-Phase 3 (Augment):   (unused in this example)
-```
 
-The shape of this compilation is unlike single-phase or multi-phase — it is *staged*. Phase 1 creates an intermediate representation (OpSpecs). Phase 2 transforms it. Phase 3 augments it. Only then does materialization produce the final artifacts. The gap between declaration and materialization is where the power lives — transforms can rewrite OpSpecs, explain can inspect them, multi-target can fork them.
+Three folds. Same capability list. Different protocols each time. Consider the declaration `@derive(http_crud("/users", Users), Paginated(20), Readonly())`. Before reading on, predict: in Phase 1, which capabilities participate? In Phase 2, which participate? How many OpSpecs survive Phase 2?
 
-### 1.2.4 Verification: Fold as Constraint Checker
+The answer: Phase 1 — only `http_crud` (it implements `DeriveGeneratable`), producing 6 OpSpecs. Phase 2 — `Paginated(20)` modifies the List spec, then `Readonly()` removes all specs with the Mutation effect (Create, Update, Patch, Delete). Two OpSpecs survive: List (paginated) and Get. `http_crud` is skipped in Phase 2 because it doesn't implement `DeriveModifiable`.
 
-Another compilation shape is *verification* — a fold that accumulates constraints and checks them for consistency. Consider:
+The capabilities that fold skips in Phase 1 (because they don't implement `DeriveGeneratable`) become active in Phase 2 (because they implement `DeriveModifiable`). The capability list is a program. Each fold is a different *evaluation* of that program.
+
+The shape of derivation is *staged*. Phase 1 creates an intermediate representation (OpSpecs). Phase 2 transforms it. Phase 3 augments it. Only then does materialization produce the final artifacts. The gap between declaration and materialization is where the power lives — transforms can rewrite OpSpecs, `explain` can inspect them, multiple targets can fork them.
+
+### 1.2.5 Verification: Fold as Constraint Checker
+
+Another compilation shape is verification — a fold that accumulates constraints and checks them for consistency:
 
 ```python
 balance: Annotated[float, Min(100), Max(50)]
 ```
 
-The verification fold accumulates: `lower_bound=100, upper_bound=50`. After the fold, `ctx.check()` discovers `lower_bound > upper_bound` and emits an Issue. This is the same fold — same six lines — but the context is a constraint accumulator instead of a schema builder.
+The verification fold accumulates `lower_bound=100, upper_bound=50`. After the fold, a consistency check discovers `lower_bound > upper_bound` and emits an Issue. This is the same fold — same six lines — but the context is a constraint accumulator instead of a schema builder.
 
-The verification shape is notable because it produces *failures*, not artifacts. A successful verification produces an empty tuple of Issues. A failed verification produces a non-empty tuple. verify_raising() raises VerificationError at import time — before any server starts, before any request is processed.
+Verification produces *failures*, not artifacts. A successful verification returns an empty tuple. A failed one returns issues. `verify_raising()` raises at import time — before any server starts.
 
-This is the dissolved tradeoff between inspectability and type safety. Initial encoding (frozen data) + domain verification (fold over constraint contexts) provides guarantees that no host-language type checker can express: Min(100) > Max(50) is invisible to Haskell's type system, but visible to emergent's verify().
+This is the dissolved tradeoff between inspectability and type safety. `Min(100) > Max(50)` is invisible to any type checker. It is visible to emergent's verify, because verify is just another fold target.
+
+**Exercise 1.7.** The capability `MaxLen(255)` participates in five protocols: PydanticCompilable, OpenAPICompilable, SQLAlchemyCompilable, ConstraintsCompilable, and LengthVerifyCompilable. Trace fold for the field `email: Annotated[str, MaxLen(255), Unique]` through all five. For each, state which capabilities participate, which are skipped, and what the final context contains. Then answer: is there a protocol where *both* MaxLen and Unique participate?
+
+**Exercise 1.8.** Meijer's banana split theorem says that two folds over the same list combine into one fold producing a pair. But what if Phase B needs the result of Phase A? Can they still be banana-split? Design a two-phase compilation where the second phase reads the first phase's output. What algebraic law would break?
 
 ---
 
 ## 1.3 Formulating Abstractions with Higher-Order Capabilities
 
-We have seen that capabilities are, in effect, abstractions that describe compound compilation operations on contexts. We have also seen how compound capabilities like http_crud, Paginated, and SoftDelete act as building blocks for defining further compilation operations.
+We have seen that capabilities describe compilation operations on contexts. We have combined them, named them, and traced the compilations they generate. But we have not yet exploited one of the most powerful features of capabilities: that they are *values*. A capability is a frozen dataclass. It can be stored in a variable, passed as an argument, returned from a function, and placed inside another capability. Capabilities are first-class.
 
-One of the things we should demand from a powerful compilation framework is the ability to build abstractions by assigning names to common patterns and then to work in terms of the abstractions directly. Capabilities provide this ability. This is why all but the most primitive compilation frameworks include mechanisms for defining capabilities.
-
-Yet even in defining capabilities, we are limited to a certain kind of abstraction. We observe that there is a common pattern in many capabilities:
-
-```python
-@dataclass(frozen=True, slots=True)
-class Readonly(SchemaCapability):
-    def compile_derive_modify(self, ctx):
-        return ctx.reject_by_effect(Mutation)
-
-@dataclass(frozen=True, slots=True)
-class MutationsOnly(SchemaCapability):
-    def compile_derive_modify(self, ctx):
-        return ctx.select_by_effect(Mutation)
-
-@dataclass(frozen=True, slots=True)
-class WithoutDelete(SchemaCapability):
-    def compile_derive_modify(self, ctx):
-        return ctx.reject_by_effect(Deletes)
-```
-
-These three capabilities differ only in the effect they select and the method they call (reject vs select). The pattern is: "filter OpSpecs by effect." We could abstract this pattern:
-
-```python
-def effect_filter(effect_type, method="reject"):
-    @dataclass(frozen=True, slots=True)
-    class _Filter(SchemaCapability):
-        def compile_derive_modify(self, ctx):
-            return getattr(ctx, f"{method}_by_effect")(effect_type)
-    return _Filter()
-```
-
-Readonly = `effect_filter(Mutation, "reject")`. MutationsOnly = `effect_filter(Mutation, "select")`. WithoutDelete = `effect_filter(Deletes, "reject")`.
-
-This is a *higher-order capability* — a function that takes a pattern parameter and produces a capability. The capability itself is still a frozen dataclass with a compile_* method. But the function that creates it abstracts over the pattern.
+This section explores the consequences of first-class capabilities — the emergent equivalent of SICP's Section 1.3 on higher-order procedures. We build toward a crescendo: capabilities as arguments, capabilities that produce capabilities, capabilities as a general method, and the glimpse of something deeper — the fold that folds over fold-described data.
 
 ### 1.3.1 Capabilities as Arguments
 
-The `scoped()` combinator is our first example of a capability that accepts other capabilities as arguments:
+The `scoped()` combinator accepts capabilities as arguments:
 
 ```python
 scoped(
-    http_crud("/users", Users),      # generator capability
-    Readonly(),                       # modifier capability
+    http_crud("/users", Users),       # generator capability
+    Readonly(),                        # modifier capability
     ProjectResponse(exclude=("secret",)),  # another modifier
 )
 ```
 
-scoped takes a generator and zero or more modifiers. It implements DeriveGeneratable — Phase 1 of derivation. Its compile_derive_generate delegates to the inner generator, then folds the modifiers through the result. The modifiers are *arguments* to scoped — capabilities passed as data to another capability.
+`scoped` takes a generator and zero or more modifiers. It stores them in its frozen fields and deploys them during compilation. The modifiers are *data* — capabilities passed to another capability. During Phase 1, Scoped delegates to the inner generator, then folds the modifiers through the result.
 
-The Authenticated capability similarly accepts capabilities as arguments:
+This is not special syntax. It is the natural consequence of capabilities being values. Any capability can accept other capabilities as constructor arguments:
 
 ```python
-Authenticated(
-    BearerExtract(),           # enricher capability
-    TokenValidate(AuthUser, lookup),  # enricher capability
-    effect=Mutation,           # restrict to mutations
-)
+# From examples/roulette/wiring.py — a real capability that takes another as argument
+@dataclass(frozen=True, slots=True)
+class Auth(SurfaceCapability, ScopeEnricher):
+    """Auth enricher — extracts auth op from request via HasAuth protocol."""
+    request_type: type
+
+    def compile_enricher(self, ctx):
+        return ctx.add_enricher(self)
 ```
 
-BearerExtract and TokenValidate are ScopeEnricher capabilities. Authenticated is a SchemaCapability that, during Phase 2 (Modify), attaches these enrichers to the appropriate OpSpecs. It receives capabilities as data, stores them in its frozen fields, and deploys them during compilation.
+This is a real example from the emergent codebase (not a hypothetical). `Auth` takes a request type as an argument — a capability parameterized by another type. During compilation, it registers itself as a scope enricher that will extract authentication from requests.
 
-### 1.3.2 Constructing Capabilities with Factories
+`BearerExtract()` and `TokenValidate(AuthUser, lookup)` are capabilities passed as data to `Authenticated`, which deploys them during the modify phase. Capabilities taking capabilities as arguments — the same pattern as SICP's `sum` taking `term` and `next` as arguments.
 
-Consider the `memory_node()` function:
+### 1.3.2 Capabilities That Produce Capabilities
+
+Consider the `memory_node()` factory:
 
 ```python
 Users = memory_node()
+Posts = memory_node()
+Comments = memory_node()
 ```
 
-This returns a nodnod node type that provides an in-memory relational provider. It is a *capability factory* — a function that constructs a reusable compilation component.
+Each call creates a fresh in-memory relational provider wrapped in a nodnod node type. The implementation:
 
 ```python
 def memory_node(key_field="id", auto_id=True):
-    store = MemoryRelationalProvider(key_fn=lambda x: getattr(x, key_field), next_id=SequenceNextId())
+    next_id = SequenceNextId() if auto_id else None
+    store = MemoryRelationalProvider(
+        key_fn=lambda x: getattr(x, key_field),
+        next_id=next_id,
+    )
+
     @scalar_node
     class _Node:
         @classmethod
         def __compose__(cls):
             return store
+
     return _Node
 ```
 
-The factory closes over the store. Each call to memory_node() creates a fresh provider and a fresh node type. The node type is a value — it can be stored in a variable, passed to http_crud, and used in multiple @derive decorators.
+`memory_node` is a function that returns a *value* (a node type) that will be used as a capability argument to `http_crud`. It is a capability factory — a function that constructs reusable compilation components. Each call closes over a fresh store, producing an independent provider.
 
-### 1.3.3 Capabilities as General Methods
-
-The SchemaCompiler algebra is our most powerful example of capabilities used as general methods. Consider:
+The factory pattern generalizes. Here is the pattern underlying `Readonly`, `MutationsOnly`, and `WithoutDelete`:
 
 ```python
-FULLSTACK = FASTAPI_SCHEMA + SA_SCHEMA + CONSTRAINTS_SCHEMA
-issues = verify(User, phases=FULLSTACK.phases)
-ec = FULLSTACK.compile(User, axes)
+class Readonly(SchemaCapability):
+    def compile_derive_modify(self, ctx):
+        return ctx.reject_by_effect(Mutation)
+
+class MutationsOnly(SchemaCapability):
+    def compile_derive_modify(self, ctx):
+        return ctx.select_by_effect(Mutation)
+
+class WithoutDelete(SchemaCapability):
+    def compile_derive_modify(self, ctx):
+        return ctx.reject_by_effect(Deletes)
 ```
 
-FULLSTACK is a SchemaCompiler — a set of phases. `+` composes phase sets. `.compile()` runs all phases. `verify()` runs verification phases. The same algebra that composes compilation targets also composes verification — because verification is just another compilation target.
+Three capabilities. Same structure. Differ only in the effect and the method (reject vs select). The abstraction is obvious — but emergent deliberately keeps each as a separate class. Why? Because a capability is not just its behavior. It is its *identity*. `Readonly()` appears in traces, in `explain()` output, in error messages. An anonymous `_Filter` generated by a factory would be opaque.
 
-The algebraic laws — `A + A = A` (idempotent), `(A + B) + C = A + (B + C)` (associative), `A + empty = A` (identity) — are not design choices. They follow from the structure: phases are keyed by context type, and the operations are set operations on those keys.
+This is an important design point: higher-order capability factories are powerful but should be used for *internal* machinery, not for the *vocabulary* that users read and write. The user-facing capabilities — `Readonly`, `Paginated`, `SoftDelete` — are named, documented, and independently traceable.
 
-This observation — that compilation and verification share the same algebra — is the key to the power of the framework. It means that any new compilation target (GraphQL, Protobuf, Terraform) automatically participates in the same composition algebra, and any new verification phase (security, accessibility, domain consistency) composes identically with existing targets. There is no second mechanism.
+### 1.3.3 Capabilities That Transform Other Capabilities' Output
+
+`Paginated` and `Readonly` do not generate anything themselves. They *transform* what other capabilities generated. In Phase 1, `http_crud` generates six OpSpecs. In Phase 2, `Paginated` modifies one of them and `Readonly` removes three.
+
+This is the higher-order pattern: capabilities operating on the *output* of other capabilities. SICP's `average-damp` takes a function and returns a transformed function. emergent's `Readonly()` takes a set of specs and returns a filtered set.
+
+The pattern is explicit in `SoftDelete`:
+
+```python
+class SoftDelete(SchemaCapability):
+    deleted_field: str = "deleted_at"
+
+    def compile_derive_modify(self, ctx):
+        # Replace the hard-delete handler with a soft-delete handler
+        ctx = ctx.replace_handler(Deletes, SoftDeleteMark(self.deleted_field))
+        # Add a query filter: only return non-deleted items
+        ctx = ctx.filter_query(lambda e: getattr(e, self.deleted_field).is_null())
+        # Exclude the deleted_at field from create requests
+        ctx = ctx.exclude_fields(Creates, frozenset({self.deleted_field}))
+        return ctx
+```
+
+Three transformations in one capability. It replaces a handler template (modifying the *program* that another capability generated), adds a query filter (modifying the *data access* that another capability configured), and excludes a field (modifying the *schema* that another capability produced). One capability reaching into the output of another and reshaping it.
+
+This is where the staged architecture of derivation pays off. Phase 1 generates a representation (OpSpecs). Phase 2 transforms that representation. The separation means transforms can be *composed* independently:
+
+```python
+@derive(
+    http_crud("/users", provider_node=Users),
+    Paginated(20),
+    SoftDelete("deleted_at"),
+    Readonly(),
+)
+```
+
+Each modifier sees the specs left by the previous one. `Paginated` adds pagination to the List spec. `SoftDelete` replaces the Delete handler and adds a query filter. `Readonly` removes all mutation specs — including the soft-delete spec that `SoftDelete` just created. The composition is declarative and the order among Phase 2 capabilities doesn't matter for most combinations (they operate on independent parts of the DeriveCtx).
+
+### 1.3.4 The SchemaCompiler Algebra: Capabilities as General Method
+
+The SchemaCompiler provides the most powerful example of capabilities used as a general method. Recall:
+
+```python
+FASTAPI_SCHEMA = SchemaCompiler(phases=(PYDANTIC_PHASE, OPENAPI_PHASE))
+CLI_SCHEMA = SchemaCompiler(phases=(ARGPARSE_PHASE,))
+SA_SCHEMA = SchemaCompiler(phases=(STORAGE_FIELD_PHASE,))
+CONSTRAINTS_SCHEMA = SchemaCompiler(phases=(CONSTRAINTS_PHASE,))
+
+FULLSTACK = FASTAPI_SCHEMA + CLI_SCHEMA + SA_SCHEMA + CONSTRAINTS_SCHEMA
+```
+
+`FULLSTACK` compiles a User entity through *all* targets in one pass. The same `compile_fields` kernel handles Pydantic, OpenAPI, argparse, storage, and constraints — because they are all just phases, and phases are just `(context_type, protocol, initial)` triples.
+
+The algebra supports restriction:
+
+```python
+JUST_API = FULLSTACK - CLI_SCHEMA - SA_SCHEMA    # Pydantic + OpenAPI + Constraints
+JUST_SQL = FULLSTACK & SA_SCHEMA                   # Storage only
+```
+
+And override:
+
+```python
+CUSTOM = FULLSTACK | SchemaCompiler(phases=(MY_CUSTOM_PYDANTIC_PHASE,))
+```
+
+`|` is right-biased merge: `MY_CUSTOM_PYDANTIC_PHASE` replaces `PYDANTIC_PHASE` by context type.
+
+This observation — that compilation, verification, and custom targets share the same algebra — is central. Any new compilation target (GraphQL, Protobuf, Terraform) automatically participates in the same composition algebra. Any new verification phase composes identically with existing targets. There is no second mechanism.
+
+### 1.3.5 The Fractal: Fold Consuming Fold-Described Data
+
+We conclude with a glimpse of what comes in later chapters. Consider `examples/fractal.py`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Poly(Capability):
+    coefficients: tuple[float, ...]
+
+    def compile_eval(self, ctx: EvalCtx) -> EvalCtx:
+        coeffs = self.coefficients
+        def evaluate(x: float) -> float:
+            result = 0.0
+            for c in coeffs:
+                result = result * x + c
+            return result
+        return replace(ctx, evaluate=evaluate)
+
+    def compile_latex(self, ctx: LatexCtx) -> LatexCtx:
+        # ... generates LaTeX: "x^{2} + 2x + 1"
+
+    def compile_derivative(self, ctx: DerivativeCtx) -> DerivativeCtx:
+        # ... generates derivative coefficients: (2, 2)
+```
+
+`Poly(1, 2, 1)` represents x^2 + 2x + 1. It is data. But fold it with `compile_eval` and it generates a *Python function*. Fold it with `compile_latex` and it generates a LaTeX string. Fold it with `compile_derivative` and it generates `(2, 2)` — the coefficients of the derivative — which are *themselves* valid input to another Poly, which is itself a valid input to another fold.
+
+This is Hutton's result (1999) that fold can generate *functions* as output. `foldl` is a `foldr` that produces a function and then applies it. The capability is data. The fold produces functions, strings, new data, even new capabilities. The fractal: fold consuming fold-described data, producing data that is itself fold-describable.
+
+The fractal example has four levels:
+
+- **Level 0:** Expressions as capabilities (`Poly`, `Scale`, `Shift`)
+- **Level 1:** Compile entity to multiple targets (EvalCtx, LatexCtx, PythonCtx, DerivativeCtx)
+- **Level 2:** Derive new entities from compiled data (generate derivative entity whose fields are themselves capabilities)
+- **Level 3:** Compile *compiler configurations* — a meta-capability `IncludePhase(LATEX_PHASE)` that, when folded, tells the compiler *which phases to run*
+
+At Level 3, capabilities describe the compiler itself. fold over capabilities produces a compiler configuration, which is used to fold over more capabilities. The fold folds over fold-described data.
+
+We are not yet in a position to fully develop this idea — it requires the data abstractions of Chapter 2 and the metalinguistic framework of Chapter 4. But the fact that it is expressible at all — that the same six-line fold, the same frozen dataclasses, the same isinstance dispatch can bootstrap a compiler that compiles itself — should give the reader pause.
+
+Later we will discover that this is not a clever trick. It is a consequence of Hutton's universal property: fold is the *unique morphism* from the initial algebra (the list of capabilities) to any target algebra. If the target algebra is "compiler configurations," fold produces compiler configurations. If the target algebra is "functions," fold produces functions. If the target algebra is "new capabilities," fold produces new capabilities. The universal property says: any structural processing of capabilities *is* a fold. This is not a design choice. It is a mathematical necessity.
+
+The reader who senses that fold is not just a loop but an *evaluation model* — that capabilities are not just data but a *language* that fold interprets — is sensing correctly. Chapter 4 will make this precise.
+
+**Exercise 1.9.** In `examples/fractal.py`, `Poly(1,2,1).compile_eval(ctx)` produces a *function* as output. Can you write a capability whose `compile_*` method returns a context containing *another capability*? What would this mean for compilation?
+
+**Exercise 1.10.** Define a new `CompilationPhase` for GraphQL:
+
+```python
+@dataclass(frozen=True, slots=True)
+class GraphQLContext:
+    field_name: str
+    field_type: type
+    graphql_type: str | None = None
+    nullable: bool = False
+
+class GraphQLCompilable(Protocol):
+    def compile_graphql(self, ctx: GraphQLContext) -> GraphQLContext: ...
+
+GRAPHQL_PHASE = CompilationPhase(GraphQLContext, GraphQLCompilable, lambda n, t: GraphQLContext(n, t))
+```
+
+Now add `compile_graphql` methods to `MaxLen` and `Identity`. Compile a User entity through `GRAPHQL_PHASE` and produce a GraphQL schema fragment. How many lines of fold code did you need to change? (Answer: zero.)
+
+---
+
+## 1.4 Summary and Forward References
+
+We have established the primitives of compilation thinking:
+
+**Capabilities** are frozen dataclasses that carry facts and know how to compile themselves for each target. They are Reynolds' defunctionalized closures: data representations of decisions that were once implicit in scattered code.
+
+**fold** is the six-line universal primitive that iterates capabilities, dispatches by protocol, and accumulates context. It is Meijer's catamorphism — the unique structurally recursive consumer of a finite list. It always terminates. It is total.
+
+**CompilationPhase** and **SchemaCompiler** name and compose fold configurations. They form an algebra — `+`, `-`, `&`, `|` — that mirrors set operations.
+
+**Derivation** is staged compilation: generate, modify, augment. Three folds over the same capability list, each with a different protocol. The capability list is a program. Each fold is a different evaluation.
+
+**Higher-order capabilities** take capabilities as arguments, produce capabilities as output, and transform other capabilities' compilations. They make the framework *composable* — not merely sequential.
+
+The crisis of this chapter: capabilities are not annotations. They are not metadata. They are the primitive that generates ALL computation through fold. The same `MaxLen(255)`, consumed by different folds, produces validation logic, documentation, DDL, constraints, and verification results. The capability is the meaning. fold is the evaluator. The protocol determines the semantics.
+
+Three questions remain open:
+
+*How do we build compound data from capabilities?* We have seen capabilities on fields and on entities. But how do we compose schemas — entities that reference other entities, nested structures, the closure property that makes composition *compositional*? This is Chapter 2.
+
+*What happens when capabilities describe state and change?* Everything so far is pure and frozen. But real systems change over time — entries are created, updated, deleted. How do we model change without losing the properties that make fold tractable? This is Chapter 3.
+
+*The fold that compiles capabilities... is itself described by capabilities.* We glimpsed this in the fractal example. The compiler that compiles your code can itself be compiled by the same mechanism. This metacircular property — fold consuming fold-described data — will be the subject of Chapter 4.
+
+*What machine executes this fold?* We have treated fold as an abstraction — six lines that "just work." But those six lines run on real hardware, in real time, with real concurrency constraints. The abstract fold becomes a concrete nodnod DAG, then a RuntimePolicy, then actual OS threads or asyncio coroutines. Chapter 5 opens the machine.
 
 ---
 
 ## Exercises
 
-**Exercise 1.1.** Below is a sequence of capability annotations. For each, determine what the result of folding through PydanticCompilable would be (which capabilities participate, which are skipped, what the final context contains):
+**Exercise 1.11.** Below is a sequence of `@derive` declarations. For each, determine: (a) how many OpSpecs are generated after Phase 1, (b) how many remain after Phase 2, (c) what the final endpoint count is.
 
 ```python
-a) Annotated[str, MaxLen(100)]
-b) Annotated[int, Min(0), Max(1000)]
-c) Annotated[str, MaxLen(255), Unique, sql.Index()]
-d) Annotated[float, Min(-40), Max(125), Doc("Temperature in Celsius")]
-e) Annotated[str, Pattern(r"^[a-z]+$"), OneOf("red", "blue", "green")]
+a) @derive(http_crud("/users", Users))
+b) @derive(http_crud("/users", Users), Readonly())
+c) @derive(http_crud("/users", Users), Paginated(20), Readonly())
+d) @derive(http_crud("/users", Users), WithoutDelete())
+e) @derive(http_crud("/users", Users), SoftDelete("deleted_at"))
 ```
 
-Now determine the same for SQLAlchemyCompilable. Which annotations produce different results for the two targets? Which capabilities participate in one target but not the other?
+**Exercise 1.12.** The commutativity of capabilities within a fold depends on each capability writing to an independent part of the context. Construct a hypothetical capability whose `compile_pydantic` method reads a field that another capability writes. Show that order would matter for this pair. Then explain why emergent's actual capabilities avoid this — what property of the context design prevents it?
 
-**Exercise 1.2.** The open-world property means that unknown capabilities are silently skipped. What would happen if fold raised an error for unknown capabilities instead? Consider: (a) what would break if you added a new target; (b) what would break if you added a new capability; (c) whether it would be possible to compose capabilities from independent libraries.
+**Exercise 1.13.** The SchemaCompiler algebra satisfies `A + A = A` (idempotent), `(A + B) + C = A + (B + C)` (associative), and `A + empty = A` (identity). Does it satisfy commutativity (`A + B = B + A`)? If not, construct an example where `A + B != B + A`. What does this mean for the semantics of compiler composition?
 
-**Exercise 1.3.** The commutativity of capabilities within an axis depends on each capability writing to an independent part of the context. Construct a hypothetical capability whose compile_pydantic method reads a field that another capability writes. Show that order would matter for this pair. Then explain why emergent's actual capabilities avoid this — what property of the context design prevents it?
+**Exercise 1.14.** Hutton (1999) proves that `foldl` can be expressed as a `foldr` that generates a function. In emergent, fold is always a left fold (iterate sequentially, accumulate context). Could fold be implemented as a right fold? Would the results differ? (Hint: consider commutativity.)
 
-**Exercise 1.4.** Define a capability `DefaultValue` that, when compiled to Pydantic, sets a default value on the FieldInfo. Then define a capability `Required` that marks the field as required (no default). What happens when both appear on the same field? Design a verification phase that detects this contradiction at import time.
+**Exercise 1.15.** Moseley and Marks (2006) distinguish essential complexity (inherent in the problem) from accidental complexity (artifacts of the implementation). For a system with Users who have emails with max length 255 and uniqueness constraints, enumerate: (a) the essential complexity, (b) the accidental complexity in a Django implementation, (c) the accidental complexity in an emergent implementation. Is emergent's accidental complexity zero? If not, what remains?
 
-**Exercise 1.5.** In Section 1.1.7, the mortal workers query unclaimed chunks by computing `done_starts = {r.data.start for r in await log.query(Lens().of_type(RowResult))}`. This query is O(N) where N is the number of RowResult events. Design a ViewSnapshot-based optimization that makes the query O(1) by maintaining a materialized view of done starts. How does this interact with the mortal worker pattern — can a worker safely use a slightly stale snapshot?
+**Exercise 1.16.** SICP Exercise 1.5 tests whether an interpreter uses applicative-order or normal-order evaluation. Design an analogous test for emergent: a pair of capabilities where the result differs depending on whether fold uses eager dispatch (the current behavior) or lazy dispatch (only call compile_* when the context field is actually read). Could emergent benefit from lazy compilation? What would it cost?
 
-**Exercise 1.6.** The SchemaCompiler algebra satisfies `A + A = A` (idempotent), `(A + B) + C = A + (B + C)` (associative), and `A + empty = A` (identity). Does it satisfy commutativity (`A + B = B + A`)? If not, construct an example where `A + B ≠ B + A`. What does this mean for the semantics of compiler composition?
-
-**Exercise 1.7.** Hutton (1999) proves that `foldl` can be expressed as a `foldr` that generates a function. In emergent, fold is always a left fold (iterate sequentially, accumulate context). Could fold be implemented as a right fold? What would this mean for the compilation process? Would the results differ? (Hint: consider commutativity.)
-
-**Exercise 1.8.** The `handlers` parameter of fold provides priority override dispatch. Design a scenario where handler dispatch is essential — where protocol dispatch alone would produce an incorrect result. Then design the handler that corrects it. Consider: why is the handler keyed by exact type (`item.__class__`) rather than by isinstance?
-
-**Exercise 1.9.** The three-mechanism framework (primitives, combination, abstraction) applies at every level of emergent. Identify the three mechanisms for: (a) the query expression language, (b) the derivation language, (c) theworld computation language. For each, name the primitives, the means of combination, and the means of abstraction.
-
-**Exercise 1.10.** Moseley and Marks (2006) distinguish essential complexity (inherent in the problem) from accidental complexity (artifacts of the implementation). For a system with Users who have emails with max length 255 and uniqueness constraints, enumerate: (a) the essential complexity; (b) the accidental complexity in a Django implementation; (c) the accidental complexity in an emergent implementation. Is the emergent implementation's accidental complexity zero? If not, what remains?
-
-**Exercise 1.11.** Reynolds (1972) showed that defunctionalization is reversible — given a set of records with dispatch, you can reconstruct the original closures (refunctionalization). Apply this to emergent: given `MaxLen(255)` (the record) and `fold` (the dispatch), reconstruct the "closure" that MaxLen defunctionalizes. What function does MaxLen(255) represent? What are its "free variables" (Reynolds' environment)? What is the "lambda body"?
-
-**Exercise 1.12.** Meijer's banana split theorem says that two folds over the same list combine into one fold producing a pair. compile_fields uses this to run all phases in one pass. But what if two phases have a dependency — phase B needs the result of phase A? Can they still be banana-split? Design a two-phase compilation where the second phase reads the first phase's output. How would compile_fields need to change to support this? What algebraic law would break?
-
-**Exercise 1.13.** The algebra example (examples/algebra.py) uses fold for symbolic differentiation. The product rule is:
-
-```python
-Mul.compile_deriv = lambda self, ctx: replace(ctx, result=(
-    ctx.compile_expr(self.left) * self.right + self.left * ctx.compile_expr(self.right)
-))
-```
-
-Implement the chain rule for `Fn("log", arg)`: `d/dx log(u) = u'/u`. Then implement the quotient rule for `Div(f, g)`: `d/dx (f/g) = (f'g - fg') / g²`. Verify your implementations by computing `compile_deriv(log(x**2))` and `compile_deriv(x / sin(x))` and simplifying the results.
-
-**Exercise 1.14.** The capability `Unique` compiles to SQLAlchemy's `unique=True` column kwarg. But Unique has no compile_pydantic method. Should it? What would Pydantic-level uniqueness mean — and why is it fundamentally different from database-level uniqueness? What would a verification phase that checks cross-field uniqueness constraints look like?
-
-**Exercise 1.15.** SICP Exercise 1.5 tests whether an interpreter uses applicative-order or normal-order evaluation. Design an analogous test for emergent: a pair of capabilities where the result differs depending on whether fold uses eager dispatch (the current behavior) or lazy dispatch (only call compile_* when the context field is actually read). Could emergent benefit from lazy compilation? What would it cost?
+**Exercise 1.17.** The `examples/01_quickstart.py` file produces 15+ endpoints from 3 dataclasses. Read the file. Trace the compilation for the `User` entity: (a) what capabilities does `@derive(http_crud("/users", provider_node=Users))` attach? (b) What are the three phases of `compile_derive`? (c) How does `build_application_from_decorated` collect the results? (d) How does `targets.fastapi.compile` produce the final FastAPI app?

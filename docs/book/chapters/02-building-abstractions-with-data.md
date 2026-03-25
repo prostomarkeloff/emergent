@@ -1,480 +1,179 @@
 # 2. Building Abstractions with Data
 
-> We now come to the decisive step of mathematical abstraction: we forget about what the symbols stand for. … [The mathematician] need not be idle; there are many operations which he may carry out with these symbols, without ever having to look at the things they stand for.
+> We forget about what the symbols stand for. ... [The mathematician] need not be idle; there are many operations which he may carry out with these symbols, without ever having to look at the things they stand for.
 >
-> — Hermann Weyl, *The Mathematical Way of Thinking*
+> — Hermann Weyl, *The Mathematical Way of Thinking* (1940)
 
-We concentrated in Chapter 1 on compilation processes and on the role of capabilities in compilation design. We saw how to use primitive capabilities (MaxLen, Identity, Unique) and primitive contexts (PydanticContext, OpenAPIContext), how to combine capabilities into annotations through Annotated, and how to abstract compound capabilities by defining them as named phases and compilers. We saw that a capability can be regarded as a pattern for the local transformation of a compilation context, and we classified, reasoned about, and performed simple analyses of common compilation patterns — single-phase, multi-phase (banana split), derivation, and verification. We also saw that higher-order capabilities and capability factories enhance the power of our framework by enabling us to manipulate, and thereby to reason in terms of, general methods of compilation. This is much of the essence of compilation thinking.
+Chapter 1 introduced capabilities as the primitive: frozen dataclasses that carry facts and compile themselves through fold. We traced a single capability through multiple targets, and arrived at a crisis — `MaxLen(255)` is not an annotation but a defunctionalized decision, generating different *processes* through different folds.
 
-In this chapter we are going to look at more complex data. All the capabilities in Chapter 1 operate on simple schema data — field types and constraints. Simple schema data are not sufficient for many of the problems we wish to address using compilation. Programs are typically designed to model complex phenomena, and more often than not one must construct computational objects that have several parts in order to model real-world phenomena that have several aspects. Thus, whereas our focus in Chapter 1 was on building abstractions by combining capabilities to form compound capabilities, we turn in this chapter to another key aspect of any compilation framework: the means it provides for building abstractions by combining data objects to form *compound data*.
+But we built only simple things. A capability on a field. A list of capabilities on an entity. The artifacts were direct: a Pydantic FieldInfo, a SQLAlchemy column, a constraint record. We never asked: what happens when the artifacts themselves have structure? When one artifact depends on another, when artifacts compose into larger artifacts, and when those compositions compose further?
 
-Why do we want compound data in a compilation framework? For the same reasons that we want compound capabilities: to elevate the conceptual level at which we can design our compilations, to increase the modularity of our designs, and to enhance the expressive power of our framework. Just as the ability to define capabilities enables us to deal with compilations at a higher conceptual level than that of primitive fold operations, the ability to construct compound data objects — queries, expressions, operation specs, event streams — enables us to deal with data at a higher conceptual level than that of primitive field annotations.
+This is the question of *compound data*. SICP opens its second chapter with rational numbers — a value that cannot be represented by a single number but requires *two* numbers traveling together (numerator and denominator). The rest of the chapter develops what this simple need implies: the closure property, conventional interfaces, symbolic data, multiple representations, and generic operations.
 
-Consider the task of designing a system to perform queries on collections of entities. We could imagine an operation `filter` that takes a collection and a predicate and produces the matching subset. In terms of simple data, a predicate might be thought of as a function — `lambda u: u.balance > 100`. But this would be awkward, because we would then be unable to serialize the predicate, send it to a different backend, simplify it algebraically, or explain what it does. In a system intended to perform many queries on many backends — memory, SQL, HTTP API — such opacity would clutter the programs substantially, to say nothing of what it would do to our ability to reason about them. It would be much better if we could "glue together" a field reference, a comparison operator, and a constant to form an expression — a *compound data object* — that our programs could manipulate in a way that would be consistent with regarding a predicate as a single conceptual unit.
-
-The use of compound data also enables us to increase the modularity of our compilations. If we can manipulate expressions directly as objects in their own right, then we can separate the part of our program that deals with what the query *means* from the details of how the query may be *executed* on a particular backend. The general technique of isolating the parts of a program that deal with how data objects are represented from the parts of a program that deal with how data objects are used is a powerful design methodology called *data abstraction*. We will see how data abstraction makes compilations much easier to design, maintain, and modify.
-
-The use of compound data leads to a real increase in the expressive power of our compilation framework. Consider the idea of forming a "filtered, sorted, limited query." We might like to write a compilation that would accept a filter predicate, a sort key, and a limit count as arguments and produce the correct result on any backend — memory, SQL, or HTTP. This presents no difficulty if all backends share the same query protocol, because we can readily define the query operations as self-compiling frozen dataclasses. But suppose we are not concerned only with one backend. Suppose we would like to express, in compilational terms, the idea that one can execute queries whenever filter, sort, and limit are defined — for in-memory lists, for SQL databases, for REST APIs, or whatever. We could express this as a set of self-compiling operations that carry `compile_memory_query`, `compile_sa_query`, `compile_http_api` methods. The key point is that the only thing the query should need to know is that the operations have compile methods for the target backend. From the perspective of the query, it is irrelevant what the backend is and even more irrelevant how it might happen to be implemented.
-
-We begin this chapter by implementing the query expression system. This will form the background for our discussion of compound data and data abstraction. As with compound capabilities, the main issue to be addressed is that of abstraction as a technique for coping with complexity, and we will see how data abstraction enables us to erect suitable *abstraction barriers* between different parts of a compilation.
-
-We will see that the key to forming compound data is that a compilation framework should provide some kind of "glue" so that data objects can be combined to form more complex data objects. There are many possible kinds of glue. Indeed, we will discover how to form compound data using no special "data" operations at all — only frozen dataclasses and fold. This will further blur the distinction between "capability" and "data," which was already becoming tenuous toward the end of Chapter 1. We will also explore some conventional techniques for representing expressions, queries, and operation specs. One key idea in dealing with compound data is the notion of *closure* — that the glue we use for combining data objects should allow us to combine not only primitive data objects, but compound data objects as well. In emergent, the SchemaCompiler algebra is closed: `SchemaCompiler + SchemaCompiler = SchemaCompiler`. The TargetCompiler algebra is closed: `TargetCompiler + CodecBinding = TargetCompiler`. Capabilities compose into tuples, tuples compose by concatenation, and the result is a tuple — closed.
-
-We will then augment the representational power of our framework by introducing *symbolic expressions* — data whose elementary parts can be arbitrary field references, comparisons, and logical connectives rather than only annotations. We explore various alternatives for representing query predicates. We will find that, just as a given compilation can be performed by many different fold phases, there are many ways in which a given query can be compiled to a concrete backend, and the choice of backend can have significant impact on the performance of the result. We will investigate these ideas in the context of the query axis — relational, key-value, and API querysets.
-
-Next we will take up the problem of working with data that may be represented differently by different parts of a program. This leads to the need to implement *generic operations*, which must handle many different kinds of data. Maintaining modularity in the presence of generic operations requires more powerful abstraction barriers than can be erected with simple data abstraction alone. In particular, we introduce *protocol-directed compilation* as a technique that allows individual data representations to be designed in isolation and then combined *additively* (i.e., without modification). To illustrate the power of this approach to system design, we close the chapter by applying what we have learned to the implementation of a package for performing symbolic algebra — differentiation, LaTeX rendering, and Python code generation — in which the expression nodes carry their own compilation methods, exactly like capabilities on fields.
+emergent faces the same progression. A field with one capability is trivial. A field with *two* capabilities requires them bundled (the Annotated tuple). An entity with multiple fields requires the field compilations bundled (the FieldCompilation dict). An entity with schema-level capabilities requires those bundled with field capabilities. Endpoints bundled into applications. Applications compiled to targets. At each level, the result of combination is itself combinable. This is the closure property — and it is the engine that makes compilation scale from a single constraint to a running distributed system.
 
 ---
 
 ## 2.1 Introduction to Data Abstraction
 
-In 1.1.8, we noted that a capability used as an element in creating a more complex compilation could be regarded not only as a specific set of compile_* methods but also as a *capability abstraction*. That is, the details of how the capability was implemented could be suppressed, and the particular capability itself could be replaced by any other capability with the same overall behavior. In other words, we could make an abstraction that would separate the way the capability would be *used* from the details of how the capability would be *implemented* in terms of more primitive operations. The analogous notion for compound data is called *data abstraction*. Data abstraction is a methodology that enables us to isolate how a compound data object is used from the details of how it is constructed from more primitive data objects.
+### 2.1.1 Why Compound Data?
 
-The basic idea of data abstraction is to structure the programs that use compound data objects so that they operate on "abstract data." That is, our programs should use data in such a way as to make no assumptions about the data that are not strictly necessary for performing the task at hand. At the same time, a "concrete" data representation is defined independent of the programs that use the data. The interface between these two parts of our system will be a set of capabilities called *selectors* and *constructors* that implement the abstract data in terms of the concrete representation.
+In Chapter 1, we compiled individual capabilities on individual fields. Each fold consumed a flat list and produced a single context. This was sufficient for understanding *how* compilation works. But it is not sufficient for building real systems.
 
-### 2.1.1 Example: Query Expressions
+Consider a query. "Find all users whose balance exceeds 100." This is not a single fact like `MaxLen(255)`. It is a *compound* description: a *field reference* ("balance"), a *comparison operator* ("greater than"), and a *constant value* (100). These three elements must travel together — you cannot ask "greater than" without knowing "greater than *what*" and "greater than *where*."
 
-To illustrate the idea of data abstraction, consider how a query expression is represented and used in emergent.
+In SICP, Abelson and Sussman confront the same need with rational numbers. You cannot do rational arithmetic with two separate integers. You need them *paired*: make-rat, numer, denom. The rational number is the first compound datum — the gateway to everything that follows.
 
-A query expression is a predicate on entities — "balance greater than 100," "name starts with A and active is true." The emergent query axis represents these as frozen dataclass ASTs:
+emergent's rational number is the *query expression*. Consider the simplest possible query:
 
 ```python
 Gt(Field("balance"), Const(100))
-And(StartsWith(Field("name"), Const("A")), Eq(Field("active"), Const(True)))
 ```
 
-The constructors are the dataclass constructors: `Gt(left, right)`, `And(left, right)`, `Field(name)`, `Const(value)`. The selectors are attribute access: `expr.left`, `expr.right`, `field.name`, `const.value`.
+Three frozen dataclasses, composed into a tree. `Field("balance")` is a leaf — a reference to a field on an entity. `Const(100)` is a leaf — a literal value. `Gt` is a binary node — it takes two child expressions and means "left is greater than right."
 
-But the user of the query system does not write ASTs by hand. The user writes lambdas:
+Before reading on, predict: what is the type of `Gt(Field("balance"), Const(100))`? It extends `Expr`, the abstract base. What is the type of `Field("balance")`? Also `Expr`. What is the type of `Const(100)`? Also `Expr`. The children of a compound expression are themselves expressions. This is the property that will dominate this chapter.
+
+You can build more complex expressions from simpler ones:
 
 ```python
-users.filter(lambda u: u.balance > 100)
-users.filter(lambda u: u.name.startswith("A") & u.active)
-```
-
-The lambda receives an EntityProxy. `u.balance` returns a FieldProxy. `> 100` returns `Gt(Field("balance"), Const(100))`. The proxy trick — `__gt__`, `__and__`, `startswith` returning frozen AST nodes — is the *constructors* of the abstract query expression, hiding the concrete AST representation from the user.
-
-The *selectors* are used by backends. MemoryRelationalProvider evaluates the expression directly:
-
-```python
-# inside Filter.compile_memory_query
-[item for item in ctx.data if self.expr.evaluate(item)]
-```
-
-SQLRelationalProvider compiles to SQL:
-
-```python
-# inside Filter.compile_sa_query
-clause = ctx.compile_expr(self.expr)
-return replace(ctx, stmt=ctx.stmt.where(clause))
-```
-
-HTTPAPIProvider compiles to query parameters:
-
-```python
-# inside Filter.compile_http_api
-filter_data = ctx.encode_filter(self.expr)
-ctx.params.update(filter_data)
-```
-
-The key point of data abstraction: the query expression — `Gt(Field("balance"), Const(100))` — is a single object that three different backends interpret differently. The user writes the same `.filter(lambda u: u.balance > 100)` regardless of backend. The compilation produces different code depending on the target, but the expression itself is one object, one meaning, one piece of data.
-
-This is the same pattern as Chapter 1's capability abstraction — `MaxLen(255)` compiles differently for Pydantic, OpenAPI, and SQL — but now applied to query predicates instead of field constraints. The abstraction barrier separates "what the query means" from "how the query executes."
-
-### 2.1.2 Abstraction Barriers
-
-In general, the underlying idea of data abstraction is to identify for each type of data object a basic set of operations in terms of which all manipulations of data objects of that type will be expressed, and then to use only those operations in manipulating the data.
-
-For the query expression system, the abstraction barriers look like this:
-
-```
-Programs that use queries
-─────────────────────────────────
-.filter(), .order_by(), .limit()        (QuerySet API)
-─────────────────────────────────
-Filter, OrderBy, Limit                  (Self-compiling ops)
-─────────────────────────────────
-Expr AST: Gt, And, Field, Const         (Expression constructors)
-─────────────────────────────────
-compile_memory_query, compile_sa_query  (Backend interpreters)
-```
-
-Each horizontal line represents an abstraction barrier. Programs above the line do not know about the details below it. A user writing `.filter(lambda u: u.balance > 100)` does not know about Gt, Field, or Const. The Filter op does not know about compile_sa_query — it only knows it has a compile_* method that fold will call. The SQL provider does not know about the memory provider.
-
-For the capability system from Chapter 1, the abstraction barriers are:
-
-```
-Programs that use capabilities
-─────────────────────────────────
-@derive(http_crud(...), Paginated(20))  (Derivation API)
-─────────────────────────────────
-CRUD, Paginated, SoftDelete             (Schema capabilities)
-─────────────────────────────────
-MaxLen, Identity, Unique                (Universal capabilities)
-─────────────────────────────────
-compile_pydantic, compile_openapi       (Target compilers)
-```
-
-The same structure. Multiple layers. Each layer uses the one below it without depending on its internal structure.
-
-This methodology gives us a way to control complexity. It lets the user of a query think in terms of "filter by balance," the compilation framework think in terms of "Filter op with Gt expression," and the backend think in terms of "WHERE balance > 100" or `[item for item in data if item.balance > 100]`. Each level operates at its own level of abstraction.
-
----
-
-## 2.2 Hierarchical Data and the Closure Property
-
-As we saw in 2.1, the query expression system uses frozen dataclasses as its compound data primitives. We also saw that capabilities use frozen dataclasses. In fact, every data object in emergent is a frozen dataclass. The "glue" for constructing compound data is the dataclass constructor itself.
-
-We should now consider the question: what kinds of compound data can we build with frozen dataclasses? In Chapter 1, capabilities were flat — a tuple of independent annotations on a field. But queries introduce *hierarchy*: `And(Gt(Field("x"), Const(5)), IsNull(Field("y")))` is a tree. Derivation introduces *stages*: compile_derive produces OpSpecs, materialize produces Endpoints, fastapi.compile produces routes. theworld introduces *nesting*: World contains Computations, each containing capabilities, which fold into nodes.
-
-The key property that enables this hierarchy is *closure*: the result of combining data objects with a constructor can itself be combined with the same constructor. `And(expr1, expr2)` produces an Expr, which can itself be used as an argument to another And, or to Or, or to Not. The constructors are closed under composition.
-
-In emergent, closure appears at every level:
-
-- **Capabilities on fields:** `Annotated[str, MaxLen(255), Unique]` — a tuple. Tuples concatenate: `caps_a + caps_b` is a tuple. Closed.
-- **Phases in compilers:** `PYDANTIC_PHASE + OPENAPI_PHASE` produces a SchemaCompiler. `SchemaCompiler + SchemaCompiler` produces a SchemaCompiler. Closed.
-- **Targets in compilers:** `TargetCompiler + CodecBinding` produces a TargetCompiler. Closed.
-- **Expressions in queries:** `And(expr1, expr2)` produces an Expr. `Or(And(...), Gt(...))` also produces an Expr. Closed.
-- **Ops in querysets:** `users.filter(...).order_by(...).limit(10)` — each method appends an op and returns a new QuerySet. Closed.
-- **Computations in worlds:** `World(computations=(a, b, c))` — a tuple. `scoped(a, b, Supervised())` — a tuple inside scoped. Closed.
-
-This closure property is what Abelson and Sussman call the "closure property of cons" in SICP: the ability to build hierarchical structures from a single combining mechanism. In emergent, the mechanism is tuple concatenation for flat structures and dataclass nesting for hierarchical ones.
-
-### 2.2.1 Representing Sequences
-
-The most common compound data structure in emergent is the *sequence* — a tuple of frozen dataclasses. Capabilities on a field are a sequence. Ops in a query are a sequence. Phases in a compiler are a sequence. Computations in a world are a sequence.
-
-Sequences are processed by fold. Every sequence in emergent — without exception — is consumed by the same six-line function. This uniformity is the reason emergent has one mechanism instead of many.
-
-Consider the pipeline — a sequence of PipelineSteps:
-
-```python
-list_handler = Pipeline(ScopeQuery(), FetchAll(), WrapItems())
-update_handler = Pipeline(
-    ScopeQuery(), IdentityFilter(), FetchOrNotFound(),
-    MergeFields(), ProviderUpdate(), WrapOk(),
+And(
+    Gt(Field("balance"), Const(100)),
+    Eq(Field("active"), Const(True)),
 )
 ```
 
-Each PipelineStep is a frozen dataclass implementing `execute(pctx) -> PipelineContext | Result`. The Pipeline iterates them sequentially. A step can short-circuit by returning a Result (Ok or Error) instead of a PipelineContext.
+"Balance above 100 AND active is true." An `And` node whose children are themselves compound expressions. The expression is a tree — and the tree is built from the same elements at every level. This is what SICP calls the *closure property*: the result of combining expressions is itself an expression, suitable for further combination.
 
-This is fold with a twist: the accumulator (PipelineContext) is mutable within the scope of one request, but the step definitions are frozen. The pipeline definition is data — inspectable, printable, testable per step. The pipeline execution is fold — sequential application of steps to an accumulator.
-
-### 2.2.2 Representing Trees
-
-Query expressions are trees. `And(Gt(Field("balance"), Const(100)), IsNull(Field("deleted_at")))` has depth 3. The expression nodes are frozen dataclasses. Each node implements `evaluate(obj)` for in-memory interpretation and `children()` for traversal.
-
-The algebra example from Chapter 1 section 1.1.7 demonstrates the same structure at a different scale. Symbolic expressions — `Mul(Fn("sin", Sym("x")), Pw(Sym("x"), Num(2)))` — are trees of frozen dataclasses. Each node has compile_python, compile_latex, compile_eval, compile_deriv. The compilation driver wraps fold with a recursive closure:
+But why is this compound data, rather than just "nested dataclasses"? Because the expression will be *consumed by different evaluators*, just as capabilities are consumed by different folds. The same expression tree, interpreted by different backends, produces categorically different artifacts:
 
 ```python
-def compile_python(expr):
-    def _compile(e):
-        ctx = PythonCtx(result="", compile_expr=_compile)
-        result = fold([e], ctx, PythonCompilable, "compile_python")
-        return result.result
-    return _compile(expr)
+expr = And(Gt(Field("balance"), Const(100)), Eq(Field("active"), Const(True)))
+
+# Memory backend: Python predicate
+lambda u: u.balance > 100 and u.active == True
+
+# SQL backend: WHERE clause
+WHERE balance > 100 AND active = TRUE
+
+# HTTP backend: query parameters
+?balance_gt=100&active=true
 ```
 
-`ctx.compile_expr` IS the recursive descent. fold dispatches to the node's compile_python. The node calls `ctx.compile_expr` on its children. Recursion through data — the context carries the recursive function, the node applies it. This is the emergent analog of SICP's tree accumulation: values percolate upward from terminal nodes, combining at each level through the compile method.
+This should remind you of Chapter 1's crisis: `MaxLen(255)` producing `Field(max_length=255)` in Pydantic-land and `String(255)` in SQLAlchemy-land. The same frozen data, different evaluation, different result. But the expression is *compound* — it has structure that the evaluator must traverse. Capabilities were a flat list; expressions are a tree. The evaluator for trees is not a flat fold but a *recursive* fold — a catamorphism over trees rather than lists.
 
-### 2.2.3 Conventional Interfaces
+### 2.1.2 The Expression AST
 
-SICP identifies map, filter, and accumulate as "conventional interfaces" — patterns that recur across different domains of list processing. By naming these patterns and providing them as standard operations, the programmer can think at a higher level: not "iterate and conditionally collect" but "filter." Not "iterate and transform" but "map." Not "iterate and accumulate" but "fold."
-
-In emergent, there is only ONE conventional interface: fold. Where SICP has three patterns, emergent has one. This might seem like a reduction — one pattern where SICP has three. But it is more accurately a unification. SICP's map, filter, and accumulate are all special cases of fold:
-
-```scheme
-;; SICP's three conventional interfaces
-(map f list)       = (fold-right (lambda (x acc) (cons (f x) acc)) '() list)
-(filter pred list) = (fold-right (lambda (x acc) (if (pred x) (cons x acc) acc)) '() list)
-(accumulate op init list) = (fold-right op init list)
-```
-
-In emergent, these three operations appear within different fold invocations, but the fold itself is invariant:
-
-**Schema compilation = fold as accumulate.** Each capability contributes to the context. `MaxLen(255)` adds max_length. `Unique` adds unique=True. The context is the accumulator. fold is `accumulate`.
-
-**Query filtering = fold as filter.** `Filter(Gt(Field("balance"), Const(100))).compile_memory_query(ctx)` removes non-matching items from `ctx.data`. The data is the list. The capability is the predicate. fold-within-fold is `filter`.
-
-**Derivation = fold as map.** `CRUD.compile_derive_generate(ctx)` maps the entity schema to OpSpecs. Each field of the entity contributes one aspect of each OpSpec. The entity-to-specs mapping is `map`.
-
-But these are not separate functions. They are all fold with different capabilities and different contexts. The programmer does not need to choose between map, filter, and accumulate. The programmer provides capabilities; fold does whatever the capabilities' compile_* methods prescribe. If the method filters data, fold filters. If it accumulates metadata, fold accumulates. If it generates new structures, fold generates.
-
-This unification has a consequence that SICP's three-interface approach does not: **the interfaces compose automatically.** In SICP, composing map-filter-accumulate requires explicit piping:
-
-```scheme
-(accumulate + 0
-  (map square
-    (filter odd?
-      (enumerate-interval 0 n))))
-```
-
-In emergent, composition is implicit in the capability tuple:
-
-```python
-Annotated[str, MaxLen(255), Unique, sql.Index(), Doc("Email address")]
-```
-
-Four capabilities. fold processes all four in one pass. No explicit piping. No intermediate lists. The banana split theorem guarantees that running four accumulations simultaneously is as efficient as running them in sequence — and more efficient than running them separately, because the capability list is traversed once, not four times.
-
-This is why emergent has one conventional interface rather than three. The unification is not a simplification — it is a *fusion*. Where SICP's interfaces compose by piping (the output of one feeds the input of the next), emergent's interface composes by simultaneity (all accumulations happen in the same traversal). Hutton (1999) calls this the banana split property. In practice, it means that adding a new compilation phase to an entity does not add a new traversal of the capability list — it adds one more accumulation to the same traversal.
-
-The signal-flow diagram for a conventional SICP pipeline looks like:
-
-```
-enumerate → filter → map → accumulate
-```
-
-The signal-flow diagram for an emergent compilation looks like:
-
-```
-                    ┌→ PydanticContext
-capabilities ──fold─┼→ OpenAPIContext
-                    ├→ SQLAlchemyContext
-                    └→ ConstraintsContext
-```
-
-One source (capabilities). One fold. Multiple simultaneous outputs. No intermediate data. This is why emergent programs are shorter than their SICP analogs — not because they omit steps, but because they fuse them.
-
-The cost of this fusion is that you cannot interpose logic *between* phases within a single fold. If the OpenAPI compilation needed to read the result of the Pydantic compilation, the two could not be banana-split. They would need to run sequentially. This is why emergent's axes are orthogonal: each axis folds independently, through independent contexts, so that banana splitting is always valid. Dependencies between axes are handled at a higher level — by running one compilation after another, not by nesting them within a single fold.
-
-The pattern is invariant: `fold(items, initial_context, protocol, method)`. The items change (capabilities, ops, computations). The context changes (PydanticContext, MemoryQueryContext, WorldContext). The protocol changes. But fold is the same. This is the conventional interface of emergent — the one pattern that connects all domains.
-
-SICP identifies map, filter, and accumulate as the conventional interfaces for sequence operations. emergent identifies fold as the ONE conventional interface for ALL operations. Not map, not filter, not reduce — fold. Every operation in emergent is a fold. This uniformity is not a limitation — it is the source of the algebraic laws that make the system tractable.
-
----
-
-## 2.3 Symbolic Data
-
-One of the most interesting domains for compilation is *symbolic data* — expressions whose parts are not numbers or strings but arbitrary symbols. The query expression AST is one example. The symbolic algebra engine is another. In both cases, the data represents meaning rather than value, and the compilation transforms meaning into target-specific artifacts.
-
-### 2.3.1 The Expression AST
-
-The emergent query axis defines an expression language:
+The full expression language lives in `emergent/wire/axis/query/_expr.py`. Every node is a frozen dataclass extending the abstract `Expr` class:
 
 ```python
 class Expr(ABC):
     @abstractmethod
     def evaluate(self, obj) -> Any: ...
-    def children(self) -> tuple[Expr, ...]: ...
+
+    def children(self) -> tuple[Expr, ...]:
+        return tuple(
+            getattr(self, f.name)
+            for f in dataclasses.fields(self)
+            if isinstance(getattr(self, f.name), Expr)
+        )
+
     def __and__(self, other): return And(self, other)
     def __or__(self, other): return Or(self, other)
     def __invert__(self): return Not(self)
-
-@dataclass(frozen=True, slots=True)
-class Field(Expr):
-    name: str
-    def evaluate(self, obj): return getattr(obj, self.name)
-
-@dataclass(frozen=True, slots=True)
-class Const(Expr):
-    value: Any
-    def evaluate(self, obj): return self.value
-
-@dataclass(frozen=True, slots=True)
-class Gt(Expr):
-    left: Expr
-    right: Expr
-    def evaluate(self, obj):
-        return self.left.evaluate(obj) > self.right.evaluate(obj)
 ```
 
-Comparison operators: Eq, Ne, Lt, Le, Gt, Ge. Logical: And, Or, Not. Collection: In, Contains, StartsWith, EndsWith. Null: IsNull, IsNotNull. Range: Between. Pattern: Like, ILike, Regex. Array: ArrayContains, ArrayAny, ArrayAll, ArrayOverlap. JSON: JsonExtract, JsonContains, JsonHasKey.
+Three things to notice.
 
-Every node is a frozen dataclass. Every node implements evaluate() for in-memory interpretation. The entire tree is serializable — `expr_to_dict(expr)` produces a JSON-compatible dict. Deserializable — `expr_from_dict(d)` reconstructs the tree. Simplifiable — `simplify_expr(expr)` applies boolean algebra optimizations. Measurable — `expr_complexity(expr)` counts nodes, `expr_depth(expr)` measures nesting.
+**First**, `children()` is not abstract. It uses dataclass field introspection to find all `Expr`-typed fields automatically. A leaf node (`Field`, `Const`) has no Expr-typed fields and returns `()`. A binary node (`Eq`, `And`) returns its two children. `Between` returns three (field, low, high). The tree structure is implicit in the data — no explicit tree pointers needed.
 
-This is symbolic data in the fullest sense: the expression is a manipulable object, not an opaque function. This is why emergent chose initial encoding (data) over final encoding (functions). The expression `Gt(Field("balance"), Const(100))` can be inspected, serialized, simplified, explained, and compiled. A lambda `lambda u: u.balance > 100` can only be called.
+**Second**, every node carries an `evaluate` method — the *interpreted* semantics. `Eq.evaluate(obj)` returns `self.left.evaluate(obj) == self.right.evaluate(obj)`. This is the direct evaluation: walk the tree, compute the result. It is the *simplest possible* backend — the one that needs no compilation at all.
 
-### 2.3.2 Symbolic Differentiation
-
-SICP Section 2.3.2 develops symbolic differentiation as its primary example of symbolic data processing. We will do the same — but where SICP uses `cond` dispatch on expression types, we use fold with protocol dispatch. The result is a system where adding a new expression type does not require modifying any existing code, and adding a new compilation target does not require modifying any existing expression.
-
-**The expression language.** We define expression nodes as frozen dataclasses:
+**Third**, the operator overloads (`__and__`, `__or__`, `__invert__`) let you compose expressions with Python syntax. But the real composition mechanism is the `EntityProxy` — a proxy object that turns lambda syntax into expression trees:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class Num(AlgExpr):
-    value: float
-    def evaluate(self, env): return self.value
+from emergent.wire.axis.query._proxy import EntityProxy
 
-@dataclass(frozen=True, slots=True)
-class Sym(AlgExpr):
-    name: str
-    def evaluate(self, env): return env[self.name]
-
-@dataclass(frozen=True, slots=True)
-class Add(AlgExpr):
-    left: AlgExpr
-    right: AlgExpr
-    def evaluate(self, env): return self.left.evaluate(env) + self.right.evaluate(env)
-
-@dataclass(frozen=True, slots=True)
-class Mul(AlgExpr):
-    left: AlgExpr
-    right: AlgExpr
-    def evaluate(self, env): return self.left.evaluate(env) * self.right.evaluate(env)
+u = EntityProxy(User)
+expr = (u.balance > 100) & (u.active == True)
+# produces: And(Gt(Field("balance"), Const(100)), Eq(Field("active"), Const(True)))
 ```
 
-Convenience: `x = Sym("x")`, and operator overloading — `x + 1` produces `Add(Sym("x"), Num(1))`, `x * x` produces `Mul(Sym("x"), Sym("x"))`. We also define `Div`, `Pw` (power), `Neg`, `Fn` (built-in functions like sin, cos, exp, log), and `LetIn` (local binding).
+The proxy intercepts attribute access (`u.balance` becomes `FieldProxy("balance")`), then intercepts comparison operators (`> 100` becomes `Gt(Field("balance"), Const(100))`). The lambda `lambda u: u.balance > 100` never actually *runs* as Python logic — it *builds a data structure*. The lambda is syntactic sugar for constructing a tree. The tree is the data. The data is what gets compiled.
 
-**The compilation contexts.** Each target has a frozen dataclass context:
+This is Weyl's epigraph made concrete: "we forget about what the symbols stand for." The Python comparison operators `>`, `==`, `&` do not compute boolean values. They construct symbolic expressions. We have repurposed Python's evaluation to build *data that represents evaluation*.
 
-```python
-@dataclass(frozen=True, slots=True)
-class PythonCtx:
-    result: str
-    compile_expr: Callable[[AlgExpr], str]
+### 2.1.3 Abstraction Barriers for Queries
 
-@dataclass(frozen=True, slots=True)
-class LatexCtx:
-    result: str
-    compile_expr: Callable[[AlgExpr], str]
+The query expression system has a layered structure that separates concerns:
 
-@dataclass(frozen=True, slots=True)
-class DerivCtx:
-    result: AlgExpr
-    var: str
-    compile_expr: Callable[[AlgExpr], AlgExpr]
+```
+Programs that USE queries
+──────────────────────────────────────────
+.filter(lambda u: u.balance > 100)         Human API (proxy + lambda)
+──────────────────────────────────────────
+Filter(Gt(Field("balance"), Const(100)))   Query operations (relational)
+──────────────────────────────────────────
+Expr nodes: Gt, Field, Const, And, Or      Expression AST (symbolic)
+──────────────────────────────────────────
+compile_memory_query, compile_sa_query     Providers (interpreted/compiled)
 ```
 
-Notice: each context carries a `compile_expr` field — a function. This is how recursion works in the fold model. The compilation driver creates a recursive closure and injects it into the context:
+Each layer uses the one below without knowing its implementation. The lambda author does not know about `Gt` nodes. The `Filter` operation does not know about SQL compilation. The expression AST does not know about any specific backend. Each barrier can be reimplemented independently.
 
-```python
-def compile_python(expr):
-    def _compile(e):
-        ctx = PythonCtx(result="", compile_expr=_compile)
-        result = fold([e], ctx, PythonCompilable, "compile_python")
-        return result.result
-    return _compile(expr)
-```
+This is SICP's *abstraction barrier* applied to queries. SICP draws the barrier for rational numbers: "programs that use rationals" / "rationals as numerator-denominator pairs" / "pairs as cons." Our barrier serves the same purpose — insulation between layers of abstraction.
 
-`_compile` is the recursive function. It creates a context carrying itself as `compile_expr`, then folds the single expression through the protocol. The expression's compile_python method receives the context — and with it, the ability to recurse on sub-expressions by calling `ctx.compile_expr(child)`.
+**Exercise 2.1.** The proxy trick turns `u.balance > 100` into `Gt(Field("balance"), Const(100))`. What happens if you write `100 < u.balance`? Does Python call `__lt__` on the integer `100` or `__gt__` on the proxy? Trace through the proxy mechanism. (Hint: Python calls `__gt__` on the right operand when the left operand's `__lt__` returns `NotImplemented`.)
 
-This is SICP's concept of "procedures as data" taken one step further. The context is data (frozen dataclass). The recursive function is data (a field on the context). The expression is data (frozen dataclass). fold dispatches on data (isinstance). The entire computation — recursive descent over an expression tree, producing Python code — is orchestrated by frozen data and a six-line function.
-
-**Differentiation rules as compile methods.** Each expression node implements compile_deriv. The rules are mathematics:
-
-```python
-# d/dx c = 0  (constant)
-Num.compile_deriv = lambda self, ctx: replace(ctx, result=Num(0))
-
-# d/dx x = 1, d/dx y = 0  (variable)
-Sym.compile_deriv = lambda self, ctx: replace(ctx, result=
-    Num(1) if self.name == ctx.var else Num(0))
-
-# d/dx (f + g) = f' + g'  (sum rule)
-Add.compile_deriv = lambda self, ctx: replace(ctx, result=
-    ctx.compile_expr(self.left) + ctx.compile_expr(self.right))
-
-# d/dx (f * g) = f'g + fg'  (product rule)
-Mul.compile_deriv = lambda self, ctx: replace(ctx, result=
-    ctx.compile_expr(self.left) * self.right + self.left * ctx.compile_expr(self.right))
-
-# d/dx (f / g) = (f'g - fg') / g²  (quotient rule)
-Div.compile_deriv = lambda self, ctx: replace(ctx, result=
-    (ctx.compile_expr(self.left) * self.right - self.left * ctx.compile_expr(self.right))
-    / (self.right ** 2))
-
-# d/dx x^n = n * x^(n-1) * x'  (power rule)
-Pw.compile_deriv = lambda self, ctx: replace(ctx, result=
-    self.exponent * (self.base ** (self.exponent - 1)) * ctx.compile_expr(self.base))
-```
-
-And the chain rule for built-in functions:
-
-```python
-def _fn_deriv(self, ctx):
-    da = ctx.compile_expr(self.arg)   # derivative of argument
-    match self.name:
-        case "sin": return replace(ctx, result=cos(self.arg) * da)
-        case "cos": return replace(ctx, result=-(sin(self.arg)) * da)
-        case "exp": return replace(ctx, result=exp(self.arg) * da)
-        case "log": return replace(ctx, result=da / self.arg)
-        case "sqrt": return replace(ctx, result=da / (Num(2) * sqrt(self.arg)))
-Fn.compile_deriv = _fn_deriv
-```
-
-Each rule is a compile method — a frozen relationship between an expression node and its derivative, mediated by the context. The chain rule appears naturally: `ctx.compile_expr(self.arg)` recursively differentiates the argument, and the result is multiplied by the outer derivative.
-
-**Working through an example.** Let us trace `compile_deriv(sin(x) * x**2)` in detail.
-
-The expression is `Mul(Fn("sin", Sym("x")), Pw(Sym("x"), Num(2)))`.
-
-fold dispatches to Mul's compile_deriv (product rule):
-```
-result = ctx.compile_expr(self.left) * self.right + self.left * ctx.compile_expr(self.right)
-```
-
-`ctx.compile_expr(self.left)` = compile_deriv of `Fn("sin", Sym("x"))`:
-- fold dispatches to Fn.compile_deriv (chain rule for sin):
-  - `da` = compile_deriv of `Sym("x")` = `Num(1)` (variable rule)
-  - result = `cos(Sym("x")) * Num(1)` = `Fn("cos", Sym("x"))`
-
-`ctx.compile_expr(self.right)` = compile_deriv of `Pw(Sym("x"), Num(2))`:
-- fold dispatches to Pw.compile_deriv (power rule):
-  - `Num(2) * (Sym("x") ** Num(1)) * compile_deriv(Sym("x"))`
-  - = `Num(2) * Sym("x") * Num(1)` = `Mul(Num(2), Sym("x"))` after simplification
-
-Product rule combines:
-```
-cos(x) * x² + sin(x) * 2x
-```
-
-After simplification: `cos(x) * x² + sin(x) * 2 * x`. Mathematically correct.
-
-**Four targets from one AST.** The same expression — `sin(x) * x**2` — compiles to four different representations:
-
-```python
->>> compile_python(sin(x) * x**2)
-'(math.sin(x) * (x ** 2))'
-
->>> compile_latex(sin(x) * x**2)
-'\\sin(x) \\cdot {x}^{2}'
-
->>> compile_eval(sin(x) * x**2, {"x": 1.0})
-0.8414709848078965
-
->>> simplify(compile_deriv(sin(x) * x**2))
-# cos(x) * x² + sin(x) * 2 * x
-```
-
-Python source code. LaTeX notation. Numerical evaluation. Symbolic derivative. Four fold invocations. Same expression. Same six-line fold. Different protocol, different context, different result.
-
-**Comparison with SICP's approach.** SICP 2.3.2 implements differentiation with a recursive procedure `deriv` that dispatches on expression type using `cond`:
-
-```scheme
-(define (deriv exp var)
-  (cond ((number? exp) 0)
-        ((variable? exp) (if (same-variable? exp var) 1 0))
-        ((sum? exp) (make-sum (deriv (addend exp) var) (deriv (augend exp) var)))
-        ((product? exp) ...)))
-```
-
-The difference is not syntactic but structural. In SICP's approach, adding a new expression type (e.g., exponentiation) requires adding a new clause to `deriv` — modifying existing code. Adding a new operation (e.g., LaTeX rendering) requires writing a new recursive procedure with its own `cond` dispatch.
-
-In emergent's approach, adding a new expression type means defining a new frozen dataclass with compile_deriv, compile_python, compile_latex methods. Existing code is not modified. Adding a new operation means defining a new protocol and context — existing expression types that don't implement it are skipped (or raise, as discussed in 1.1.6). Both dimensions extensible. This is the Expression Problem dissolved — not just for web APIs (Chapter 1) and query backends (Section 2.4), but for symbolic mathematics.
-
-The algebra example has nothing to do with web development, databases, or HTTP. It is pure mathematics. And yet it uses the same encoding, the same fold, the same dispatch. This is the strongest evidence that the encoding is not a web framework trick but a general-purpose computational pattern.
+**Exercise 2.2.** The `children()` method uses dataclass field introspection. This means adding a new Expr node with Expr-typed fields automatically makes it traversable. What would break if `children()` were abstract and each node had to implement it manually? Consider: (a) adding a new node type, (b) forgetting to override, (c) maintaining consistency.
 
 ---
 
-## 2.4 Multiple Representations for Abstract Data
+## 2.2 Hierarchical Data and the Closure Property
 
-We have introduced data abstraction, a methodology for structuring systems in such a way that much of a program can be specified independent of the choices involved in implementing the data objects that the program manipulates. For example, we saw in 2.1.1 how to separate the task of designing a program that uses query expressions from the task of implementing query expressions in terms of the concrete AST representation. The key idea was to erect an abstraction barrier — in this case, the proxy-based lambda syntax and the evaluate/compile_* methods — that isolates the way query expressions are used from their underlying representation.
+### 2.2.1 The Closure Property
 
-But this kind of data abstraction is not yet powerful enough, because it may not always make sense to speak of "the underlying representation" for a data object.
+We now develop the idea that makes compound data powerful.
 
-For one thing, there might be more than one useful representation for a data object, and we might like to design systems that can deal with multiple representations. To take a central example: a query expression like `Gt(Field("balance"), Const(100))` may be represented in multiple ways depending on the backend. For the memory backend, it is an evaluable predicate. For the SQL backend, it is a WHERE clause. For the HTTP backend, it is a query parameter `?balance_gt=100`. Indeed, it is perfectly plausible to imagine a system in which the same query expression is used with all three backends simultaneously, and in which the operations for executing queries work with any representation.
+Consider the operation `And(expr1, expr2)`. Both arguments are `Expr`. The result is also `Expr`. This means `And(And(a, b), c)` is valid — you can nest arbitrarily. The result of combining expressions *can itself be combined*. SICP calls this the *closure property*:
 
-More importantly, compilation systems are often designed by many people working over extended periods of time, subject to requirements that change over time. In such an environment, it is simply not possible for everyone to agree in advance on choices of data representation. So in addition to the data-abstraction barriers that isolate representation from use, we need abstraction barriers that isolate different design choices from each other and permit different choices to coexist in a single program. Furthermore, since large compilation systems are often created by combining pre-existing modules that were designed in isolation, we need conventions that permit programmers to incorporate modules into larger systems *additively*, that is, without having to redesign or reimplement these modules.
+> An operation for combining data objects satisfies the closure property if the results of combining things with that operation can themselves be combined using the same operation.
 
-In this section, we will learn how to cope with data that may be represented in different ways by different parts of a program. This requires constructing *generic operations* — operations that can operate on data that may be represented in more than one way. Our main technique for building generic operations will be to work in terms of data objects that have *protocol tags* — that is, data objects that include explicit information about how they are to be processed. We will also discuss *protocol-directed compilation*, a powerful and convenient implementation strategy for additively assembling systems with generic operations.
+The name comes from abstract algebra (a set is *closed* under an operation if the operation's result stays within the set), not from programming language closures. SICP notes the unfortunate terminological collision.
 
-### 2.4.1 Representations for Query Operations
+The closure property is what separates toys from tools. Without it, you can build `And(a, b)` but not `And(And(a, b), c)`. You could have flat conjunctions but not trees. You could filter by one condition but not by compound conditions. The closure property is what makes hierarchical structure possible.
 
-Query operations in emergent are frozen dataclasses with multiple compile_* methods — one per backend. This is the key design decision that resolves the multiple-representation problem.
+emergent satisfies the closure property at *every level of its architecture*. Let us enumerate them:
 
-Consider Filter:
+**1. Expressions close over expressions.** `And(Gt(a, b), Eq(c, d))` — compound expressions are expressions. The tree grows without bound.
+
+**2. Capabilities close over capabilities.** `Annotated[str, MaxLen(255), Unique]` — the tuple of capabilities is consumed by fold, and fold produces a context that can be consumed by another fold. Adding a capability never changes the type of the result.
+
+**3. Phases close over phases.** `PYDANTIC_PHASE + OPENAPI_PHASE` yields a `SchemaCompiler`. `SchemaCompiler + SchemaCompiler` yields a `SchemaCompiler`. The algebra: `+` is left-biased union, `-` is subtraction, `&` is intersection, `|` is right-biased merge.
+
+**4. Endpoints close over endpoints.** `application().mount(ep1).mount(ep2)` returns an `Application`. `Application` can be mounted into another `Application` (via stacking). Applications compose into applications.
+
+**5. Operations close over operations.** `query.filter(f1).filter(f2).order_by(o).limit(n)` — each method returns a new `RelationalQuerySet`, which supports the same methods. Query operations compose into queries.
+
+**6. Scopes close over scopes.** `scoped(generator, modifier1, modifier2)` produces a `Scoped` capability that is itself a `SchemaCapability`. Scoped groups can be nested.
+
+This is not a coincidence. It is a design principle: *every combinator in emergent returns the same type it consumes*. This is what makes the system compositional in the mathematical sense — not merely "you can put things together" but "you can put together things that were themselves put together."
+
+### 2.2.2 Representing Sequences: Query Operations
+
+A `RelationalQuerySet` is a sequence of query operations:
+
+```python
+q = (
+    relational(User)
+        .filter(lambda u: u.active == True)
+        .filter(lambda u: u.balance > 100)
+        .order_by(lambda u: u.created_at.desc())
+        .limit(50)
+)
+```
+
+Each method call returns a *new* `RelationalQuerySet` with the operation appended. The query is immutable — `.filter(...)` does not modify the original. The operations are frozen dataclasses:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -487,236 +186,788 @@ class Filter:
     def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
         clause = ctx.compile_expr(self.expr)
         return replace(ctx, stmt=ctx.stmt.where(clause))
-
-    def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
-        return replace(ctx, data=[item for item in ctx.data if self.expr.evaluate(item)])
-
-    def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
-        filter_data = ctx.encode_filter(self.expr)
-        ctx.params.update(filter_data)
-        return ctx
 ```
 
-One Filter object. Four compile methods. Four backends. Let us trace what happens when the same query meets different backends.
+Notice the pattern. `Filter` is a frozen dataclass with `compile_*` methods. It is a *capability* — the same encoding we learned in Chapter 1. fold consumes it the same way: `isinstance` check, method dispatch, context accumulation. The query system is not a separate mechanism. It is *the same mechanism applied to a different domain*.
 
-Consider the query:
+When the memory provider executes a query, it folds the operations:
 
 ```python
-q = users.filter(lambda u: u.balance > 100).order_by(lambda u: u.balance.desc()).limit(10)
+ctx = MemoryQueryContext(data=all_users)
+ctx = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
+# ctx.data is now the filtered, ordered, limited subset
 ```
 
-This produces three ops: `Filter(Gt(Field("balance"), Const(100)))`, `OrderBy((OrderSpec("balance", ascending=False),))`, `Limit(10)`.
-
-**Memory backend.** The provider creates `MemoryQueryContext(data=all_users)` — a list of entity objects in memory. fold iterates the three ops:
-
-```
-Step 1: Filter.compile_memory_query(ctx)
-  → ctx.data = [u for u in all_users if u.balance > 100]
-  (evaluates Gt(Field("balance"), Const(100)).evaluate(u) for each u)
-  → 347 users remaining from 1000
-
-Step 2: OrderBy.compile_memory_query(ctx)
-  → ctx.data.sort(key=lambda u: u.balance, reverse=True)
-  → sorted descending by balance
-
-Step 3: Limit.compile_memory_query(ctx)
-  → ctx.data = ctx.data[:10]
-  → top 10 highest balances
-```
-
-The result is a list of 10 entity objects. The entire query executed in Python, in memory, on the list.
-
-**SQL backend.** The provider creates `SAQueryContext(stmt=select(UserModel), get_column=..., compile_expr=...)` — a SQLAlchemy SELECT statement. fold iterates the same three ops:
-
-```
-Step 1: Filter.compile_sa_query(ctx)
-  → clause = ctx.compile_expr(Gt(Field("balance"), Const(100)))
-  → clause = UserModel.balance > 100
-  → ctx.stmt = ctx.stmt.where(UserModel.balance > 100)
-  → SQL: SELECT * FROM users WHERE balance > 100
-
-Step 2: OrderBy.compile_sa_query(ctx)
-  → col = ctx.get_column("balance")
-  → ctx.stmt = ctx.stmt.order_by(col.desc())
-  → SQL: SELECT * FROM users WHERE balance > 100 ORDER BY balance DESC
-
-Step 3: Limit.compile_sa_query(ctx)
-  → ctx.stmt = ctx.stmt.limit(10)
-  → SQL: SELECT * FROM users WHERE balance > 100 ORDER BY balance DESC LIMIT 10
-```
-
-The result is a SQLAlchemy SELECT statement. No data has been fetched. The query is a description — it will execute when the provider calls `await session.execute(ctx.stmt)`.
-
-**HTTP API backend.** The provider creates `HTTPAPIContext(params={}, base_url="https://api.example.com/users")`. fold iterates:
-
-```
-Step 1: Filter.compile_http_api(ctx)
-  → filter_data = ctx.encode_filter(Gt(Field("balance"), Const(100)))
-  → ctx.params = {"balance_gt": "100"}
-
-Step 2: OrderBy.compile_http_api(ctx)
-  → ctx.params = {"balance_gt": "100", "sort": "-balance"}
-
-Step 3: Limit.compile_http_api(ctx)
-  → ctx.params = {"balance_gt": "100", "sort": "-balance", "limit": "10"}
-```
-
-The result is a dict of query parameters. The provider will make an HTTP request: `GET https://api.example.com/users?balance_gt=100&sort=-balance&limit=10`.
-
-Three backends. Same three ops. Same fold. Different contexts. Different results. The Filter object does not know which backend it will compile for — it implements all four compile_* methods and fold dispatches based on the protocol. The user writes `users.filter(lambda u: u.balance > 100)` and the backend determines whether this becomes a list comprehension, a SQL WHERE clause, or an HTTP query parameter.
-
-This is "multiple representations" in the SICP sense — the same abstract operation with different concrete implementations. But where SICP's complex numbers use tagged data and external dispatch tables, emergent's query operations use *self-dispatch*: the operation carries its own implementations as methods, and fold dispatches via isinstance. The dispatch is not in a table maintained by the programmer. It is emergent from the Protocol type system.
-
-OrderBy, Limit, Offset, Select, Join, GroupBy, Having, Distinct — each follows the same pattern. Each is a frozen dataclass with compile_* methods for whichever backends support it. GroupBy, for instance, has compile_memory_query (Python groupby) and compile_sa_query (SQL GROUP BY) but no compile_http_api (most REST APIs don't support server-side grouping). The HTTP backend's fold silently skips GroupBy — open-world dispatch at work.
-
-This is the same pattern as capabilities from Chapter 1. MaxLen(255) has compile_pydantic, compile_openapi, compile_sqlalchemy. Filter(expr) has compile_memory_query, compile_sa_query, compile_http_api. The encoding is invariant: frozen dataclass + compile_* methods + fold dispatch. The domain changes (field annotations vs query operations). The mechanism does not.
-
-### 2.4.2 Protocol-Directed Compilation
-
-The emergent approach to generic operations can be characterized as *protocol-directed compilation*. For each target, there is a Protocol:
+When the SQLAlchemy provider executes the same query, it folds with a different protocol:
 
 ```python
-@runtime_checkable
-class MemoryQueryCompilable(Protocol):
-    def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext: ...
-
-@runtime_checkable
-class SAQueryCompilable(Protocol):
-    def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext: ...
+ctx = SAQueryContext(stmt=select(User), compile_expr=sa_compile_expr)
+ctx = fold(query.ops, ctx, SAQueryCompilable, "compile_sa_query")
+# ctx.stmt is now: SELECT * FROM users WHERE active = TRUE AND balance > 100
+#                  ORDER BY created_at DESC LIMIT 50
 ```
 
-fold dispatches by checking isinstance against the target protocol. This is structurally similar to SICP's data-directed programming — a dispatch table indexed by operation and type. But the dispatch table is not a separate data structure maintained by the programmer. It is emergent from the type system: isinstance checks whether the object has the right method. No registration. No dispatch table. No explicit tagging.
+Same operations. Same fold. Different protocol. Different result. The query is a *program*. Each fold is a different *evaluation* of that program. The memory fold interprets it immediately (filtering a Python list). The SQL fold compiles it to a SQL statement (building a query string). The closure property guarantees that any sequence of operations is itself a valid input to the fold.
 
-The power of this approach is *additivity*. To add a new backend — say, a graph database — you define a new Protocol and a new Context:
+Before reading on, predict: what does the HTTP API provider do with the same query? The answer is not "execute it against a database." The HTTP provider compiles the query to *URL parameters*:
 
 ```python
-@runtime_checkable
-class GraphDBCompilable(Protocol):
-    def compile_graph_db(self, ctx: GraphDBContext) -> GraphDBContext: ...
+ctx = HTTPAPIContext(params={}, encode_filter=http_encode)
+ctx = fold(query.ops, ctx, HTTPAPICompilable, "compile_http_api")
+# ctx.params = {"active": "true", "balance_gt": "100",
+#               "order": "-created_at", "limit": "50"}
 ```
 
-Then you add `compile_graph_db` methods to whichever query operations should support the new backend. Existing operations that don't implement the new protocol are silently skipped. Existing backends are not affected. No code is modified — only added.
+Three categorically different artifacts from one query: a filtered Python list, a SQL statement, a set of URL parameters. The query description is more fundamental than any of its compilations.
 
-To add a new operation — say, FullTextSearch — you define a new frozen dataclass with compile_* methods for whichever backends support full-text search:
+### 2.2.3 Representing Trees: Expression Compilation
+
+Sequences (flat lists of operations) are compiled by the flat fold from Chapter 1. But expressions are *trees*. `And(Gt(Field("balance"), Const(100)), Eq(Field("active"), Const(True)))` has internal structure — children, grandchildren, recursion. How do we compile a tree?
+
+The answer is `fold_expr` — the tree analog of fold:
 
 ```python
-@dataclass(frozen=True, slots=True)
-class FullTextSearch:
-    query: str
-    fields: tuple[str, ...]
-
-    def compile_sa_query(self, ctx):
-        # PostgreSQL tsvector full-text search
-        tsvector = func.to_tsvector("english", *[getattr(ctx.model, f) for f in self.fields])
-        return replace(ctx, stmt=ctx.stmt.where(tsvector.match(self.query)))
-
-    def compile_http_api(self, ctx):
-        ctx.params["q"] = self.query
-        return ctx
-
-    def compile_memory_query(self, ctx):
-        # NOT a silent skip — an explicit, descriptive rejection
-        raise NotImplementedError(
-            f"FullTextSearch('{self.query}') requires full-text indexing. "
-            f"In-memory backend cannot provide tsvector/trigram search. "
-            f"Use SQLAlchemy with PostgreSQL or an HTTP API."
-        )
+def fold_expr(expr, handlers, *, default=None):
+    def recurse(node):
+        handler = handlers.get(type(node))
+        if handler is not None:
+            return handler(node, recurse)
+        if default is not None:
+            return default(node, recurse)
+        raise TypeError(f"No handler for {type(node).__name__}")
+    return recurse(expr)
 ```
 
-Note the three-level choice for each backend: FullTextSearch IMPLEMENTS compile_sa_query (full support), IMPLEMENTS compile_http_api (full support), and IMPLEMENTS compile_memory_query with a raise (explicit rejection). A fourth option — simply not implementing compile_memory_query — would cause fold to skip silently, which would be wrong here: the user asked for full-text search, and the memory backend cannot provide it. Silence would hide a real problem. The explicit raise surfaces it.
+Same structure as flat fold: dispatch by type, call the handler, accumulate the result. But with a critical difference: each handler receives a `recurse` function that applies the same dispatch to child nodes. The recursion follows the tree structure. The handler controls *what to do at each node*. The fold controls *how to traverse*.
 
-This is the same three-option pattern from Section 1.1.6: implement (support), implement-with-raise (reject explicitly), or don't implement (skip as irrelevant). The programmer chooses per capability per backend.
+This is Meijer's catamorphism generalized from lists to trees. On lists, the catamorphism processes head-then-tail. On trees, it processes node-then-children. The algebraic structure is the same — a unique structurally recursive consumer of the data type.
 
-This is the Expression Problem solved: new operations (FullTextSearch) and new backends (GraphDB) added without modifying existing code. AND the data is inspectable — unlike tagless final, where the data is opaque functions. AND incompatibilities are explicit — unlike silent degradation, where the system appears to work but produces wrong results.
+The `algebra.py` example makes this concrete. Expression nodes (Num, Sym, Add, Mul, etc.) are frozen dataclasses. Each node compiles itself for multiple targets — Python source, LaTeX, evaluation, symbolic differentiation. The compilation driver builds a context that carries the recursive `compile_expr` closure:
+
+```python
+def compile_python(expr):
+    def _compile(e):
+        ctx = PythonCtx(result="", compile_expr=_compile)
+        result = fold([e], ctx, PythonCompilable, "compile_python")
+        return result.result
+    return _compile(expr)
+```
+
+The context carries `compile_expr = _compile` — a reference to the compilation function itself. When `Add.compile_python` needs to compile its children, it calls `ctx.compile_expr(self.left)` and `ctx.compile_expr(self.right)`. The recursion is threaded through the context, not hardcoded in the node.
+
+Let us trace the compilation of `Add(Num(2), Mul(Sym("x"), Num(3)))` — the expression `2 + x * 3`.
+
+**Step 1:** `compile_python(Add(Num(2), Mul(Sym("x"), Num(3))))` calls `_compile(Add(...))`.
+
+**Step 2:** `_compile` creates `PythonCtx(result="", compile_expr=_compile)` and calls `fold([Add(...)], ctx, PythonCompilable, "compile_python")`.
+
+**Step 3:** fold dispatches to `Add.compile_python`. Inside:
+```python
+left_str = ctx.compile_expr(self.left)   # _compile(Num(2))
+right_str = ctx.compile_expr(self.right)  # _compile(Mul(Sym("x"), Num(3)))
+return replace(ctx, result=f"({left_str} + {right_str})")
+```
+
+**Step 4:** `_compile(Num(2))` dispatches to `Num.compile_python` which returns `"2"`.
+
+**Step 5:** `_compile(Mul(Sym("x"), Num(3)))` dispatches to `Mul.compile_python`:
+```python
+left_str = ctx.compile_expr(self.left)   # _compile(Sym("x")) returns "x"
+right_str = ctx.compile_expr(self.right)  # _compile(Num(3)) returns "3"
+return replace(ctx, result="x * 3")
+```
+
+**Step 6:** Back in Step 3, `left_str = "2"`, `right_str = "x * 3"`. Result: `"(2 + x * 3)"`.
+
+Now predict: what does the same expression produce when compiled through `compile_latex`?
+
+```
+(2 + x \cdot 3)
+```
+
+The tree structure is identical. Only the format strings change — `+` stays `+`, `*` becomes `\cdot`, fractions use `\frac{}{}`. Same tree, different fold, different output. The closure property of expressions guarantees that any sub-expression can be compiled by the same mechanism.
+
+**Exercise 2.3.** Trace the compilation of `Mul(Add(Sym("x"), Num(1)), Add(Sym("x"), Num(-1)))` (i.e., `(x + 1)(x - 1)`) through `compile_python` and `compile_latex`. Then trace the same expression through `compile_eval` with `env = {"x": 5}`. Verify that the Python code, when evaluated, gives the same answer as `compile_eval`.
+
+**Exercise 2.4.** The context carries `compile_expr` as a field. This means a handler could *replace* the recursive function with a different one — say, one that simplifies before recursing. Design such a "simplifying compiler": a `compile_python` variant that calls `simplify(child)` before `_compile(child)`. What are the trade-offs of weaving simplification into the compiler versus running it as a separate pass?
+
+### 2.2.4 Conventional Interfaces
+
+SICP 2.2.3 identifies `map`, `filter`, and `accumulate` as *conventional interfaces* — standard patterns for processing sequences that allow modules to be combined. The insight: programs that look different (sum-odd-squares, even-fibs) share the same signal-flow structure when expressed with conventional interfaces.
+
+emergent has *two* conventional interfaces:
+
+1. **fold** — the linear conventional interface. Consumes a flat sequence of capabilities, accumulates a context. This is Chapter 1's primitive.
+
+2. **fold_expr** — the tree conventional interface. Consumes a tree of expressions, dispatches by node type, recurses into children. This is the tree catamorphism.
+
+`map` is fold that transforms each element. `filter` is fold with open-world skip. `accumulate` is fold itself. The banana split theorem (Chapter 1, Section 1.2.3) formalizes why multiple independent folds over the same list fuse into one pass: phases are independent, so the inner loop iterates phases while the outer loop iterates fields.
+
+But fold_expr adds something fold cannot express: *structure-dependent recursion*. When `Add.compile_python` calls `ctx.compile_expr(self.left)`, it is following the tree's structure. The recursion pattern is dictated by the data, not by the programmer. This is the mathematical content of catamorphisms: the recursion scheme is *determined by the data type*.
+
+The two interfaces together cover all compilation in emergent:
+
+| Data shape | Interface | Example |
+|-----------|-----------|---------|
+| Flat list of capabilities | fold | Schema compilation, derive phases |
+| Tree of expressions | fold_expr | Query compilation, algebra compilation |
+| Flat list of query ops | fold | Memory/SQL/HTTP query execution |
+| Flat list of pipeline steps | fold | Request/response pipeline |
+
+The uniformity is the point. Any new compilation domain — a new query backend, a new expression language, a new pipeline step — plugs into one of these two interfaces. No new mechanism is needed.
+
+### 2.2.5 The Derive Language: A Picture Language for Endpoints
+
+SICP 2.2.4 presents a *picture language* where painters compose into painters. `beside(wave, flip-vert(wave))` takes two painters, combines them, and returns a painter. The result is a painter — the closure property. The picture language demonstrates stratified design: primitives, combinators, and abstractions layered atop one another.
+
+emergent's derive system is its picture language. The "painters" are schema capabilities. The "canvas" is the DeriveCtx. The "painting" is a set of endpoints.
+
+**Primitive painters** — capabilities that *generate* structure:
+
+```python
+http_crud("/users", provider_node=Users)
+# Generates 6 OpSpecs: List, Get, Create, Update, Patch, Delete
+```
+
+**Combinators** — capabilities that *transform* structure:
+
+```python
+Paginated(20)      # Replaces List handler with paginated version
+Readonly()         # Removes all mutation ops
+SoftDelete("d")    # Replaces hard delete with soft delete
+Sorted()           # Adds sorting support to List
+```
+
+**Abstractions** — named compositions of primitives and combinators:
+
+```python
+scoped(
+    http_crud("/users", Users),
+    Paginated(20),
+    Readonly(),
+)
+```
+
+`scoped` takes a generator and zero or more modifiers, returns a `Scoped` capability — which is itself a `SchemaCapability`. Scoped groups can be composed with other scoped groups:
+
+```python
+@derive(
+    scoped(
+        http_crud("/users", Users),
+        Paginated(20),
+        Readonly(),
+    ),
+    scoped(
+        http_crud("/admin/users", Users),
+        Authenticated(BearerExtract(), TokenValidate(AuthUser, lookup)),
+    ),
+)
+```
+
+This is SICP's picture language. Each `scoped(...)` is a "painter." `@derive(painter1, painter2)` is `beside(painter1, painter2)`. The result — a set of endpoints — is the "picture." And the closure property holds: any composition of capabilities is itself a capability, suitable for further composition.
+
+SICP draws the crucial lesson:
+
+> A complex system should be structured as a sequence of levels that are described using a sequence of languages. Each level is constructed by combining parts that are regarded as primitive at that level, and the parts constructed at each level are used as primitives at the next level.
+
+emergent's five stratification levels:
+
+| Level | Language | Primitives | Combinators | Produces |
+|-------|----------|------------|-------------|----------|
+| 1. Capability | `MaxLen(255)`, `Unique`, `Identity` | Frozen dataclasses | `Annotated[T, ...]` | Field constraints |
+| 2. Schema | `SchemaCompiler`, `CompilationPhase` | Phases | `+`, `-`, `&`, `\|` | Compiled models |
+| 3. Derive | `http_crud(...)`, `Paginated(...)` | OpSpecs | `scoped(...)`, `@derive(...)` | Endpoints |
+| 4. Application | `endpoint(...)`, `application()` | Endpoints | `.mount(...)` | Application |
+| 5. Target | `fastapi_compile(...)`, `cli_compile(...)` | Applications | Target compilers | Running program |
+
+Changes at one level do not affect other levels. Adding `MaxLen(128)` to a field (Level 1) does not change the derive structure (Level 3) or the application topology (Level 4). Adding a new endpoint (Level 3) does not change existing field constraints (Level 1). This is SICP's "robust design" — each level absorbs changes locally.
+
+**Exercise 2.5.** In SICP's picture language, `rotate180(painter)` applies a transformation to a painter, producing a new painter. What is the emergent analog? Design a capability `PrefixRoutes(prefix)` that takes all endpoints produced by a generator and adds a URL prefix. Where in the three-phase derive pipeline would it execute? Which protocol would it implement?
+
+**Exercise 2.6.** The SchemaCompiler algebra has `+`, `-`, `&`, `|`. The expression algebra has `&`, `|`, `~`. Both are closed under their operations. Are there other algebraic laws that hold? Does `A + B == B + A` for SchemaCompiler? Does `e1 & e2 == e2 & e1` for expressions? What is the identity element for each?
+
+---
+
+## 2.3 Symbolic Data
+
+### 2.3.1 Expressions as Data
+
+We now confront a theme that Weyl's epigraph anticipated. In Section 2.1, we built expressions from proxy objects: `u.balance > 100` produced `Gt(Field("balance"), Const(100))`. We noted that the comparison operator was repurposed — instead of computing a boolean, it *built a data structure*.
+
+This is the idea of *symbolic data*: data that represents *expressions*, not values. The expression `Gt(Field("balance"), Const(100))` does not tell you whether any specific user's balance exceeds 100. It is a *description* of that question — a symbolic representation that can be interpreted, compiled, simplified, serialized, and inspected without ever answering the question.
+
+SICP introduces symbolic data through quotation: `(quote (+ 1 2))` is not 3, it is the *list* containing the symbol `+`, the number `1`, and the number `2`. Data that represents code. emergent achieves the same thing through frozen dataclasses: `Gt(Field("balance"), Const(100))` is not a boolean, it is the *tree* containing the node `Gt`, the field reference `"balance"`, and the constant `100`. Data that represents a query.
+
+The full expression vocabulary:
+
+- **Leaf nodes:** `Field(name)`, `Const(value)`
+- **Comparison:** `Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`
+- **Logical:** `And`, `Or`, `Not`
+- **Collection:** `In`, `Contains`, `StartsWith`, `EndsWith`
+- **Null checks:** `IsNull`, `IsNotNull`
+- **Range:** `Between`
+- **Pattern:** `Like`, `ILike`, `Regex`
+- **Array:** `ArrayContains`, `ArrayAny`, `ArrayAll`, `ArrayOverlap`
+- **JSON:** `JsonExtract`, `JsonContains`, `JsonHasKey`
+
+Twenty-six node types. Every one a frozen dataclass. Every one carrying an `evaluate` method for direct interpretation. Every one composable with logical operators. The expression AST is a *language* — a language for describing queries, just as SICP's symbolic expressions are a language for describing computations.
+
+And like any language, it can be processed by different interpreters.
+
+### 2.3.2 Symbolic Differentiation — A Parallel
+
+SICP 2.3.2 is one of the most celebrated sections in computer science education. It presents *symbolic differentiation*: a program that takes an expression and produces a new expression — the mathematical derivative. The expression `ax^2 + bx + c` becomes `2ax + b`. The key insight: the derivative of a sum is the sum of the derivatives. The derivative of a product uses the product rule. Each rule reduces a complex expression to simpler ones.
+
+SICP's simplification rules are the real gem. The raw derivative of `x + 3` with respect to `x` is `(+ 1 0)`. Unreduced but correct. The simplification rules clean it up: `(+ a 0) -> a`, `(* a 1) -> a`, `(* a 0) -> 0`. The simplified result is `1`.
+
+emergent has the exact same structure in `_simplify.py`. The domain is different — boolean algebra instead of calculus — but the technique is identical: *algebraic rewriting on frozen expression trees*.
+
+Here is the simplifier:
+
+```python
+def simplify_expr(expr: Expr) -> Expr:
+    match expr:
+        case And(left=left, right=right):
+            left_s = simplify_expr(left)
+            right_s = simplify_expr(right)
+            if _is_true(right_s):  return left_s       # And(x, True) -> x
+            if _is_true(left_s):   return right_s       # And(True, x) -> x
+            if _is_false(left_s) or _is_false(right_s):
+                return Const(False)                      # And(x, False) -> False
+            if left_s == right_s:  return left_s         # And(x, x) -> x
+            if left_s is not left or right_s is not right:
+                return And(left_s, right_s)
+            return expr
+
+        case Or(left=left, right=right):
+            left_s = simplify_expr(left)
+            right_s = simplify_expr(right)
+            if _is_true(left_s) or _is_true(right_s):
+                return Const(True)                       # Or(x, True) -> True
+            if _is_false(right_s): return left_s         # Or(x, False) -> x
+            if _is_false(left_s):  return right_s        # Or(False, x) -> x
+            if left_s == right_s:  return left_s         # Or(x, x) -> x
+            if left_s is not left or right_s is not right:
+                return Or(left_s, right_s)
+            return expr
+
+        case Not(operand=operand):
+            inner = simplify_expr(operand)
+            if isinstance(inner, Not): return inner.operand  # Not(Not(x)) -> x
+            if _is_true(inner):  return Const(False)         # Not(True) -> False
+            if _is_false(inner): return Const(True)          # Not(False) -> True
+            if inner is not operand: return Not(inner)
+            return expr
+
+        case _:
+            return _simplify_children(expr)
+```
+
+Let us trace a simplification step by step. Start with:
+
+```python
+And(
+    Eq(Field("active"), Const(True)),
+    And(Gt(Field("balance"), Const(100)), Const(True))
+)
+```
+
+**Step 1:** Match outer `And`. Simplify left: `Eq(Field("active"), Const(True))` — no simplification applies (it is a comparison, not a logical op). `left_s` unchanged.
+
+**Step 2:** Simplify right: `And(Gt(Field("balance"), Const(100)), Const(True))`. Inner match on `And`:
+- left_s = `Gt(Field("balance"), Const(100))` — comparison, no simplification.
+- right_s = `Const(True)` — leaf, unchanged.
+- `_is_true(right_s)` is True. Rule fires: `And(x, True) -> x`.
+- Returns `Gt(Field("balance"), Const(100))`.
+
+**Step 3:** Back in outer And: left = `Eq(Field("active"), Const(True))`, right = `Gt(Field("balance"), Const(100))`. Right changed from original, so return `And(Eq(...), Gt(...))`.
+
+The redundant `Const(True)` is eliminated. The simplified tree is smaller, semantically equivalent, and when compiled to SQL, produces a cleaner WHERE clause.
+
+Compare SICP's simplification rules with emergent's side by side:
+
+| SICP (arithmetic) | emergent (boolean) | Algebraic law |
+|---|---|---|
+| `(+ a 0) -> a` | `And(x, True) -> x` | Identity element |
+| `(* a 0) -> 0` | `And(x, False) -> False` | Annihilation |
+| `(* a 1) -> a` | `Or(x, False) -> x` | Identity element |
+| `(+ a a) -> (* 2 a)` | `And(x, x) -> x` | Idempotence |
+| `(- a a) -> 0` | `Or(x, x) -> x` | Idempotence |
+| `(- (- a)) -> a` | `Not(Not(x)) -> x` | Double negation / involution |
+
+The technique is structurally identical: pattern-match on the expression tree, check for algebraically trivial cases, recursively simplify children. Both are catamorphisms over the expression AST. Both operate on frozen data structures. Both produce new frozen data structures. Neither mutates anything.
+
+The `algebra.py` example extends this to calculus. The derivative rules are:
+
+```python
+# d/dx c = 0
+Num.compile_deriv = lambda self, ctx: replace(ctx, result=Num(0))
+
+# d/dx x = 1, d/dx y = 0 (if y != x)
+Sym.compile_deriv = lambda self, ctx: replace(
+    ctx, result=Num(1) if self.name == ctx.var else Num(0)
+)
+
+# d/dx (f + g) = df + dg  (sum rule)
+Add.compile_deriv = lambda self, ctx: replace(
+    ctx, result=ctx.compile_expr(self.left) + ctx.compile_expr(self.right)
+)
+
+# d/dx (f * g) = f * dg + df * g  (product rule)
+Mul.compile_deriv = lambda self, ctx: replace(ctx, result=(
+    ctx.compile_expr(self.left) * self.right
+    + self.left * ctx.compile_expr(self.right)
+))
+
+# d/dx (f^n) = n * f^(n-1) * df  (power rule)
+Pw.compile_deriv = lambda self, ctx: replace(ctx, result=(
+    self.exponent * (self.base ** (self.exponent - 1))
+    * ctx.compile_expr(self.base)
+))
+```
+
+Let us trace the derivative of `x**2 + 2*x + 1` with respect to `x`. The expression tree is `Add(Add(Pw(Sym("x"), Num(2)), Mul(Num(2), Sym("x"))), Num(1))`.
+
+The outer `Add` applies the sum rule: d/dx(left) + d/dx(right).
+
+- d/dx(`Num(1)`) = `Num(0)` (constant rule)
+- d/dx(`Add(Pw(x, 2), Mul(2, x))`) = sum rule again:
+  - d/dx(`Pw(x, 2)`) = power rule: `2 * x^1 * 1` = `Mul(Num(2), Sym("x"))`
+  - d/dx(`Mul(2, x)`) = product rule: `0 * x + 2 * 1` = `Add(Mul(Num(0), Sym("x")), Mul(Num(2), Num(1)))`
+
+Raw result: `Add(Add(Mul(Num(2), Sym("x")), Add(Mul(Num(0), Sym("x")), Mul(Num(2), Num(1)))), Num(0))`.
+
+Simplification cleans up the `Num(0)` and `Mul(Num(1), ...)` terms. Final simplified: `Add(Mul(Num(2), Sym("x")), Num(2))` — that is, `2x + 2`. Correct.
+
+The compiled derivative *is itself an expression*. You can differentiate it again (`compile_deriv(d, "x")` gives `Num(2)` — the second derivative). You can compile it to Python, to LaTeX, to an evaluator. The derivative of data is data. The map is the territory.
+
+**Exercise 2.7.** Trace the simplification of `Or(And(Field("a"), Const(True)), Const(False))` step by step. How many rule applications are needed? What is the final expression?
+
+**Exercise 2.8.** SICP Exercise 2.56 asks the reader to extend the differentiator with the power rule. The algebra.py example already has it. Extend the *simplifier* instead: add rules `Pw(x, Num(1)) -> x` and `Pw(x, Num(0)) -> Num(1)`. Where in the `simplify` function would these rules go?
+
+**Exercise 2.9.** SICP 2.3.2 notes that the simplifier's "intelligence" is limited — it does not simplify `(x + 0 + 0)` in one pass because the outer `+` sees `(+ (+ x 0) 0)`, not `(+ x 0 0)`. The same limitation exists in emergent's simplifier. Design a `flatten_and` function that rewrites `And(And(a, b), c)` to a flat list `[a, b, c]`, simplifies each element, removes all `Const(True)` values, and rebuilds the And tree. (Hint: the real `_simplify.py` has `flatten_and` and `unflatten_and` for exactly this purpose.)
+
+---
+
+## 2.4 Multiple Representations for Abstract Data
+
+### 2.4.1 The Problem of Representation
+
+We have been building compound data — expressions, queries, operations — and compiling them through fold. But we have been working within single domains: expressions within the query axis, operations within the derive axis. The real power of emergent — and the real crisis of this chapter — emerges when we consider how a *single entity* passes through *multiple axes simultaneously*.
+
+Consider User:
+
+```python
+@derive(http_crud("/users", provider_node=Users), Paginated(20))
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: str
+    email: Annotated[str, Unique, MaxLen(255)]
+```
+
+In Chapter 1, we traced the field-level compilation: `MaxLen(255)` through Pydantic, OpenAPI, SQLAlchemy. In this chapter, we traced query expressions through memory, SQL, HTTP. But User is not compiled by one axis in isolation. User passes through *all* axes:
+
+1. **Schema axis** — field capabilities compiled to Pydantic models, OpenAPI schemas, SQLAlchemy columns, constraints
+2. **Derive axis** — `http_crud` generates OpSpecs, `Paginated` modifies them, materialization produces types and handlers
+3. **Surface axis** — endpoints with triggers, codecs, capabilities mounted into an Application
+4. **Query axis** — `RelationalQuerySet` operations compiled to memory/SQL/HTTP backends
+
+Four axes. Dozens of folds. One entity. And here is where the model that Chapter 1 established — "same data, different fold, different result" — proves insufficient.
+
+SICP 2.4 opens with the same insufficiency. Abelson and Sussman present complex numbers. Ben Bitdiddle implements them in rectangular form (real + imaginary parts). Alyssa P. Hacker implements them in polar form (magnitude + angle). Both representations are correct. Both compute the same results. But they are *different programs*.
+
+The question is: what happens when a system needs *both*?
+
+### 2.4.2 Tagged Data and Protocol Dispatch
+
+SICP's first solution is *tagged data*: attach a type tag ('rectangular or 'polar) to each complex number, then dispatch based on the tag. This works but is fragile — every operation must know about every representation.
+
+emergent's fold already solves this. The "type tag" is the Python class. The "dispatch" is `isinstance`. When fold encounters a capability, it checks whether the capability implements the target protocol. If yes, it calls the method. If no, it skips. The capability carries its own "tag" (its type) and its own "operations" (its methods). There is no central dispatch table.
+
+But the real parallel is deeper. SICP's crisis is not about dispatch *mechanics*. It is about *independent development*. Ben builds rectangular. Alyssa builds polar. Neither knows about the other. The system must accommodate both *without modification*.
+
+emergent faces the same situation. Consider two teams building query providers independently:
+
+**Team A** builds a memory provider. It processes queries by iterating a Python list:
+```python
+def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
+    return replace(ctx, data=[item for item in ctx.data if self.expr.evaluate(item)])
+```
+
+**Team B** builds a SQL provider. It processes the same queries by building SQL clauses:
+```python
+def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+    clause = ctx.compile_expr(self.expr)
+    return replace(ctx, stmt=ctx.stmt.where(clause))
+```
+
+Neither team knows about the other. Team A's memory provider cannot compile to SQL. Team B's SQL provider cannot filter Python lists. But both teams implement methods on the *same* `Filter` class, using *different* protocols. When a new team arrives — say, Team C building an HTTP provider — they add `compile_http_api` to `Filter`. No existing code changes. Team A's memory provider is unaffected. Team B's SQL provider is unaffected.
+
+This is the resolution of SICP's crisis, but through *protocols* instead of through tagged data or a central dispatch table. The capability is the meeting point. It carries all representations. fold selects the one matching its protocol.
+
+SICP 2.4.3 calls this *message passing*: "intelligent data objects that dispatch on operation names." The capability IS the intelligent data object. The method name (`"compile_memory_query"`, `"compile_sa_query"`) IS the operation name. fold IS the generic dispatch.
+
+### 2.4.3 The Expression Problem
+
+SICP Exercise 2.76 asks a question that has become one of the deepest in programming language theory:
+
+> Which organization would be most appropriate for a system in which new types must often be added? For a system in which new operations must often be added?
+
+This is the *Expression Problem*, named by Philip Wadler in 1998. Data-directed programming makes it easy to add new operations (add a row to the table) but hard to add new types (must modify every operation). Message-passing makes it easy to add new types (add a new data object with all methods) but hard to add new operations (must modify every data object).
+
+emergent chose message-passing. Capabilities carry their own `compile_*` methods. Adding a new capability (a new "type") is trivial: define a frozen dataclass with the relevant methods. No existing code changes. But adding a new compilation target (a new "operation") requires adding a new method to every relevant capability.
+
+Why this choice? Because in emergent's domain, *new capabilities are added far more often than new targets*. A user might define dozens of custom capabilities (`Sensitive`, `Encrypted`, `Deprecated`, `RateLimited`) but will rarely add a new compilation target (FastAPI, CLI, Telegram — the list is short and stable). The Expression Problem is biased by usage patterns, and emergent's bias is correct for its domain.
+
+But emergent adds a twist that dissolves the problem further: the *open-world property*. When fold encounters a capability that does not implement the target protocol, it *skips* it. A new capability that only implements `compile_pydantic` works immediately in Pydantic folds and is silently ignored by SQL folds. You do not need to implement *all* compile methods — only the ones relevant to your domain. This is not a full solution to the Expression Problem in the theoretical sense (you still cannot add a new target without modifying capabilities that want to participate in it). But in practice, it means *most* capabilities need only *a few* methods, and the rest are gracefully absent.
+
+Swierstra (2008) formalized this as *Data Types a la Carte*: expression functors composed via coproducts, algebras as type classes, fold as the universal consumer. emergent achieves the same extensibility through a simpler mechanism — frozen dataclasses with protocol dispatch on a flat list. Swierstra needs free monads and coproduct functors because Haskell expressions are recursive trees. emergent's capabilities are a flat tuple, so the free monoid (tuple concatenation) suffices. The algebraic content is the same; the encoding is simpler.
+
+**Exercise 2.10.** Per SICP Exercise 2.76: design a scenario where emergent's message-passing organization is *wrong* — where it would be better to have a centralized dispatch table. What would the domain look like? (Hint: consider a system where new targets are added weekly but capabilities are fixed.)
+
+**Exercise 2.11.** Swierstra's coproduct composes expression types: `Val :+: Add :+: Mul`. emergent's capability tuple does the same: `(MaxLen(255), Unique, Identity)`. But Swierstra's composition is *typed* (the coproduct is a type-level operator), while emergent's is *untyped* (any capability can go in any tuple). What does emergent lose by not having typed composition? What does it gain? Consider verification: can emergent catch "incompatible capabilities" at import time?
 
 ---
 
 ## 2.5 Systems with Generic Operations
 
-In the previous sections, we introduced protocol-directed compilation as a way to deal with multiple representations. The key idea is that data objects carry their own compilation methods, and fold dispatches based on protocol conformance.
+### 2.5.1 The Crisis: Compilation IS the Semantics
 
-In this section we will see how to use this idea to define operations that are generic over the *axis* of compilation — schema, surface, storage, query — not just the backend within an axis.
+We are now in a position to confront the central crisis of this chapter.
 
-### 2.5.1 The Encoding is Fractal
+In Chapter 1, the crisis was: capabilities are not annotations — they are defunctionalized decisions that generate different processes through different folds. The reader learned that `MaxLen(255)` is the *meaning*, and fold is the *evaluator*.
 
-Consider what we have seen so far:
-
-| Domain | Items | Context | Protocol | What fold produces |
-|--------|-------|---------|----------|--------------------|
-| Schema | MaxLen, Unique, Identity | PydanticContext | PydanticCompilable | Field config |
-| Query | Filter, OrderBy, Limit | MemoryQueryContext | MemoryQueryCompilable | Filtered data |
-| Derive | CRUD, Paginated, SoftDelete | DeriveCtx | DeriveGeneratable | OpSpecs |
-| Surface | Tag, Auth, RateLimit | FastAPIRouteContext | FastAPICompilable | Route config |
-| Verify | Min, Max, MinLen, MaxLen | NumericVerifyCtx | NumericVerifyCompilable | Issues |
-| Runtime | WorkStealing caps | WorkStealingContext | WorkStealingCompilable | Node traits |
-| World | Computations | WorldContext | WorldCompilable | nodnod nodes |
-| Algebra | Num, Add, Mul, Sin | PythonCtx | PythonCompilable | Python source |
-
-Eight domains. One fold. The same six lines.
-
-This is not a coincidence. It is a consequence of the encoding: frozen dataclass + compile_* methods + isinstance dispatch. Any domain where data can be represented as a sequence of frozen objects that know how to transform a target context can use fold. The domain provides the items and the context. fold provides the traversal and the dispatch. The algebraic laws — universality, fusion, banana split — hold regardless of domain.
-
-### 2.5.2 Combining Domains
-
-The power of the generic approach becomes evident when we combine operations from different domains. Consider a compilation that involves both schema and query:
+The Chapter 2 crisis goes deeper. Consider what happens when we compile one User entity to three different targets:
 
 ```python
-@derive(http_crud("/users", Users), Paginated(20), SoftDelete("deleted_at"))
+app = build_application_from_decorated(User)
+
+# Target 1: FastAPI
+fastapi_app = targets.fastapi.compile(app, axes)
+
+# Target 2: CLI
+cli_parser = targets.cli.compile(app, axes)
+
+# Target 3: Telegram
+tg_dispatch = targets.telegrinder.compile(app, axes)
+```
+
+Three function calls. Three completely different programs.
+
+The FastAPI app is an HTTP server. It has routes (`GET /users`, `POST /users`, `GET /users/{id}`, ...), Pydantic models for request validation, OpenAPI documentation, async request handlers, middleware chains, exception handlers. It imports `fastapi`, `starlette`, `pydantic`, `uvicorn`. It runs as a long-lived process listening on a port.
+
+The CLI parser is a command-line tool. It has subcommands (`users list`, `users get`, `users create`, ...), argparse argument specs, synchronous handlers that print to stdout. It imports `argparse`. It runs once, prints a result, and exits.
+
+The Telegram bot is an event-driven system. It has command handlers (`/users`, `/start`), message parsers, inline keyboards, polling loops. It imports `telegrinder`. It runs as a long-lived process polling the Telegram API.
+
+These three programs share *no runtime code*. The FastAPI app does not import argparse. The CLI tool does not import starlette. The Telegram bot does not import either. They have different dependency trees, different execution models, different error handling strategies, different I/O patterns. They are not "the same program in three formats." They are *three different programs*.
+
+And yet they all came from the same source:
+
+```python
+@derive(http_crud("/users", provider_node=Users), Paginated(20))
 @dataclass
 class User:
     id: Annotated[int, Identity]
     name: str
-    balance: Annotated[float, Min(0)]
-    deleted_at: datetime | None = None
+    email: Annotated[str, Unique, MaxLen(255)]
 ```
 
-This single declaration involves:
-- **Schema fold:** MaxLen, Min, Identity → PydanticContext, OpenAPIContext, SQLAlchemyContext
-- **Derive fold:** CRUD → OpSpecs → Paginated modifies List → SoftDelete modifies Delete and adds filter to reads
-- **Query fold:** SoftDelete attaches a filter `lambda u: u.deleted_at.is_null()` to the base query → Filter(IsNull(Field("deleted_at")))
-- **Verification fold:** Min(0) → NumericVerifyCtx → check() → no issues
-- **Surface fold:** error capabilities → FastAPIRouteContext → RFC 7807 error responses
+Eleven lines. Three categorically different programs.
 
-Five fold operations. Five different contexts. Five different protocols. One declaration. The domains are orthogonal — each fold operates independently, producing its own result. The results combine at materialization into a single endpoint with correct validation, OpenAPI docs, soft-delete behavior, pagination, and error handling.
+Now consider what `MaxLen(255)` means in each:
 
-This is the generic system at work: not a single fold doing everything, but multiple independent folds, each specialized to its domain, composed at the architectural level through the wire Application and compilation targets.
+| Target | What MaxLen(255) *becomes* | When it runs |
+|--------|--------------------------|-------------|
+| FastAPI | `Field(max_length=255)` on a Pydantic model | Every HTTP request |
+| FastAPI (docs) | `{"maxLength": 255}` in OpenAPI schema | Design time (Swagger UI) |
+| SQLAlchemy | `Column(String(255))` | Migration time |
+| CLI | `help="(max 255 chars)"` in argparse | When user runs `--help` |
+| Verification | `max_length=255` in constraint ctx | Import time |
 
-### 2.5.3 Symbolic Algebra as Generic System
+Five different artifacts. Five different runtimes. Five different *meanings*. `MaxLen(255)` does not have a single meaning. Its meaning is determined by which fold evaluates it. The fold is not "reading" a fixed meaning — the fold is *creating* the meaning.
 
-To close this chapter, we return to the symbolic algebra example — not as a demonstration of emergent's features, but as evidence that the encoding is genuinely generic.
+This is the crisis.
 
-The algebra system defines expression nodes as frozen dataclasses. Each node carries compile_python, compile_latex, compile_eval, compile_deriv. Four targets. Four contexts. Four protocols. One fold.
+In Chapter 1, we said: "the protocol determines the semantics." But the full implication is this: *there is no meaning apart from compilation*. `MaxLen(255)` in isolation — without any fold — is just a frozen dataclass with one field. It means nothing. It becomes meaningful only when a fold consumes it. Different folds, different meanings. No fold is privileged. There is no "true" interpretation of `MaxLen(255)` that the others approximate.
 
-The algebra system has nothing to do with web APIs, databases, or HTTP routes. It is pure symbolic mathematics. And yet it uses the same fold. The same isinstance dispatch. The same pattern of frozen-dataclass-with-compile-methods.
+SICP arrives at the same insight through complex numbers. Ben's rectangular representation and Alyssa's polar representation are not "views of the same thing." They are different concrete objects that happen to satisfy the same abstract interface. You can convert between them, but neither is more fundamental.
 
-This is the claim of the chapter: data abstraction, the closure property, symbolic data, multiple representations, and generic operations are not features of emergent. They are consequences of the encoding — frozen dataclass + compile_* + fold. The encoding is domain-independent. Any domain that can represent its operations as frozen data with compile methods can use it. The algebraic laws follow from the mathematics. The open-world dispatch follows from isinstance. The additivity follows from Protocol.
+But emergent pushes past SICP. Ben's rectangular and Alyssa's polar can be interconverted — `z = r * e^(i*theta)` translates between forms. There is an *isomorphism*. A FastAPI app and an argparse parser do not look isomorphic — they are *different things* generated from a common source. But emergent goes further: the `wire.bridge` module provides the inverse of compilation.
 
-In Chapter 3, we will confront the one thing the encoding does not naturally handle: *time*. Capabilities are immutable. Contexts are frozen. Compilation is deterministic. But real systems change. Users create accounts. Workers die. Markets move. How do we model a changing world with immutable data? The answer — theworld's append-only Log — will introduce the third great idea of this book, after capabilities and data abstraction: the idea that state is not something you have, but something you observe.
+`compile` is the forward direction: `Application → Framework`. `bridge` is the inverse: `Framework → Application`. Given a FastAPI app, you can recover the wire Application and cross-compile it to a CLI parser:
+
+```python
+from emergent.wire.bridge import build_application
+from emergent.wire.compile import cli_compile
+
+# OUT: Application → FastAPI (compilation)
+fastapi_app = http_compile(wire_app, axes)
+
+# IN: FastAPI → Application (bridge)
+recovered_app = build_application(fastapi_app)
+
+# OUT again: Application → CLI (cross-compilation)
+cli_parser = cli_compile(recovered_app, compile_axes)
+```
+
+This is a round trip. The capability description survives it. What is lost in any single projection — the full structure, the metadata, the other targets — is preserved in the wire Application that bridge recovers. You can prove this: compile to FastAPI, bridge back, compile to CLI. You get the same CLI you would have gotten by compiling directly.
+
+The common source — the capability description — is more fundamental than any of its compilations. The description *is* the program. Any specific target is one *projection* of the program into a particular runtime. Bridge recovers the source from the projection. The concept of "the program" does not live in any one runtime. It lives in the capabilities.
+
+This is what "compilation IS the semantics" means — and bridge makes the claim stronger, not weaker. The capabilities are not descriptions of a program that exists somewhere else. They *are* the program. Compilation does not translate — it *creates*. And bridge proves it: if you can recover the program from any one of its projections, the projections contain the program. The round trip closes.
+
+### 2.5.2 The Dispatch Table
+
+SICP 2.5 presents the operation-type table — a two-dimensional table with operations on one axis and types on the other. Each cell contains a specific implementation. `(put 'real-part '(rectangular) real-part-rectangular)` installs an implementation at coordinates (real-part, rectangular). `apply-generic` looks up the table at runtime.
+
+emergent's capabilities form the same table — but distributed across capability classes instead of centralized in a mutable registry:
+
+```
+                   | PydanticCompilable  | OpenAPICompilable  | SQLAlchemyCompilable | ArgparseCompilable
+-------------------+---------------------+--------------------+----------------------+-------------------
+MaxLen(255)        | compile_pydantic    | compile_openapi    | compile_sqlalchemy   | compile_argparse
+Identity           | --                  | --                 | compile_sqlalchemy   | --
+Unique             | --                  | --                 | compile_sqlalchemy   | --
+Min(0)             | compile_pydantic    | compile_openapi    | --                   | compile_argparse
+Ref(User)          | --                  | --                 | compile_sqlalchemy   | --
+```
+
+This IS SICP Figure 2.22. Each row is a capability (a "type" in SICP's vocabulary). Each column is a compilation target (an "operation" in SICP's vocabulary). Each cell is a `compile_*` method (a specific implementation). The `--` cells are the open-world skips.
+
+SICP installs entries with `(put op type procedure)` — a mutation of a global table. emergent installs entries by *defining a class with methods* — at definition time, immutably. SICP retrieves entries with `(get op type)`. emergent retrieves entries with `isinstance(item, protocol)` and `getattr(item, method)`.
+
+The structural difference: SICP's table is *mutable and centralized*. emergent's table is *immutable and distributed*. There is no global registry. Each capability carries its own row. fold reads the row at dispatch time. This means:
+
+1. **No installation step.** Defining a capability class automatically populates the table.
+2. **No mutation.** The table cannot be modified after definition. There is no `(put ...)` that overwrites an entry.
+3. **No coordination.** Teams can define capabilities independently. Their rows coexist in any fold.
+
+And crucially: fold does not need to know the table's dimensions. It iterates capabilities, checks isinstance, calls the method if found. A capability with ten compile methods and a capability with one compile method are processed identically. The table's sparsity (the `--` cells) is handled by the skip, not by explicit null entries.
+
+### 2.5.3 Five Folds from One Declaration
+
+We can now trace the full compilation path for one User entity. This is the culminating example — emergent's analog of SICP 2.5's generic arithmetic package that combines rational, complex-rectangular, complex-polar, and ordinary arithmetic into one dispatch system.
+
+```python
+@derive(http_crud("/users", provider_node=Users), Paginated(20))
+@dataclass
+class User:
+    id: Annotated[int, Identity]
+    name: str
+    email: Annotated[str, Unique, MaxLen(255)]
+```
+
+**Fold 1: Schema compilation (field-level).**
+
+`SchemaCompiler.compile(User, axes)` iterates each field. For each field and each phase, it calls `fold_field`. The capabilities on `email` — `(MaxLen(255), Unique)` — are folded through Pydantic, OpenAPI, SQLAlchemy, and Constraints phases. Nine dispatch decisions per field (3 fields x 3 capabilities including empty sets). Result: a `FieldCompilation` dict for each field.
+
+**Fold 2: Derive compilation (schema-level, three sub-folds).**
+
+`compile_derive(User)` retrieves `(CRUD(...), Paginated(20))` from schema_meta.
+
+Phase 1 (Generate): fold with `DeriveGeneratable`. CRUD fires, generates 6 OpSpecs. Paginated skips.
+
+Phase 2 (Modify): fold with `DeriveModifiable`. CRUD skips. Paginated fires, modifies List with pagination.
+
+Phase 3 (Augment): fold with `DeriveAugmentable`. Neither fires.
+
+Three folds over the same two capabilities. Each fold sees a different subset — the protocol-compatible ones.
+
+**Fold 3: Materialization (OpSpec -> types + handlers).**
+
+Each OpSpec becomes a request type, a response type, and an async handler. `build_from_spec` generates Python types at runtime using `create_dataclass`. The List endpoint gets `ListUsersRequest(page: int, page_size: int)` and `PaginatedResponse[User]`.
+
+**Fold 4: Application assembly.**
+
+Endpoints are mounted into an `Application`. Each endpoint has a runner (the async handler), exposures (trigger + codec + capabilities), and capabilities. The application is a tree of endpoints — the closure property at work.
+
+**Fold 5: Target compilation (application -> framework).**
+
+`targets.fastapi.compile(app, axes)` iterates each endpoint. For each exposure, it seeds a `FastAPIWrapContext` from the codec, folds surface capabilities through `FastAPIPipelineCompilable`, and assembles a `fastapi.APIRoute`. The result is a `fastapi.FastAPI` application with routes, middleware, exception handlers, lifespan management.
+
+Five folds (with sub-folds). One declaration. The declaration — eleven lines of Python — is the *source*. The FastAPI app — with its routes, Pydantic models, OpenAPI schema, async handlers, and middleware — is one *projection*. A different target compiler would produce a different projection. The projection is *derived from* the source. The source is *more fundamental than* any projection.
+
+**Exercise 2.12.** Repeat the five-fold trace, but add `Readonly()` to the derive capabilities: `@derive(http_crud("/users", Users), Paginated(20), Readonly())`. At which fold does Readonly have its effect? How many endpoints survive? What does the final FastAPI app look like?
+
+**Exercise 2.13.** Trace the same User entity through `targets.cli.compile(app, axes)`. How does the CLI target differ from FastAPI at each fold? At which fold do the paths diverge? (Hint: folds 1-4 are identical. Only fold 5 differs.)
+
+### 2.5.4 The Polynomial Tower
+
+SICP culminates Chapter 2 with polynomial arithmetic — polynomials whose coefficients can be numbers, rationals, complex numbers, or *other polynomials*. This recursive tower demonstrates the full power of generic operations: the system that processes data can process data-about-data, recursively.
+
+emergent's analog is `examples/fractal.py`. Recall from Chapter 1's Section 1.3.5 — the fractal example has four levels:
+
+**Level 0:** Expressions as capabilities. `Poly(1, 2, 1)` represents `x^2 + 2x + 1`. It is a frozen dataclass with `compile_eval`, `compile_latex`, `compile_python`, `compile_derivative`.
+
+**Level 1:** Compile entity to multiple targets. `Physics` has fields annotated with `Poly` and `Scale`. `FULL_ALGEBRA.compile(Physics, axes)` compiles each field through all four phases — evaluation, LaTeX, Python, derivative.
+
+**Level 2:** Derive new entities. `derive_derivatives(Physics)` compiles through the `DERIVATIVE_PHASE`, extracts the derivative coefficients, and *constructs a new entity type* whose fields are `Poly` capabilities built from those coefficients. Data in, new data out — and the new data is itself compilable.
+
+```python
+PhysicsDerivative = derive_derivatives(Physics)
+# PhysicsDerivative has fields:
+#   d_position: Annotated[float, Poly(1.0, 0)]     # derivative of 0.5*t^2 is t
+#   d_velocity: Annotated[float, Poly(1.0)]         # derivative of t is 1
+#   d_energy: Annotated[float, Poly(1.0, 0)]        # derivative of 0.5*t^2 is t
+```
+
+The derivative entity can be compiled through the *same* phases: `FULL_ALGEBRA.compile(PhysicsDerivative, axes)` produces LaTeX, Python, evaluation for the derivative formulas. And you can differentiate *again*: `derive_derivatives(PhysicsDerivative)` gives the second derivative.
+
+**Level 3:** Compile the compiler configuration. `FullReport` is a dataclass whose fields are annotated with meta-capabilities: `IncludePhase(LATEX_PHASE)`, `IncludePhase(PYTHON_PHASE)`, `OutputFormat("text")`. Folding these meta-capabilities produces a *compiler configuration* — which phases to run and how to format output. The fold produces a compiler. The compiler is itself the output of a fold.
+
+```python
+@dataclass
+class FullReport:
+    formulas: Annotated[str, IncludePhase(LATEX_PHASE), IncludePhase(PYTHON_PHASE),
+                         OutputFormat("text")]
+    values: Annotated[str, IncludePhase(EVAL_PHASE), OutputFormat("dict")]
+    derivatives: Annotated[str, IncludePhase(DERIVATIVE_PHASE), OutputFormat("text")]
+```
+
+This is the polynomial tower. SICP's polynomials have coefficients that are polynomials. emergent's compile output is input to another compile. The fractal: fold consuming fold-described data, producing data that is itself fold-describable.
+
+Hutton (1999) proved why this works: fold is the *unique morphism* from the initial algebra to any target algebra. If the target algebra is "compiler configurations," fold produces compiler configurations. If the target algebra is "new capabilities," fold produces new capabilities. The universal property guarantees: any structural processing of a capability list *is* a fold. This is not a library pattern — it is a mathematical necessity.
+
+**Exercise 2.14.** In SICP's polynomial system, a polynomial's coefficients can be other polynomials: `(polynomial y (1 1))` as a coefficient means `y + 1`. Design the emergent equivalent: a capability `NestedPoly` whose coefficients are themselves `Poly` capabilities. What does `compile_derivative` produce for a nested polynomial? How deep can the nesting go?
+
+---
+
+## 2.6 The Query System as Generic Dispatch
+
+### 2.6.1 Relational Queries: Operations as Capabilities
+
+We now return to the query system introduced in Section 2.1, equipped with the full machinery of this chapter: closure property, conventional interfaces, symbolic data, multiple representations, generic dispatch.
+
+A relational query is a sequence of operations:
+
+```python
+q = (
+    relational(User)
+        .filter(lambda u: u.active == True)
+        .filter(lambda u: u.balance > 100)
+        .order_by(lambda u: u.created_at.desc())
+        .limit(50)
+)
+```
+
+Each operation is a frozen dataclass — a capability:
+
+- `Filter(expr)` — WHERE clause
+- `OrderBy(specs)` — ORDER BY clause
+- `Limit(n)` — LIMIT clause
+- `Offset(n)` — OFFSET clause
+
+Each implements multiple compile protocols:
+
+```python
+@dataclass(frozen=True, slots=True)
+class OrderBy:
+    specs: tuple[OrderSpec, ...]
+
+    def compile_memory_query(self, ctx): ...  # Sort Python list
+    def compile_sa_query(self, ctx): ...      # Add .order_by() to SQLAlchemy stmt
+    def compile_http_api(self, ctx): ...      # Add ?order=... to params
+```
+
+When a provider executes a query, it folds the operations:
+
+```python
+# Memory provider:
+ctx = MemoryQueryContext(data=all_users)
+ctx = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
+result = ctx.data  # Filtered, sorted, limited Python list
+
+# SQL provider:
+ctx = SAQueryContext(stmt=select(User))
+ctx = fold(query.ops, ctx, SAQueryCompilable, "compile_sa_query")
+result = await session.execute(ctx.stmt)  # Filtered, sorted, limited SQL query
+```
+
+Same operations. Same fold. Different protocol. Different artifact. The query is a *program in a domain-specific language*. The provider is the *interpreter for that language*. Different interpreters give different semantics — just as different folds give `MaxLen(255)` different meanings.
+
+### 2.6.2 The Expression Compilers
+
+Within the SQL fold, something interesting happens. When `Filter.compile_sa_query` encounters an expression like `Gt(Field("balance"), Const(100))`, it must compile *the expression* to a SQLAlchemy clause. The context carries a `compile_expr` function:
+
+```python
+def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
+    clause = ctx.compile_expr(self.expr)
+    return replace(ctx, stmt=ctx.stmt.where(clause))
+```
+
+`ctx.compile_expr` is a *nested fold* — it recursively walks the expression tree and produces a SQLAlchemy expression. `Field("balance")` becomes `User.balance` (a column reference). `Const(100)` becomes `literal(100)`. `Gt(left, right)` becomes `left > right` (SQLAlchemy's operator overloading).
+
+This is fold inside fold. The outer fold processes the *list* of query operations (Filter, OrderBy, Limit). When it hits Filter, the Filter's compile method invokes an *inner fold* over the expression *tree*. The list fold calls the tree fold. Two different catamorphisms, nested, each consuming a different data shape.
+
+The memory provider does not need `compile_expr`. It calls `self.expr.evaluate(item)` directly — the `evaluate` method on each Expr node. The tree traversal is implicit in the method dispatch. The SQL provider compiles the tree to a clause. The HTTP provider serializes it to query parameters. Three interpreters for the same expression language.
+
+### 2.6.3 Composing Axes
+
+The culminating insight of this chapter: axes *compose*. A single User entity participates in all four axes simultaneously:
+
+- **Schema** provides the field types and capabilities
+- **Surface** provides the endpoint structure (triggers, codecs)
+- **Storage** provides the persistence backend
+- **Query** provides the data access operations
+
+The `@derive` decorator bridges them: it reads schema capabilities, generates derive operations (which define surface endpoints), each of which uses a query strategy (which targets a storage backend). The axes are orthogonal — you can change the query provider (memory -> SQL) without changing the surface structure, or change the surface trigger (HTTP -> CLI) without changing the schema capabilities.
+
+This orthogonality is the closure property at the architectural level. Each axis composes internally (capabilities compose, endpoints compose, queries compose). And the axes compose with each other (schema + surface + storage + query = a working system). The composition is not additive ("glue four things together") but multiplicative ("each axis multiplied by each other axis"). Four axes with five options each give not 20 but potentially 625 combinations — and every combination works because each axis consumes its own protocols independently.
+
+**Exercise 2.15.** The memory provider interprets expressions directly: `self.expr.evaluate(item)` walks the tree at runtime. The SQL provider compiles them to SQL clauses at query-build time. Which is "better"? Consider: (a) a table with 10 rows, (b) a table with 10 million rows, (c) a table behind an API that charges per query. How does the representation choice (interpreted vs compiled) affect performance? This is the emergent analog of SICP 2.3.3's question about set representations (unordered list vs ordered list vs binary tree).
+
+---
+
+## 2.7 Summary and Forward References
+
+We have built compound data from the primitives of Chapter 1.
+
+**Expressions** are the emergent analog of SICP's pairs: compound symbolic data with the closure property. An expression that combines two expressions is itself an expression. The tree grows without bound, and every sub-tree is compilable by the same mechanism.
+
+**The closure property** holds at every level: expressions, capabilities, phases, endpoints, applications, queries. This is what makes composition compositional — not merely "you can combine things" but "combinations are things of the same kind."
+
+**Symbolic data** — expressions that represent queries, not values — enables algebraic rewriting. Simplification rules on frozen expression trees are structurally identical to SICP's symbolic differentiation: pattern-match, simplify children, reduce. Both are catamorphisms over trees. Both produce new trees.
+
+**Multiple representations** — the same capability compiled to different targets — produce categorically different programs. A FastAPI server, a CLI tool, and a Telegram bot from one entity declaration. These are not "views of the same thing." They are different things generated from the same description. The description is more fundamental than any output.
+
+**Generic dispatch** — fold consuming capabilities via protocol check — is SICP's message-passing style. Each capability is an "intelligent data object" that carries its own compile methods. fold is `apply-generic`. The dispatch table is distributed, immutable, and extensible.
+
+**The crisis**: compilation IS the semantics. There is no meaning of `MaxLen(255)` apart from its compilations. Different folds create different meanings. The capability description is the program. Any specific runtime is one projection.
+
+Three questions open from here:
+
+*What happens when the data changes over time?* Everything in this chapter is frozen. Expressions are immutable trees. Capabilities are frozen dataclasses. Queries describe *what to ask*, not *what has changed*. But real systems evolve — users are created, balances change, records are deleted. How do we model change without losing the properties that make fold tractable? Chapter 3 answers: the Log. Change is not mutation — it is accumulation. State is not stored — it is projected from immutable history.
+
+*The fold that compiles capabilities... is itself described by capabilities.* We glimpsed this in the fractal (Level 3: `IncludePhase` as a meta-capability). Chapter 4 will develop it fully: fold consuming fold-described structures. The compiler compiling itself. Metacircular fold.
+
+*What machine executes these folds?* We have been tracing folds by hand — treating fold as an abstraction. But the five folds that compile User run on real hardware, in real time, with real concurrency. The nodnod DAG, RuntimePolicy, and thread/coroutine scheduling that implement fold in practice are the subject of Chapter 5.
 
 ---
 
 ## Exercises
 
-**Exercise 2.1.** Implement a query expression `Between(field, low, high)` as a frozen dataclass that evaluates to `low <= getattr(obj, field) <= high`. Implement `compile_memory_query` (filter the data list) and `compile_sa_query` (produce a BETWEEN clause). Show that Between can be expressed as `And(Ge(Field(f), Const(low)), Le(Field(f), Const(high)))` — what is the advantage of having Between as a primitive rather than only as a derived form?
+**Exercise 2.16.** The expression `And(Or(a, b), Or(c, d))` can be expanded by the distributive law to `Or(And(a, c), And(a, d), And(b, c), And(b, d))`. Implement a function `distribute_and_over_or(expr)` that applies this transformation. Then implement the reverse: `distribute_or_over_and`. Are both transformations guaranteed to terminate? Under what conditions does distribution increase expression size?
 
-**Exercise 2.2.** The expr_to_dict function serializes an expression AST to a JSON-compatible dict. Design and implement expr_from_dict — the inverse. What information must be preserved in the dict for the round-trip to be lossless? Is the round-trip always lossless, or are there expressions for which `expr_from_dict(expr_to_dict(e)) != e`?
+**Exercise 2.17.** SICP's `make-rat` enforces a representation invariant: the rational number is always in lowest terms (GCD reduction). Design an analogous invariant for query expressions. For example: `And(And(a, b), c)` should be automatically flattened to a balanced tree. Where should the invariant be enforced — in the `And` constructor, in a separate normalization pass, or in each compiler? What are the trade-offs?
 
-**Exercise 2.3.** The closure property says that combining data objects produces something that can itself be combined. For SchemaCompiler, `A + B` is a SchemaCompiler. But is `FASTAPI_SCHEMA + FASTAPI_SCHEMA` the same as `FASTAPI_SCHEMA`? (Hint: `+` is left-biased union, keyed by context_type.) What algebraic property does this demonstrate? Design a compiler composition where `A + B ≠ B + A` — what does this tell you about the `+` operation?
+**Exercise 2.18.** The `fold_expr` function in `_expr.py` uses a handler map keyed by exact type. The linear fold uses `isinstance` + `getattr`. Why the different dispatch strategies? What would happen if `fold_expr` used isinstance dispatch? What would happen if linear fold used exact-type handler maps?
 
-**Exercise 2.4.** The query proxy trick — `lambda u: u.balance > 100` producing `Gt(Field("balance"), Const(100))` — relies on `__gt__` returning a frozen AST node instead of a boolean. What happens if the user writes `lambda u: u.balance > u.credit_limit`? Both sides are FieldProxy objects. Trace through the proxy method calls and show what AST is produced. Is the result correct? What about `lambda u: 100 < u.balance`? (Hint: consider `__lt__` vs `__rlt__`.)
+**Exercise 2.19.** emergent's query simplifier handles boolean algebra (And, Or, Not). The algebra.py differentiator handles calculus. Both are algebraic rewriting on frozen trees. Design a *unified* simplifier that handles BOTH: given an expression tree that mixes boolean and arithmetic nodes (e.g., `And(Gt(Add(x, Num(0)), Num(5)), Const(True))`), apply both arithmetic simplification (`Add(x, Num(0)) -> x`) and boolean simplification (`And(expr, Const(True)) -> expr`). What data structure would you use for the combined expression AST?
 
-**Exercise 2.5.** The simplify_expr function applies boolean algebra optimizations: `And(x, True) → x`, `Or(x, False) → x`, `Not(Not(x)) → x`. Design three additional simplification rules that would be useful for query optimization. Implement them and show that they preserve the semantics (the simplified expression evaluates the same as the original on any input).
+**Exercise 2.20.** The five-fold trace in Section 2.5.3 shows how User goes from declaration to FastAPI app. But the trace is *forward-only* — from source to artifact. Design the *reverse* trace: given a running FastAPI endpoint `GET /users`, trace back to the capability that produced it. Which capabilities contributed? Which folds participated? emergent's `explain_derive` and `explain_entity` functions provide this introspection. Read `emergent/wire/derive/_explain.py` and describe how the reverse trace works.
 
-**Exercise 2.6.** Swierstra (2008) solves the Expression Problem using coproducts of functors: `Expr (Val :+: Add :+: Mul)`. emergent uses tuples: `(MaxLen(255), Unique, sql.Index())`. The coproduct approach supports recursive nesting (Add has Expr children). The tuple approach is flat. Construct a scenario in emergent where you NEED nesting — capabilities inside capabilities. How would you represent it? What breaks? Is there a way to achieve the effect without changing the encoding? (Hint: consider scoped().)
+**Exercise 2.21.** Consider two User entities compiled by two different SchemaCompilers:
 
-**Exercise 2.7.** The algebra example implements compile_deriv for Mul using the product rule. Extend the algebra system with a new expression type `Integral(expr, var)` that represents definite integration. You cannot implement compile_eval for Integral in closed form (integration is harder than differentiation). Design a compile_eval that uses numerical quadrature (e.g., Simpson's rule). Show that the same expression compiles to different things for different targets: compile_latex produces integral notation, compile_python produces a numerical integration function call, compile_eval produces a number.
+```python
+API_SCHEMA = PYDANTIC_PHASE + OPENAPI_PHASE
+DB_SCHEMA = STORAGE_FIELD_PHASE + CONSTRAINTS_PHASE
 
-**Exercise 2.8.** The multiple-representations pattern (2.4) shows Filter with four compile_* methods: compile_memory_query, compile_sa_query, compile_memory_api, compile_http_api. Design a fifth backend: compile_elasticsearch. What does the context look like? How does Filter.compile_elasticsearch translate `Gt(Field("balance"), Const(100))` to an Elasticsearch query DSL? What Lens ops would an Elasticsearch backend need to support?
+api_result = API_SCHEMA.compile(User, axes)
+db_result = DB_SCHEMA.compile(User, axes)
+```
 
-**Exercise 2.9.** Data abstraction (2.1) separates "how data is used" from "how data is represented." The query expression AST is one representation. An alternative representation is a tuple-based encoding: `("gt", "balance", 100)` instead of `Gt(Field("balance"), Const(100))`. What are the trade-offs? Which representation is more amenable to serialization? To simplification? To backend compilation? To type checking? Design a translation between the two representations and show that the round-trip is faithful.
+Both compile the same entity but produce different artifacts. Now consider: `FULL = API_SCHEMA + DB_SCHEMA`. Does `FULL.compile(User, axes)` produce the *union* of both results? Is `API_SCHEMA.compile(User, axes)` a *projection* of `FULL.compile(User, axes)`? Formalize the relationship. (Hint: think in terms of the banana split theorem.)
 
-**Exercise 2.10.** In 2.5.1, we showed the "fractal encoding" table with eight domains all using fold. For each domain, identify the *dual* operation — the operation that PRODUCES items rather than consuming them. (Hint: for schema compilation, the "producer" is `Annotated` which assembles the capability tuple. For derivation, the "producer" is compile_derive_generate which produces OpSpecs.) Is there a pattern to the producers? Is there an emergent analog of Meijer's *anamorphism* (the dual of catamorphism)?
-
-**Exercise 2.11.** The TargetCompiler algebra mirrors the SchemaCompiler algebra: `+`, `-`, `&`, `|`. But TargetCompiler is keyed by codec_type, not context_type. Design a "universal compiler" that composes SchemaCompiler and TargetCompiler into a single algebra. What is the natural identity key for the combined algebra? Is the combined algebra still a keyed set, or does it need a richer structure?
-
-**Exercise 2.12.** SICP 2.3.2 implements symbolic differentiation of algebraic expressions. The emergent algebra example does the same. But SICP's differentiator uses a recursive function with cond dispatch on expression type. emergent's uses fold with isinstance dispatch. Compare the two approaches: (a) which is more extensible (adding a new expression type)? (b) which is more modular (adding a new compilation target)? (c) which gives better error messages when an expression type is unknown? (d) which is easier to trace/debug?
+**Exercise 2.22.** SICP 2.4.3 presents message-passing as "intelligent data objects that dispatch on operation names." In emergent, the "operation name" is the method name string passed to fold: `"compile_pydantic"`, `"compile_sa_query"`, etc. What happens if two different protocols define a method with the same name? Can a capability implement two protocols that share a method name? What would fold do? Design a concrete example and trace the dispatch.

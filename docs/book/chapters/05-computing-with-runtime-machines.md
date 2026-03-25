@@ -2,21 +2,112 @@
 
 > My aim is to show that the heavenly machine is not a kind of divine, live being, but a kind of clockwork (and he who believes that a clock has soul attributes the maker's glory to the work), insofar as nearly all the manifold motions are caused by a most simple and material force, just as all motions of the clock are caused by a single weight.
 >
-> — Johannes Kepler (letter to Herwart von Hohenburg, 1605)
+> -- Johannes Kepler (letter to Herwart von Hohenburg, 1605)
 
-We began this book by studying compilation processes and by describing compilation processes in terms of capabilities consumed by fold. To explain the meanings of these capabilities, we used a succession of models: the fold model of Chapter 1, the data abstraction model of Chapter 2, the Log model of Chapter 3, and the metalinguistic model of Chapter 4. Our examination of the metacircular fold, in particular, dispelled much of the mystery of how capability languages are evaluated. But even the metacircular fold leaves important questions unanswered, because it fails to elucidate the mechanisms of execution in an emergent system. For instance, the fold does not explain how multiple compilation phases run in parallel (banana split), how nodnod nodes resolve dependencies and schedule execution, or how theworld's WorkStealing scheduler maps computations to OS threads. These questions remain unanswered because fold inherits the control structure of the underlying Python runtime. In order to provide a more complete description of how emergent systems execute, we must work at a more primitive level than fold itself.
+But even the metacircular fold leaves important questions unanswered. The fold that gives meaning to capabilities -- the evaluator that evaluates evaluator descriptions -- fails to explain the mechanisms by which compilation actually executes. When `fold` iterates a capability list, what *exactly* happens at each step? When nodnod resolves dependencies and schedules nodes, what data structures change? When WorkStealing distributes tasks across OS threads, what synchronization primitives coordinate them?
 
-In this chapter we will describe execution in terms of the step-by-step operation of runtime machines. Such a machine — a nodnod agent — sequentially or concurrently executes *nodes* that manipulate the contents of typed *scopes*. Our descriptions of execution by runtime machines will look very much like the dependency graphs that nodnod constructs from node signatures. However, instead of focusing on any particular scheduling algorithm, we will examine several emergent programs and design a specific runtime to execute each. Thus, we will approach our task from the perspective of a runtime architect rather than that of a capability programmer.
+These questions matter because the metacircular fold inherits its control structure from Python's runtime. `for item in items` borrows Python's iteration. `isinstance(item, protocol)` borrows Python's MRO traversal. `getattr(item, method)(ctx)` borrows Python's attribute lookup. The fold is eight lines, but each line hides machinery.
+
+In this chapter we will work at a more primitive level than fold itself. We will describe execution in terms of the step-by-step operation of a *runtime machine*: a nodnod agent that sequences or parallelizes *nodes* manipulating the contents of typed *scopes*. We will examine the machine that simulates execution (EventLoopAgent on asyncio), the machine that compiles execution (WorkStealing on OS threads), the explicit-control evaluator that turns abstract computations into running systems (World.run()), and the full trace from a `@derive` annotation to TCP bytes -- the moment when six lines of fold become a thousand concrete dispatch decisions.
 
 ---
 
-## 5.1 Designing Runtime Machines
+## 5.1 The Machine
 
-To design a runtime machine, we must design its *data paths* (scopes and values) and the *scheduler* that sequences node execution. To illustrate the design of a simple runtime machine, let us examine the composition of a single nodnod node.
+### 5.1.1 Scope: The Register File
 
-### 5.1.1 Nodes and Scopes
+A register machine stores intermediate values in named registers. nodnod's equivalent is the `Scope` -- an `OrderedDict` keyed by type, with a parent pointer forming a chain:
 
-A nodnod node is a Python type with a `__compose__` classmethod. The parameters of `__compose__` declare dependencies by type:
+```python
+# nodnod/scope.py
+class Scope(OrderedDict):
+    def __init__(self, prev=None, detail=None):
+        self.prev = prev
+        self.detail = detail or secrets.token_hex(5)
+        self.is_closed = False
+        super().__init__([(Scope, Value(Scope, self))])  # scope injects itself
+
+    def retrieve(self, key):
+        if key not in self:
+            if not self.prev:
+                return NOTHING
+            return self.prev.retrieve(key)
+        return Some(self[key])
+
+    def push(self, value):
+        self[value.cls] = value
+
+    def create_child(self, detail=None):
+        return Scope(prev=self, detail=detail)
+
+    def inject(self, t, value):
+        self[t] = Value(t, value)
+```
+
+SICP's register machine has a flat register file -- named slots `val`, `env`, `exp`, `continue` that hold values. `(assign val ...)` writes. `(fetch val)` reads.
+
+Scope is a *typed* register file with *lexical scoping*. `scope.push(Value(FetchUser, result))` writes a value keyed by its type -- like `(assign FetchUser result)`. `scope.retrieve(FetchUser)` walks the parent chain: check self, then parent, then grandparent -- like `lookup-variable-value` traversing SICP's environment frames.
+
+**Stop and predict.** A World scope holds the Log and Config. A per-computation scope inherits from the World scope. A per-operation scope inherits from the computation scope. When a node's `__compose__` method asks for `Database`, where does `retrieve(Database)` find it?
+
+It walks up: operation scope (no) -> computation scope (no) -> World scope (yes, injected at startup). This is lexical scoping for computation graphs. Values "close over" their scope chain, just as closures close over their lexical environment. The `create_child` method is `extend-environment` -- it creates a new frame. The parent pointer is the enclosing-environment link.
+
+But Scope keys are *types*, not strings. `Scope[FetchUser]` holds the FetchUser node's computed value. This eliminates an entire class of errors that SICP's evaluator must check at runtime ("Unbound variable"). If the type is not in the scope chain, the dependency was not declared -- caught at graph build time, not at execution time.
+
+### 5.1.2 Node: The Instruction
+
+SICP's instructions are data -- `(assign val (op lookup-variable-value) (reg exp) (reg env))` is a list that the assembler transforms into an executable procedure. At runtime, each instruction is a procedure of no arguments that modifies machine state and advances the program counter.
+
+nodnod's `Node` is a TYPE, not an instance. The type IS the identity:
+
+```python
+# nodnod/node.py (simplified — essential structure)
+class Node[T]:
+    __type__: type = None
+    __dependencies__: set[type[Node]] = None
+    __injections__: set[type] = None
+    __initialize__: Callable[[set[Value]], ComposeResponse[T]] = None
+    __compose__: Callable[..., ComposeResponse[T]] = dummy_compose
+    __compose_names_by_type__: dict[type, str] = None
+
+    def __init_subclass__(cls, abstract=False):
+        if not abstract and not cls.__initialize__:
+            # Resolve dependencies from __compose__ signature
+            signature = resolve_signature(cls.__compose__, ...)
+            all_args = signature.merge()
+
+            dependency_nodes = set[type[Node]]()
+            injected_types = set[type]()
+
+            for dep_name, dep_type in all_args.items():
+                if is_type(dep_type, Node):
+                    dependency_nodes.add(dep_type)
+                elif is_type(dep_type, Composable):
+                    dependency_nodes.add(create_node_from_composable(dep_type))
+                elif is_union(dep_type):
+                    dependency_nodes.add(create_union_node(dep_type))
+                elif is_option(dep_type):
+                    dependency_nodes.add(create_option_node(dep_type))
+                elif is_result(dep_type):
+                    dependency_nodes.add(create_result_node(dep_type))
+                else:
+                    injected_types.add(dep_type)
+
+            cls.__dependencies__ = dependency_nodes
+            cls.__injections__ = injected_types
+            cls.__initialize__ = (
+                kungfu.F[set[Value]]()
+                .then(lambda values: {
+                    cls.__compose_names_by_type__[v.cls]: v.unbox()
+                    for v in values if v.cls in cls.__compose_names_by_type__
+                })
+                .then(lambda ctx: call_with_context(cls.__compose__, ctx).unwrap())
+            )
+
+            setattr(cls, "__traverse__", build_queue(cls, []))
+```
+
+The critical mechanism is `__init_subclass__`. When you write:
 
 ```python
 @G.node
@@ -26,153 +117,413 @@ class FetchUser:
         return cls(await db.get_user(order.user_id))
 ```
 
-The parameter `order: Order` means: "before I can execute, I need a value of type Order in the scope." The parameter `db: Database` means the same for Database. The return type `FetchUser` means: "after I execute, I will place a value of type FetchUser in the scope."
+At *class definition time* -- not at execution time -- Python calls `__init_subclass__`. This inspects the `__compose__` signature, discovers that `order: Order` is a Node dependency and `db: Database` is an injection, builds a `__traverse__` list (the topological sort), and creates `__initialize__` -- a composed pipeline that maps scope Values to keyword arguments.
 
-A *scope* is an OrderedDict keyed by type: `Scope[type] = Value`. nodnod's Scope is both a dict and a linked list — each scope has an optional `prev` pointer to a parent scope. `retrieve(type)` walks the chain: check self, then parent, then grandparent. `create_child(detail)` produces a new scope with `prev=self`.
+The class IS the compiled instruction. `__dependencies__` is the set of registers this instruction reads. `__type__` is the register it writes. `__initialize__` is the execution procedure. All computed once, at import time. The "assembler" has already run by the time any node executes.
 
-```python
-class Scope(OrderedDict):
-    def __init__(self, prev=None, detail=None):
-        self.prev = prev
-        super().__init__([(Scope, Value(Scope, self))])   # scope injects itself
-
-    def retrieve(self, key):
-        if key not in self:
-            return self.prev.retrieve(key) if self.prev else NOTHING
-        return Some(self[key])
-
-    def inject(self, t, value):
-        self[t] = Value(t, value)
-```
-
-This is lexical scoping for computation graphs. A World scope holds the Log and Config. A per-computation scope inherits from the World scope and adds computation-specific values. A per-operation scope inherits from the computation scope. Values "close over" their scope chain — just as closures close over their lexical environment.
-
-### 5.1.2 Nodes Are Types, Not Instances
-
-A critical design decision in nodnod: a Node is a Python TYPE, not an instance. `@G.node` calls `type()` to create a new class:
+**Stop and predict.** `scalar_node` creates a node from a class or function:
 
 ```python
+# nodnod/interface/scalar.py (simplified)
 class scalar_node:
     def __new__(cls, node_class):
         if isinstance(node_class, type):
-            return type(node_class.__name__, (Node, node_class), dict(is_scalar=True))
+            return create_node(
+                name=node_class.__name__, base_node=Node,
+                bases=(node_class,), namespace=dict(is_scalar=True),
+            )
         if callable(node_class):
-            return type(f"ScalarNode:{node_class.__name__}", (Node,), dict(__compose__=node_class, is_scalar=True))
+            return type(
+                f"ScalarNode:{node_class.__name__}", (Node,),
+                dict(__compose__=node_class, is_scalar=True),
+            )
 ```
 
-Each `@G.node` = one new Python type. The type IS the identity. `Scope[FetchUser]` stores the result of composing FetchUser. If FetchUser appears twice in the dependency graph, it is composed ONCE — the second lookup hits the scope cache.
+Each `@G.node` = one new Python type. `Scope[FetchUser]` stores the result by type key. If FetchUser appears twice in the dependency graph, it is composed ONCE -- the second lookup hits the scope cache. O(K) types for K unique nodes. NOT O(N) instances for N data items.
 
-This means: O(K) node types for K unique computations. NOT O(N) instances for N data items. A World with 3 computations × 5 internal nodes each = 15 types, not 15,000 instances. Memory: ~600 bytes per type. Speed: ~39µs per type creation. For typical systems (hundreds of types, not millions), this is negligible.
+### 5.1.3 Either and ResultNode: Branching
 
-The consequence for theworld: each Computation compiles to a small number of node types (perception, action, lifecycle, plan). The World folds computations into node types. RuntimeAgent builds a DAG of types and executes them. The execution graph is small (tens to hundreds of types) even when the data being processed is large (millions of events in the Log).
+SICP's controller has `branch` (conditional) and `goto` (unconditional). Sequential execution is the default; branching is the exception.
 
-### 5.1.3 Dependency Resolution
-
-When nodnod builds a graph from a set of target nodes, it inspects each node's `__compose__` signature in `__init_subclass__` — at class creation time, not at execution time:
-
-1. Parameter types that are themselves Node subclasses → `__dependencies__` (must be composed first).
-2. Types that are Composable (have `__compose__`) but aren't Nodes → auto-wrapped into a Node via `create_node_from_composable`.
-3. `Union[A, B]` → `create_union_node` → Either node (try alternatives).
-4. `Option[T]` → `create_option_node` → SequentialEither(SomeNode, NothingNode).
-5. `Result[T, E]` → `create_result_node` → ResultNode (wrap success/failure).
-6. Everything else → `__injections__` (must be present in Scope before execution).
-7. ForwardRef → deferred until the referenced type is defined (FORWARD_REF_REQUESTS registry).
-
-The result: `__dependencies__: set[type[Node]]`, `__injections__: set[type]`, `__compose_names_by_type__: dict[type, str]` (reverse mapping for unboxing values into `__compose__` arguments).
-
-### 5.1.4 Either and ResultNode
-
-nodnod has first-class support for fallback and error handling — without try/except:
-
-**SequentialEither**: try the first alternative. If it fails, try the second. If that fails, try the third. Stop at first success.
+nodnod's branching primitive is `Either`:
 
 ```python
-class GetUser(SequentialEither):
-    __either__ = (CacheNode, DatabaseNode, ExternalAPINode)
+# nodnod/interface/either.py
+class Either(Node[kungfu.Sum], abstract=True):
+    is_concurrent: bool
+    __either__: tuple[type[Node], ...]
+
+    def __init_subclass__(cls, abstract=False):
+        if not abstract:
+            if cls.is_concurrent:
+                cls.__dependencies__ = set(cls.__either__)  # all raced
+            else:
+                cls.__dependencies__ = {cls.__either__[0]}  # only first
+
+class SequentialEither(Either, abstract=True):
+    is_concurrent = False
+
+class ConcurrentEither(Either, abstract=True):
+    is_concurrent = True
 ```
 
-nodnod only resolves the first node initially. If it succeeds, GetUser composes from its value. If it fails, nodnod resolves the second, and so on. Dependencies for later alternatives are NOT resolved until needed — lazy evaluation of the fallback chain.
+**SequentialEither**: try alternatives in order. Only the first member is declared as a dependency -- subsequent members are scheduled lazily, only if earlier ones fail. Like SICP's `(test ...) (branch (label ...))` -- the condition determines which path to take.
 
-**ConcurrentEither**: race all alternatives simultaneously. First success wins.
+**ConcurrentEither**: race all members simultaneously. All members are dependencies -- all resolved in parallel, first success wins. No SICP equivalent. This is pure dataflow parallelism.
+
+**ResultNode** wraps success/failure into a typed Result:
 
 ```python
-class FetchPrice(ConcurrentEither):
-    __either__ = (APIv1Node, APIv2Node, ScraperNode)
+# nodnod/interface/result_node.py
+class ResultNode[T, Err: BaseException](Node[kungfu.Result[T, Err]]):
+    __from_node__: type[Node]
+    __error__: type[Err] | tuple[type[Err], ...]
+
+    def __init_subclass__(cls, abstract=False):
+        if not abstract:
+            cls.__dependencies__ = {cls.__from_node__}
+            cls.__injections__ = set()
+
+    @classmethod
+    def __compose__(cls, err):
+        try:
+            raise err
+        except cls.__error__:
+            return kungfu.Ok()
+        except BaseException as e:
+            return kungfu.Error(e)
 ```
 
-All three nodes start concurrently. The first to produce a value wins. Others are effectively discarded (their results are ignored, though they may still complete in the background).
+If the parent node succeeds, ResultNode wraps `Ok(value)`. If the parent raises the declared error type, it swallows it with `Ok()`. If the parent raises anything else, it wraps `Error(exception)`. Typed error handling at the graph level -- no try/except in user code.
 
-**ResultNode**: wrap a node's success/failure into a kungfu.Result:
+### 5.1.4 GraphInfo: The Controller Sequence
 
-```python
-class SafeComputation(ResultNode[Result, TimeoutError]):
-    __from_node__ = DangerousNode
-    __error__ = TimeoutError
-```
+SICP's controller is a sequence of instructions. The assembler resolves labels to positions and produces a list of executable procedures. The program counter advances through this list.
 
-If DangerousNode succeeds, SafeComputation produces Ok(value). If DangerousNode raises TimeoutError, SafeComputation produces Ok() (swallowed). If DangerousNode raises anything else, SafeComputation produces Error(exception). This is typed error handling at the graph level — no try/except in user code.
-3. Union types → *Either nodes* (try alternatives).
-4. Option types → *SequentialEither* (try SomeNode, fall back to NothingNode).
-5. Result types → *ResultNode* (wrap success/failure).
-
-The result is a directed acyclic graph (DAG) where edges represent "must execute before." Nodes with no incoming edges are *ready roots* — they can execute immediately (their dependencies are injections, already in scope).
-
-### 5.1.3 The Graph Info
-
-`build_graph_info(nodes)` traverses the dependency graph and computes:
+nodnod's equivalent is `GraphInfo`:
 
 ```python
+# emergent/graph/runtime/_helpers.py
 @dataclass(frozen=True, slots=True)
 class GraphInfo:
-    all_nodes: tuple[type[Node], ...]           # topological order
-    dependents: Mapping[type[Node], frozenset]   # who depends on me
-    initial_pending: Mapping[type[Node], int]     # how many deps unsatisfied
-    ready_roots: frozenset[type[Node]]            # zero pending → start immediately
-    final_nodes: frozenset[type[Node]]            # originally requested targets
+    all_nodes: tuple[type[Node], ...]            # topological order
+    dependents: Mapping[type[Node], frozenset]    # who depends on me
+    initial_pending: Mapping[type[Node], int]      # unsatisfied dep count
+    ready_roots: frozenset[type[Node]]             # zero pending -> start
+    final_nodes: frozenset[type[Node]]             # originally requested
+
+def build_graph_info(nodes):
+    all_nodes_list = traverse_all(nodes)  # topological sort
+    dependents_mut = {}
+    initial_pending = {}
+
+    for node in all_nodes_list:
+        deps = node.__dependencies__
+        initial_pending[node] = len(deps)
+        for dep in deps:
+            dependents_mut.setdefault(dep, set()).add(node)
+
+    ready_roots = frozenset(
+        n for n in all_nodes_list if initial_pending.get(n, 0) == 0
+    )
+    return GraphInfo(
+        all_nodes=tuple(all_nodes_list),
+        dependents=MappingProxyType({k: frozenset(v) for k, v in dependents_mut.items()}),
+        initial_pending=MappingProxyType(initial_pending),
+        ready_roots=ready_roots,
+        final_nodes=frozenset(nodes),
+    )
 ```
 
-This is the static structure of the computation graph — frozen, computed once, reused across runs. The graph is data. It can be visualized (`to_mermaid`, `to_tree`, `to_ascii`), analyzed (`get_layers`, `get_dependencies`), and inspected before any execution begins.
+`traverse_all` performs a depth-first topological sort -- SICP's assembler resolving labels. `all_nodes` is the instruction sequence. `initial_pending` is the per-node "latch counter" -- how many dependencies must complete before this node can fire. `ready_roots` are nodes with zero dependencies: they can start immediately. `dependents` is the reverse mapping: when node X completes, which nodes become closer to ready.
+
+This structure is frozen. Computed once, reused across runs. The graph is data -- it can be visualized (`to_mermaid`, `to_ascii`), analyzed (`get_layers`), and inspected before any execution begins. The "instruction memory" is immutable.
+
+**Stop and predict.** Consider:
+
+```
+FetchSales ------> ComputeRevenue ----\
+                                       +---> BuildReport
+FetchInventory --> ComputeStockValue --/
+```
+
+What are the `initial_pending` values? FetchSales: 0 (root). FetchInventory: 0 (root). ComputeRevenue: 1 (depends on FetchSales). ComputeStockValue: 1 (depends on FetchInventory). BuildReport: 2 (depends on both). What are the ready roots? {FetchSales, FetchInventory}. When FetchSales completes, ComputeRevenue's counter goes from 1 to 0 -- it becomes ready. BuildReport must wait for *both* counters to reach zero.
 
 ---
 
-## 5.2 A Runtime Machine Simulator
+## 5.2 The Simulator
 
-### 5.2.1 The Cooperative Runtime
+SICP builds a register-machine simulator *in Scheme*. `make-machine` takes register names, operations, and a controller, returning a model you can run. `(start gcd-machine)` executes the controller step by step. The simulator is itself a Scheme program -- the abstract language simulating the concrete machine.
 
-The default runtime is `Cooperative` — a single asyncio event loop. All nodes execute as coroutines on one thread.
+emergent's simulator is `CallbackAgent` running on Python's asyncio event loop.
 
-CallbackAgent implements this:
+### 5.2.1 CallbackAgent: The Fetch-Decode-Execute Cycle
 
 ```python
+# emergent/graph/runtime/_helpers.py
 class CallbackAgent(Agent):
     def __init__(self, graph_info, execute):
         self._graph_info = graph_info
-        self._execute = execute
+        self._execute = execute  # default: compose_node
+
+    @classmethod
+    def build(cls, nodes):
+        return cls(graph_info=build_graph_info(nodes), execute=default_executor)
+
+    async def run(self, local_scope, mapped_scopes):
+        self._futures = {}
+        self._push_futures_for(self._graph_info, local_scope, mapped_scopes, self._futures)
+
+        while self._final_nodes:
+            pending_futs = set()
+            for n in list(self._final_nodes):
+                fut = self._futures.get(n)
+                if fut is None:
+                    self._final_nodes.discard(n)
+                    continue
+                if fut.done():
+                    result = fut.result()
+                    if kungfu.is_err(result):
+                        raise result.error
+                    self._final_nodes.discard(n)
+                else:
+                    pending_futs.add(fut)
+            if not self._final_nodes:
+                break
+            if not pending_futs:
+                break
+            await asyncio.wait(pending_futs, return_when=asyncio.FIRST_COMPLETED)
 ```
 
-The execute callback defaults to `compose_node` — nodnod's standard node composition. The agent creates an asyncio Future for each node. Ready roots start immediately. When a node completes, the agent decrements pending counters of its dependents. When a dependent's counter reaches zero, its Future starts.
-
-The execution is a wavefront: ready roots form the first wave. When they complete, their dependents form the next wave. Independent nodes within a wave run concurrently (asyncio concurrency — interleaved, not parallel).
-
-For I/O-bound workloads — HTTP calls, database queries, LLM invocations — this is efficient. The event loop multiplexes many concurrent operations on one thread. No locks, no data races, no synchronization overhead.
-
-### 5.2.2 The Work-Stealing Runtime
-
-For CPU-bound workloads — matrix computation, data transformation, model inference — Cooperative is insufficient. All coroutines share one OS thread; Python's GIL (on standard builds) prevents true parallelism.
-
-`WorkStealing` provides true parallelism on free-threaded Python (3.13t+):
+The `_push_futures_for` method wires the asyncio task DAG:
 
 ```python
-WorkStealing(workers=4)
+    def _push_futures_for(self, graph_info, local_scope, mapped_scopes, futures):
+        for node in graph_info.all_nodes:
+            if node in futures:
+                continue
+            node_scope = mapped_scopes.get(node, local_scope)
+
+            if issubclass(node, Either):
+                if node.is_concurrent:
+                    dep_futures = [futures[dep] for dep in node.__dependencies__]
+                    futures[node] = asyncio.ensure_future(
+                        _concurrent_either_coroutine(node, dep_futures, node_scope, local_scope, self._execute)
+                    )
+                else:
+                    first_future = futures[node.__either__[0]]
+                    futures[node] = asyncio.ensure_future(
+                        _sequential_either_coroutine(first_future, node.__either__[1:], ...)
+                    )
+            elif _is_result_node(node):
+                dep_futures = [futures[dep] for dep in node.__dependencies__]
+                futures[node] = asyncio.ensure_future(
+                    _result_node_coroutine(node, dep_futures, node_scope, local_scope, self._execute)
+                )
+            else:
+                dep_futures = [futures[dep] for dep in node.__dependencies__]
+                futures[node] = asyncio.ensure_future(
+                    _compose_coroutine(node, dep_futures, node_scope, local_scope, self._execute)
+                )
 ```
 
-N OS worker threads, each with its own asyncio event loop and a local task deque. Tasks are pushed onto the local deque (LIFO — cache-friendly) and stolen from other workers' deques (FIFO — reduces contention) when idle.
+This IS the simulator. The `all_nodes` list IS the controller sequence. Each `asyncio.ensure_future` IS an instruction execution procedure. The futures wiring IS the data-path connections. The event loop IS the clock.
 
-The design follows the Tokio model (Rust async runtime) adapted for Python's free-threading model. Each worker is an OS thread running its own event loop. Work distribution is hash-based: `hash(node_type) % len(workers)` assigns each node type to a home worker. But any idle worker can steal tasks from others — FIFO steal from the front of another's deque, so the stolen task is the one that has been waiting longest.
+A plain node's coroutine:
 
-**Why LIFO push, FIFO steal?** Locality. A worker pushes its ready-to-run dependents to the BACK of its own deque. When it finishes its current task, it pops from the back — getting the most recently pushed task, which is likely to share cache lines with the just-completed task (they're adjacent in the dependency graph). A stealing worker takes from the FRONT — the oldest task, which is farthest from the stealer's cache but also the one that would wait longest without intervention. This is the Chase-Lev deque protocol, proven optimal for work-stealing schedulers.
+```python
+async def _compose_coroutine(node, dep_futures, node_scope, local_scope, execute):
+    for dep_future in dep_futures:
+        dep_result = await dep_future
+        if kungfu.is_err(dep_result):
+            return dep_result  # propagate error
+    return await execute(node, node_scope, local_scope)
+```
 
-**A worked example.** Consider a computation graph for a simple analytics pipeline:
+Await all dependency futures (the "fetch" -- wait for register values to be available). Then execute the node (the "execute" -- write result to scope). Error propagation is immediate: a failed dependency cancels all dependents.
+
+The execution is a wavefront. Ready roots form the first wave. When they complete, their dependents (whose counters reach zero) form the next wave. Independent nodes within a wave run concurrently -- asyncio interleaving on one thread, not true parallelism.
+
+For I/O-bound workloads -- HTTP calls, database queries, LLM invocations -- this is efficient. The event loop multiplexes many concurrent operations on one thread. No locks, no data races. But SICP warns us: the simulator runs "much more slowly" than compiled code. The asyncio task scheduling, future resolution, and scope lookups are overhead. The simulator is correct but not fast.
+
+### 5.2.2 The Spawnable Protocol
+
+SICP's simulator is static -- the instruction sequence is fixed before execution. But real systems evolve. nodnod agents support *live node management* through the Spawnable protocol:
+
+```python
+# emergent/graph/runtime/_spawnable.py
+@runtime_checkable
+class Spawnable(Protocol):
+    def spawn(self, nodes, mapped_scopes=None): ...
+    def despawn(self, nodes): ...
+    @property
+    def living_nodes(self) -> frozenset[type[Node]]: ...
+```
+
+`spawn()` adds new nodes to a running agent -- their dependency graph is built and scheduled immediately. `despawn()` removes nodes -- in-flight futures are cancelled. This is dynamic instruction injection: the controller sequence can grow while the machine is running.
+
+CallbackAgent implements Spawnable by calling `_push_futures_for` with the new nodes' GraphInfo and waking the run loop. The existing futures are untouched. New futures wire into the existing task DAG. The machine's instruction memory is mutable.
+
+---
+
+## 5.3 The Compiler
+
+SICP's compiler (5.5) generates register-machine instructions that execute directly on the machine's data paths -- no interpretation overhead. The compiled code uses the SAME registers and stack as the interpreter, but avoids the interpreter's per-expression classification and conservative save/restore. The key optimization: `preserving` wraps save/restore around a code sequence ONLY if the first sequence modifies a register that the second needs. Result: `(factorial 5)` compiled = 31 pushes, interpreted = 144 pushes.
+
+emergent's compiler is `WorkStealing` -- N OS worker threads with work-stealing deques.
+
+### 5.3.1 The WorkStealing Architecture
+
+```python
+# emergent/graph/runtime/_threaded.py
+@dataclass(slots=True)
+class _Task:
+    node: type[Node]
+    node_scope: Scope
+    local_scope: Scope
+
+@dataclass(slots=True)
+class _Worker:
+    worker_id: int
+    loop: asyncio.AbstractEventLoop      # each worker has its own event loop
+    thread: threading.Thread             # OS thread — true parallelism
+    local_deque: collections.deque[_Task]  # work-stealing deque
+    deque_lock: threading.Lock
+
+@dataclass(slots=True)
+class _WorkStealingPool:
+    workers: tuple[_Worker, ...]
+    shutdown_flag: threading.Event
+```
+
+N OS threads. N event loops. Work-stealing deques. Threading locks. This is what "WorkStealing scheduling" means at the register level. The abstract `RuntimePolicy(scheduling=WorkStealing())` becomes: create N threads, give each a deque, hash-distribute initial tasks, run steal-loops.
+
+**Hash-based distribution:** `hash(node_type) % len(workers)` assigns each node type to a home worker:
+
+```python
+def _select_worker(pool, node):
+    idx = hash(node) % len(pool.workers)
+    return pool.workers[idx]
+```
+
+**LIFO push, FIFO steal:** A worker pushes ready tasks to the BACK of its own deque. When it finishes, it pops from the back -- getting the most recently pushed task, which likely shares cache lines with the just-completed task (they are adjacent in the dependency graph). A stealing worker takes from the FRONT -- the oldest task, farthest from the stealer's cache but the one that would wait longest. This is the Chase-Lev deque protocol:
+
+```python
+def _try_steal(worker, pool):
+    for victim in pool.workers:
+        if victim.worker_id == worker.worker_id:
+            continue
+        with victim.deque_lock:
+            if victim.local_deque:
+                return victim.local_deque.popleft()  # FIFO steal
+    return None
+
+def _push_task(worker, task):
+    with worker.deque_lock:
+        worker.local_deque.append(task)  # LIFO push
+```
+
+The per-worker steal loop:
+
+```python
+async def _steal_loop(worker, pool, run_state, graph_info):
+    while not pool.shutdown_flag.is_set():
+        task = None
+        with worker.deque_lock:
+            if worker.local_deque:
+                task = worker.local_deque.pop()  # LIFO: local work first
+
+        if task is None:
+            task = _try_steal(worker, pool)  # steal from others
+
+        if task is not None:
+            await _execute_task(task, run_state, pool, graph_info)
+        else:
+            await asyncio.sleep(0.0001)  # brief yield before retrying
+```
+
+Each tick: check local deque (LIFO pop), if empty steal from another worker (FIFO popleft), if stolen execute, if nothing sleep briefly. This is the "compiled" execution: no asyncio task scheduling, no future resolution overhead -- direct thread execution with hardware parallelism.
+
+### 5.3.2 The Scheduling Policy IS Fold
+
+Here is the crucial insight: the scheduling policy is not just a runtime configuration. It is *itself* a compiler -- one that uses the same fold mechanism as Pydantic, OpenAPI, and SQL compilation:
+
+```python
+# emergent/graph/runtime/_policy.py
+@dataclass(frozen=True, slots=True)
+class WorkStealingContext:
+    priority: int = 0
+
+@runtime_checkable
+class WorkStealingCompilable(Protocol):
+    def compile_work_stealing(self, ctx: WorkStealingContext) -> WorkStealingContext: ...
+
+@dataclass(frozen=True, slots=True)
+class WorkStealing:
+    workers: int | None = None
+    requires_free_threaded: bool = True
+
+    def build_agent(self, nodes):
+        from emergent.wire.compile._core import fold_schema
+        from emergent.graph.runtime._helpers import build_graph_info
+        from emergent.graph.runtime._threaded import build_work_stealing_agent, resolve_worker_count
+
+        graph_info = build_graph_info(nodes)
+
+        # THE FOLD: same mechanism as Pydantic/OpenAPI/SQL compilation
+        traits = {}
+        for node in graph_info.all_nodes:
+            ctx = fold_schema(
+                node, WorkStealingContext(),
+                WorkStealingCompilable, "compile_work_stealing"
+            )
+            if ctx != WorkStealingContext():
+                traits[node] = ctx
+
+        n_workers = resolve_worker_count(len(graph_info.all_nodes), self.workers)
+        return build_work_stealing_agent(graph_info, n_workers, traits)
+```
+
+**Stop and predict.** A capability `Heavy` on a node implements `compile_work_stealing`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Heavy(SchemaCapability):
+    def compile_work_stealing(self, ctx: WorkStealingContext) -> WorkStealingContext:
+        return replace(ctx, priority=max(ctx.priority, 10))
+```
+
+`fold_schema(node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing")` iterates the node's schema_meta capabilities. `Heavy` implements the protocol -- it sets high priority. `MaxLen(255)` does not implement `WorkStealingCompilable` -- skipped (open-world). The fold produces a `WorkStealingContext(priority=10)` for that node.
+
+The fold that compiles capabilities to Pydantic models is the SAME fold that compiles capabilities to scheduling traits. The compilation infrastructure IS compiled using the compilation infrastructure. This is SICP Exercise 5.50 already in the system: the compiler (fold) compiling the compiler's own configuration (scheduling decisions) using the compiler's own mechanism (fold_schema with protocol dispatch).
+
+### 5.3.3 The Preserving Analog
+
+SICP 5.5's key optimization: `preserving` wraps save/restore only when needed, while the interpreter always saves conservatively. The emergent analog: nodnod's dependency resolution computes `initial_pending` counters ONCE at build time. At runtime, the agent never asks "is this dependency satisfied?" -- it KNOWS, because the counter reached zero:
+
+```python
+def _on_node_complete(node, run_state, pool, graph_info):
+    deps = graph_info.dependents.get(node, frozenset())
+    for dependent in deps:
+        with run_state.pending_lock:
+            run_state.pending[dependent] -= 1
+            ready = run_state.pending[dependent] == 0
+
+        if ready:
+            node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
+            _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
+```
+
+The interpreter (CallbackAgent) creates asyncio futures for *every* node and wires them with await chains -- conservative "save everything." The compiler (WorkStealing) tracks only pending counters -- no futures, no await chains, just atomic decrements. When the counter hits zero, the node is submitted directly to a worker. The "compiled" form does less work per node completion.
+
+The concurrency is safe because:
+- Scope writes are to unique keys (one per node type) -- no conflicting writes.
+- Pending counters are protected by a lock (one atomic decrement per completion).
+- Capabilities are frozen -- no shared mutable state.
+
+### 5.3.4 A Worked Example
+
+Consider the analytics pipeline from Section 5.1.4:
 
 ```python
 @G.node
@@ -206,175 +557,256 @@ class BuildReport:
         return cls(f"Revenue: {rev.total}, Stock Value: {stock.total}")
 ```
 
-The dependency graph:
-
-```
-FetchSales ──→ ComputeRevenue ──┐
-                                 ├──→ BuildReport
-FetchInventory → ComputeStockValue ┘
-```
-
 With `WorkStealing(workers=2)`:
 
-**Step 1: Build graph info.** `build_graph_info({BuildReport})` traverses dependencies:
-- BuildReport depends on ComputeRevenue, ComputeStockValue
-- ComputeRevenue depends on FetchSales
-- ComputeStockValue depends on FetchInventory
-- FetchSales and FetchInventory depend on Database (injection, not node)
+**Step 1: Build graph info.** `build_graph_info({BuildReport})` traverses dependencies. Graph layers: Layer 0 = {FetchSales, FetchInventory} (ready roots). Layer 1 = {ComputeRevenue, ComputeStockValue}. Layer 2 = {BuildReport}.
 
-Graph layers:
-- Layer 0: FetchSales, FetchInventory (ready roots — Database injected)
-- Layer 1: ComputeRevenue, ComputeStockValue (depend on layer 0)
-- Layer 2: BuildReport (depends on layer 1)
-
-**Step 2: Fold scheduling traits.** `fold_schema(node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing")` for each node. If any node has `@schema_meta(Priority(10))`, its WorkStealingContext gets priority=10. In this example, no node has special traits — all default.
+**Step 2: Fold scheduling traits.** `fold_schema(node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing")` for each node. No node has special traits in this example -- all default.
 
 **Step 3: Create pool.** 2 worker threads. Worker 0 and Worker 1, each with an asyncio loop and a deque.
 
-**Step 4: Submit ready roots.** `hash(FetchSales) % 2 = 0` → Worker 0. `hash(FetchInventory) % 2 = 1` → Worker 1. Both workers start simultaneously.
+**Step 4: Submit ready roots.** `hash(FetchSales) % 2 = 0` -> Worker 0. `hash(FetchInventory) % 2 = 1` -> Worker 1.
 
 **Step 5: Execution.**
 
 ```
 Time 0ms:   Worker 0 starts FetchSales (DB query)
             Worker 1 starts FetchInventory (DB query)
-            — TRUE PARALLELISM on free-threaded Python —
+            -- TRUE PARALLELISM on free-threaded Python --
 
 Time 50ms:  Worker 1 completes FetchInventory
-            → decrements ComputeStockValue.pending from 1 to 0
-            → submits ComputeStockValue to Worker 1 (hash-based)
-            Worker 1 starts ComputeStockValue (CPU computation)
+            -> pending[ComputeStockValue] decrements 1 -> 0
+            -> submits ComputeStockValue to Worker 1 (hash-based)
+            Worker 1 starts ComputeStockValue (CPU)
 
 Time 55ms:  Worker 0 completes FetchSales
-            → decrements ComputeRevenue.pending from 1 to 0
-            → submits ComputeRevenue to Worker 0 (hash-based)
-            Worker 0 starts ComputeRevenue (CPU computation)
+            -> pending[ComputeRevenue] decrements 1 -> 0
+            -> submits ComputeRevenue to Worker 0 (hash-based)
+            Worker 0 starts ComputeRevenue (CPU)
 
 Time 56ms:  Worker 1 completes ComputeStockValue
-            → decrements BuildReport.pending from 2 to 1
+            -> pending[BuildReport] decrements 2 -> 1
             Worker 1 is IDLE. Tries to steal from Worker 0.
-            Worker 0's deque is empty (ComputeRevenue running, not in deque).
+            Worker 0's deque is empty (ComputeRevenue running).
             Worker 1 sleeps 0.1ms, retries.
 
 Time 58ms:  Worker 0 completes ComputeRevenue
-            → decrements BuildReport.pending from 1 to 0
-            → submits BuildReport to Worker 0 (hash-based)
+            -> pending[BuildReport] decrements 1 -> 0
+            -> submits BuildReport to Worker 0 (hash-based)
             Worker 0 starts BuildReport.
 
 Time 59ms:  Worker 0 completes BuildReport.
-            → remaining_finals reaches 0
-            → done_event set
-            → Both workers stop
+            -> remaining_finals reaches 0
+            -> done_event set
+            -> Both workers stop
 ```
 
-Total time: 59ms. Sequential would take: 50 + 50 + 3 + 3 + 1 = 107ms. The parallelism saves ~45% — both DB queries ran simultaneously, and the two CPU computations overlapped slightly.
+Total: 59ms. Sequential: 50 + 50 + 3 + 3 + 1 = 107ms. The parallelism saves ~45%.
 
-The key observation: the programmer wrote ZERO concurrency code. No threads, no locks, no async/await coordination. The dependency graph was discovered from type signatures. The parallelism was determined by the graph structure. The work-stealing scheduler handled load balancing. The programmer wrote pure nodes — `async def __compose__` — and the runtime did the rest.
+The programmer wrote ZERO concurrency code. No threads, no locks, no async/await coordination. The dependency graph was discovered from type signatures. The parallelism was determined by graph structure. The work-stealing scheduler handled load balancing. The programmer wrote pure nodes -- `async def __compose__` -- and the runtime did the rest.
 
-The implementation:
+### 5.3.5 Compiled and Interpreted Coexistence
 
-1. **Build graph info** — same static structure as Cooperative.
-2. **Fold per-node traits** — `fold_schema(node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing")` collects priority, affinity, etc. from each node's schema_meta. Same fold.
-3. **Create worker pool** — N threads, each with an event loop and a deque.
-4. **Submit ready roots** — hash-distributed across workers.
-5. **Execution loop** — each worker: pop from local deque → execute → on completion, decrement dependents' pending counters → submit newly ready nodes. Idle workers steal from others.
+SICP 5.5.7 closes the circle: compiled and interpreted code coexist on the same machine. `apply-dispatch` handles primitive, compound, AND compiled procedures -- three kinds of callable, all using the same registers.
 
-The concurrency is safe because:
-- Scope writes are to unique keys (one per node type) — no conflicting writes.
-- Pending counters are protected by a lock (one atomic decrement per completion).
-- The Log is append-only — concurrent appends serialized internally.
-- Capabilities are frozen — no shared mutable state.
+emergent's analog: Cooperative and WorkStealing share the same Scope, the same Node types, the same GraphInfo, the same `compose_node` function. The `RuntimePolicy` selects which execution strategy to use:
 
-The GIL policy handles the real world: `RequireFreeThreaded` raises RuntimeError if WorkStealing is requested and GIL is enabled. `AutoDowngrade` silently falls back to Cooperative. The policy is a frozen dataclass — a capability consumed by fold, same encoding as everything else.
+```python
+# emergent/graph/runtime/_policy.py
+@dataclass(frozen=True, slots=True)
+class RuntimePolicy:
+    scheduling: SchedulingCompilable = field(default_factory=Cooperative)
+    errors: ErrorPolicy = field(default_factory=FailFast)
+    gil: GILResolvable = field(default_factory=RequireFreeThreaded)
+```
+
+`AutoDowngrade` is the fallback: if the hardware does not support the compiled form (GIL enabled, no free-threaded Python), silently downgrade to the interpreted form:
+
+```python
+@dataclass(frozen=True, slots=True)
+class AutoDowngrade:
+    def resolve_scheduling(self, scheduling, is_gil_enabled):
+        if scheduling.requires_free_threaded and is_gil_enabled:
+            return Cooperative()  # fall back to interpreter
+        return scheduling
+```
+
+The "compiled" and "interpreted" runtimes share the same machine. Same nodes. Same scope. Same dependency graph. Same results. Different execution characteristics. The choice is a DEPLOYMENT decision, not a SEMANTIC one -- just as SICP's choice between interpretation and compilation does not change what the program means, only how fast it runs.
 
 ---
 
-## 5.3 Storage Allocation and the Log
+## 5.4 The Explicit-Control Evaluator
 
-SICP Chapter 5.3 addresses memory management — how cons cells are allocated and garbage collected. The emergent analog is the Log — how events are stored, indexed, and queried.
+SICP 5.4 is the intellectual core of Chapter 5. The beautiful recursive `eval/apply` from Chapter 4 is flattened into a sequence of register operations: `eval-dispatch` tests the syntactic type of the expression in the `exp` register, branches to the handler, saves registers before recursive evaluation, restores after. Seven registers: `exp`, `env`, `val`, `continue`, `proc`, `argl`, `unev`. The reader who thought "eval calls apply" now sees the EXACT sequence of register operations. The abstraction dissolves into mechanism.
 
-### 5.3.1 The InMemoryLog
+emergent's explicit-control evaluator is `World.run()`.
 
-The simplest Log backend stores events in a list and maintains a type index:
-
-```python
-class InMemoryLog:
-    _events: list[Event]           # append-only
-    _type_index: dict[type, list]   # type → events of that type
-    _notifiers: dict[type, list]    # push-based wake on new events
-```
-
-Append: O(1) — list.append + index update. Query by type: O(1) lookup + O(bucket) filter. Subscribe: register notifier, await wake on matching type.
-
-The type index is the key optimization. BEAM's mailbox requires O(N) scan for selective receive. The InMemoryLog's type index provides O(1) type dispatch. For a Log with 10K events across 50 types, a type query touches ~200 events, not 10K.
-
-### 5.3.2 The TieredLog
-
-Real systems need multiple storage tiers:
+### 5.4.1 World.run(): Line by Line
 
 ```python
-log = TieredLog(
-    TierBinding(Ephemeral, InMemoryLog()),     # fast, volatile
-    TierBinding(Durable, sqlite_log),           # persistent
-)
+# theworld/src/theworld/_world.py
+@dataclass(slots=True)
+class World:
+    log: Log
+    computations: tuple[object, ...]
+    policy: RuntimePolicy = field(default_factory=RuntimePolicy)
+
+    async def run(self):
+        from emergent import graph as G
+        from emergent.graph.runtime import Spawnable
+
+        # Step 1: eval-dispatch — classify and compile each computation
+        ctx = fold(
+            self.computations,
+            WorldContext(log=self.log),
+            WorldCompilable,
+            "compile_world",
+        )
+
+        if not ctx.nodes:
+            return
+
+        # Step 2: set up environment register
+        scope = G.TypedScope(detail="world")
+        scope.inject(type(self.log), self.log)
+
+        # Step 3: assemble — build the execution plan
+        agent_cls = RuntimeAgent.with_policy(self.policy)
+        agent = agent_cls.build(set(ctx.nodes))
+
+        # Step 4: inject agent for live node management
+        if isinstance(agent, Spawnable):
+            scope.inject(Spawnable, agent)
+
+        # Step 5: start machine
+        await agent.run(local_scope=scope.inner, mapped_scopes={})
 ```
 
-Events carry a tier marker. `put(log, event, tier=Durable)` writes to the SQLite-backed log. `put(log, event, tier=Ephemeral)` writes to memory only. Queries can filter by tier: `Lens().tier(Durable)`.
+Line by line, this IS SICP 5.4:
 
-The SQLite backend uses emergent's wire compilation: `compile_sa(EventType, "table_name")` produces a SQLAlchemy model from the event's frozen dataclass definition. The same compilation that generates Pydantic models and OpenAPI schemas also generates the storage layer for events. One encoding. Every level.
+1. **`fold(computations, WorldContext, WorldCompilable, "compile_world")`** = `eval-dispatch`. Each computation is classified by `isinstance(comp, WorldCompilable)`. Those that implement the protocol call their `compile_world` method, producing nodnod node types. This is the flat test-and-branch sequence: check the "expression type" (does it implement WorldCompilable?), dispatch to the handler (call compile_world), accumulate the result (add nodes to ctx.nodes).
 
-### 5.3.3 ViewSnapshot and Incremental Computation
+2. **`scope.inject(type(self.log), self.log)`** = `(assign env (op get-global-environment))`. Set up the initial environment with the shared state that all computations need.
 
-The Log grows without bound. Querying the entire Log to reconstruct state becomes expensive as events accumulate. ViewSnapshot provides incremental computation:
+3. **`agent_cls.build(set(ctx.nodes))`** = `(assemble controller-text machine)`. Build the execution plan: topological sort, dependency analysis, pending counters, ready roots.
+
+4. **`agent.run(scope, {})`** = `(start machine)`. Begin execution: submit ready roots, run the fetch-decode-execute cycle (Cooperative) or the steal loop (WorkStealing).
+
+The computations ARE the expressions. The fold IS eval. The agent IS the controller. The scope IS the register file. The only structural difference: SICP's evaluator processes one expression at a time sequentially; World's agent processes a DAG of nodes potentially in parallel.
+
+### 5.4.2 Computation.compile_world: How Expressions Become Instructions
 
 ```python
-await put(log, ViewSnapshot(view_id="progress", state=progress_state, cursor=current_position))
+# theworld/src/theworld/_computation.py
+@dataclass(frozen=True, slots=True)
+class Computation[I]:
+    identity: I
+    capabilities: tuple[Capability, ...]
+    runner: Runner | None = None
+
+    def compile_world(self, ctx: WorldContext) -> WorldContext:
+        from emergent import graph as G
+
+        log = ctx.log
+        comp = self
+
+        async def _computation_loop():
+            await comp.live(log)
+
+        _computation_loop.__name__ = f"computation:{self.identity}"
+        return replace(ctx, nodes=ctx.nodes | {G.node(_computation_loop)})
 ```
 
-A ViewSnapshot is an event — frozen dataclass in the Log, queryable through Lens. On restart, a Computation queries the last ViewSnapshot, recovers its cursor, and continues folding from that point. O(Δ) recovery instead of O(all events).
+Each Computation that implements `WorldCompilable` creates a nodnod node wrapping its `live` coroutine and adds it to `ctx.nodes`. This is SICP's `ev-lambda`: the expression `(lambda (x) body)` produces a procedure object that closes over the environment. Here, the Computation produces a node that closes over its capabilities and the shared Log.
 
-This is the emergent analog of SICP's garbage collection: rather than discarding old data (which the append-only Log cannot do), we create summary checkpoints that make it unnecessary to process old data.
+The `live` method runs the full lifecycle: perceive (Lens query on Log) -> act (direct events from fold) -> plan (Op tree from fold) -> emit (append events to Log) -> loop. Each phase is a fold:
 
----
+```python
+    async def live(self, log):
+        lc = self.compile_lifecycle()  # fold -> LifecycleContext
+        cycles = 0
+        while lc.max_cycles is None or cycles < lc.max_cycles:
+            events = await self.run(log)
+            if events:
+                await log.append(events)
+            cycles += 1
+            if lc.delay > 0:
+                await asyncio.sleep(lc.delay)
 
-## 5.4 The Explicit-Control Fold
+    async def run(self, log):
+        lens = self.compile_perception()  # fold -> Lens
+        perceived = await log.query(lens)
+        direct_events = self.compile_action(perceived)  # fold -> events
+        op_events = ()
+        if self.runner:
+            ops = self.compile_plan(perceived)  # fold -> Op tree
+            for op in ops:
+                result = await self.runner.run(op)
+                if is_ok(result):
+                    op_events = (*op_events, *result.value)
+        return (*direct_events, *op_events)
+```
 
-SICP Chapter 5.4 implements the metacircular evaluator on a register machine — making the control flow explicit. In emergent, the analog is tracing: making fold's control flow visible.
+Four folds per computation cycle: perception (LensCompilable), action (ActionCompilable), lifecycle (LifecycleCompilable), plan (PlanCompilable). Each uses different protocols, different contexts, different methods. But the mechanism is always the same six lines of fold.
 
-### 5.4.1 traced_fold
+### 5.4.3 Tracing: The Machine Watches Itself
 
-When `trace=TraceCollector()` is passed to fold, the execution switches to `traced_fold`:
+SICP 5.4.4 adds stack monitoring: `(total-pushes = 144, maximum-depth = 28)` for interpreted factorial. This instrumentation lets the reader MEASURE the machine.
+
+emergent's `traced_fold` is the equivalent. When `trace=TraceCollector()` is passed to fold:
+
+```python
+# emergent/wire/compile/_core.py
+def fold(items, initial, protocol, method, handlers=None, *, trace=None):
+    if trace is not None:
+        result, _ = traced_fold(items, initial, protocol, method, handlers, trace)
+        return result
+    ctx = initial
+    for item in items:
+        item_cls = item.__class__
+        if handlers and item_cls in handlers:
+            ctx = handlers[item_cls](item, ctx)
+        elif isinstance(item, protocol):
+            ctx = getattr(item, method)(ctx)
+    return ctx
+```
+
+The production fold has zero tracing overhead -- a single branch prediction (`if trace is not None`). `traced_fold` records every step:
 
 ```python
 def traced_fold(items, initial, protocol, method, handlers, collector):
     ctx = initial
     steps = []
     for item in items:
+        item_cls = item.__class__
         ctx_before = ctx
-        if handlers and item.__class__ in handlers:
-            ctx = handlers[item.__class__](item, ctx)
+        if handlers and item_cls in handlers:
+            ctx = handlers[item_cls](item, ctx)
             dispatch = "handler"
         elif isinstance(item, protocol):
             ctx = getattr(item, method)(ctx)
             dispatch = "protocol"
         else:
             dispatch = "skipped"
-        step = FoldStep(item_type=..., dispatch=dispatch,
-                        context_before=ctx_before, context_after=ctx, changed=...)
+        step = FoldStep(
+            item_type=item_cls.__qualname__, dispatch=dispatch,
+            method=method, context_before=ctx_before, context_after=ctx,
+            changed=ctx_before is not ctx,
+        )
         collector.fold_step(step)
         steps.append(step)
-    fold_trace = FoldTrace(protocol=..., method=..., initial=initial, final=ctx, steps=tuple(steps))
+    fold_trace = FoldTrace(
+        protocol=protocol.__qualname__, method=method,
+        initial=initial, final=ctx,
+        steps=tuple(steps), items_total=len(steps), items_applied=...,
+    )
     collector.fold_complete(fold_trace)
     return ctx, fold_trace
 ```
 
-Every step is recorded: which item, how it dispatched, what the context was before and after, whether it changed. The trace is a tree of frozen dataclasses: FoldStep → FoldTrace → FieldPhaseTrace → FieldTrace → TypeTrace.
+Every step is recorded as a frozen dataclass: which item, how it dispatched (handler / protocol / skipped), the context before and after, whether it changed. Because all contexts are frozen dataclasses, the "before" and "after" snapshots are the actual immutable values -- no defensive copy needed. The trace IS the execution history.
 
-This makes fold's control flow explicit — every dispatch decision, every context transformation, every skip. The production fold (six lines) has zero tracing overhead — the `if trace is not None` check is a single branch prediction. traced_fold runs only when explicitly requested.
-
-### 5.4.2 explain
-
-The explain system reads the trace:
+The `explain` system reads the trace:
 
 ```python
 axes = Axes.traced()
@@ -382,62 +814,13 @@ FASTAPI_SCHEMA.compile(User, axes)
 print(explain(axes))
 ```
 
-explain() produces human-readable output: which capabilities applied, which were skipped, what changed. explain_field() narrows to one field. explain_type() shows the entire entity.
-
-The dict layer (`trace_dict`, `field_dict`, `type_dict`) produces machine-readable dicts — for agents, for programmatic analysis, for test assertions.
-
-Five explain systems read the same frozen trace data: schema explain, surface explain, query explain, compilation trace explain, derive explain. Each is a catamorphism over the trace tree. explain is fold applied to fold's own output.
+Output shows every fold step: which capability fired, which was skipped, how the context evolved. Five explain systems read the same frozen trace data: schema, surface, query, compilation, derive. Each is a catamorphism over the trace tree. `explain` is fold applied to fold's own output.
 
 ---
 
-## 5.5 Compilation
+## 5.5 The Six-Fold Trace
 
-SICP Chapter 5.5 implements a compiler — translating Scheme to register-machine instructions. In emergent, the corresponding concept is *target compilation* — translating the wire Application to framework-native artifacts.
-
-### 5.5.1 The Target Compiler
-
-Each framework target has a TargetCompiler:
-
-```python
-FASTAPI_COMPILER = TargetCompiler(
-    trigger_type=HTTPRouteTrigger,
-    adapters=(
-        CodecBinding(RequestResponseCodec, rrc_from_codec),
-        CodecBinding(StatefulCodec, stateful_from_codec),
-        ...
-    ),
-    pipeline_protocol=FastAPIPipelineCompilable,
-    pipeline_method="compile_fastapi_pipeline",
-    assemble=assemble_fastapi_route,
-)
-```
-
-scan_and_wrap iterates the wire Application's endpoints and exposures. For each matching (trigger, codec) pair:
-
-1. `from_codec(codec, trigger)` → WrapCtx (seed the context from codec and trigger data)
-2. `fold(capabilities, wrap_ctx, pipeline_protocol, pipeline_method)` → fold surface capabilities through the context (tags, auth, OpenAPI metadata)
-3. `assemble(wrap_ctx, handler, axes)` → produce framework-native route
-
-For FastAPI: the route goes to `fastapi_app.add_api_route(path, endpoint, methods=[method], ...)`.
-For CLI: the route goes to `parser.add_subparser(name, ...)`.
-For Telegrinder: the route goes to `dp.message.register(handler, rule)`.
-
-### 5.5.2 The Execution Pipeline
-
-When a request arrives at a compiled endpoint, the execution pipeline is:
-
-1. **Framework adapter** creates a nodnod Scope, injects framework context (Request for FastAPI, Namespace for CLI, Context for Telegrinder).
-2. **Enricher chain** executes: auth → timeout → rate limit → core. Enrichers are ScopeEnricher capabilities, chained at compile time, executed at request time.
-3. **Core handler**: `request.to_domain()` → domain Op → `runner.run(op)` → Result → `response.from_domain(result)`.
-4. **Response transforms** post-process: RFC 7807 errors, status codes, headers.
-
-The enricher chain is built by `fold_handler_runtime(capabilities)` — fold over surface capabilities to extract ScopeEnrichers. `chain_enrichers(enrichers, core_handler)` builds the middleware stack: `e1(e2(e3(core)))`. First enricher runs first.
-
-The target-specific `enrich_fastapi`, `enrich_cli`, `enrich_telegrinder` methods allow framework-aware enrichers. BearerExtract's `enrich_fastapi` reads the Authorization header. Its `enrich_cli` reads a --token argument. Same capability, different extraction per target — dispatched by the `target` parameter of `chain_enrichers`.
-
-### 5.5.3 From fold to Metal
-
-Let us trace, in complete detail, the execution path from a capability annotation to an HTTP response arriving at a client's browser. This is the emergent analog of SICP Chapter 5.5 tracing the execution of a Scheme expression through the register machine.
+Let us trace, in complete detail, the execution path from a capability annotation to an HTTP response arriving at a client's browser. This is the "register trace" -- SICP Chapter 5.5 tracing the execution of a Scheme expression through every register operation.
 
 **The source:**
 
@@ -449,94 +832,194 @@ class User:
     name: str
 ```
 
-**Step 1: Import time — compile_derive.** When Python imports the module containing the User class, the `@derive` decorator attaches `http_crud("/users", Users)` to User via `@schema_meta`. Nothing else happens yet.
+### 5.5.1 compile_derive: Three Folds (Folds 1-3)
 
-When `build_application_from_decorated(User)` is called:
+When `build_application_from_decorated(User)` is called, `compile_derive(User)` runs three folds. These are the phases we traced in Chapter 1 (Section 1.2.4). From the Chapter 5 perspective, the question is not *what* each fold produces but *what each fold costs at the machine level.*
 
 ```python
-for entity in entities:
-    for ctx in compile_derive(entity):
-        endpoints.append(materialize(ctx))
+# emergent/wire/derive/_compile.py
+def compile_derive(cls):
+    caps = get_schema_meta(cls)  # retrieve (http_crud("/users", Users),)
+    ctx = DeriveCtx.from_entity(cls)
+
+    # Fold 1: Generate
+    ctx = fold_schema(cls, ctx, DeriveGeneratable, "compile_derive_generate")
+    # Fold 2: Modify
+    ctx = fold_schema(cls, ctx, DeriveModifiable, "compile_derive_modify")
+    # Fold 3: Augment
+    ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
+    return [ctx]
 ```
 
-`compile_derive(User)` retrieves `(CRUD("/users", Users),)` from @schema_meta. Three folds:
+Fold 1 (Generate): `fold_schema` retrieves `(http_crud("/users", Users),)` and iterates. `isinstance(http_crud, DeriveGeneratable)` -- True. Call `http_crud.compile_derive_generate(ctx)`. The method inspects User's fields (id: Identity, name: str) and generates OpSpecs: List, Get, Create, Update, Patch, Delete, Upsert. Each OpSpec carries: name, input fields, output spec, handler template, HTTPRouteTrigger, effects. One isinstance check, one getattr, one method call, seven OpSpecs produced.
 
-- **Fold 1 (Generate):** `fold_schema(User, DeriveCtx.from_entity(User), DeriveGeneratable, "compile_derive_generate")`. CRUD.compile_derive_generate inspects User's fields (id: Identity, name: str), generates 7 OpSpecs: List, Get, Create, Update, Patch, Delete, Upsert. Each OpSpec carries: name, input fields, output spec, handler template, HTTPRouteTrigger, effects.
-- **Fold 2 (Modify):** `fold_schema(User, ctx, DeriveModifiable, "compile_derive_modify")`. No modifiers in this example. ctx unchanged.
-- **Fold 3 (Augment):** `fold_schema(User, ctx, DeriveAugmentable, "compile_derive_augment")`. No augmenters. ctx unchanged.
+Fold 2 (Modify): Same capabilities, different protocol. `isinstance(http_crud, DeriveModifiable)` -- False, skipped. No modifiers in this example. Zero method calls.
 
-**Step 2: Import time — materialize.** `materialize(ctx)` takes the DeriveCtx with 7 OpSpecs and produces an Endpoint:
+Fold 3 (Augment): Same capabilities, third protocol. Both skipped. Zero method calls.
 
-For each OpSpec:
-- `build_from_spec(spec, ctx)` creates: (a) a frozen dataclass type `UserListOp(provider: MutatingRelationalProvider)` for List, `UserGetOp(id: int, provider: ...)` for Get, etc.; (b) an async handler function built from the handler template (FetchMany.build(spec), InsertNew.build(spec), etc.); (c) an Exposure (HTTPRouteTrigger("GET", "/users") + rrc(UserListOp, UserListResponse) + error capabilities).
-- All (OpType, handler) pairs are registered: `ops().on(UserListOp, list_handler).on(UserGetOp, get_handler)...`
-- `.compile()` produces a Runner — backed by nodnod, wrapping all handlers in a node graph.
+Three fold invocations. For this simple entity: 3 isinstance checks total (one capability x three phases), 1 method call. The cost is trivial here. It will not stay trivial.
+
+### 5.5.2 materialize: OpSpecs Become Endpoints (Fold 4 -- Surface)
+
+`materialize(ctx)` takes the DeriveCtx with 7 OpSpecs and produces an Endpoint. For each OpSpec, `build_from_spec` creates:
+
+- A frozen dataclass type: `UserListOp(provider: MutatingRelationalProvider)` for List, `UserGetOp(id: int, provider: ...)` for Get.
+- An async handler function from the handler template.
+- An Exposure: `HTTPRouteTrigger("GET", "/users")` + `RequestResponseCodec(UserListOp, UserListResponse)` + error capabilities.
+
+All (OpType, handler) pairs are registered via `ops().on(...)`. `.compile()` produces a Runner backed by nodnod.
 
 Result: `Endpoint(runner=Runner, exposures=(Exposure(GET /users, rrc), Exposure(GET /users/{id}, rrc), Exposure(POST /users, rrc), ...))`.
 
-**Step 3: Import time — fastapi.compile.** `targets.fastapi.compile(app)` creates a FastAPI instance and iterates the Application's endpoints via `FASTAPI_COMPILER.scan_and_wrap(app, axes)`:
+Then `targets.fastapi.compile(app)` creates a FastAPI instance and iterates via `FASTAPI_COMPILER.scan_and_wrap(app, axes)`:
 
-For each Exposure with HTTPRouteTrigger:
-- `rrc_from_codec(codec, trigger)` → FastAPIWrapContext seeded with request/response types and HTTP method/path.
-- **Fold 4 (Surface):** `fold(exposure.capabilities, wrap_ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline")` — error capabilities set up RFC 7807 error handlers.
-- `assemble_fastapi_route(wrap_ctx, handler, axes)` → produces an async route function that: creates Scope, injects Request, extracts JSON body, builds request type via Pydantic fold (**Fold 5: Schema fold** — field capabilities → Pydantic FieldInfo → model class), validates, calls execute_rrc.
-- `fastapi_app.add_api_route("/users", route_fn, methods=["GET"], ...)`.
+```python
+# emergent/wire/compile/_target.py (inside scan_and_wrap)
+for binding in self.adapters:
+    for trigger, handler in scan(app, self.trigger_type, binding.codec_type):
+        ctx = binding.from_codec(handler.codec, trigger)
 
-7 routes registered. At this point, everything is compiled. The FastAPI app is a standard ASGI application.
+        # Fold 4: Surface — fold surface capabilities through pipeline
+        ctx = fold(
+            handler.capabilities, ctx,
+            self.pipeline_protocol, self.pipeline_method,
+            trace=trace,
+        )
 
-**Step 4: Runtime — uvicorn.** `uvicorn.run(fastapi_app)` starts an asyncio event loop, binds a TCP socket (default port 8000), and waits for HTTP connections.
+        wrapped = self.assemble(ctx, handler, axes)
+        yield trigger, handler, wrapped
+```
 
-**Step 5: Runtime — request arrives.** A client sends `POST /users` with body `{"name": "Alice"}`.
+For each Exposure with HTTPRouteTrigger: `from_codec` seeds the context from codec and trigger. `fold(capabilities, ctx, FastAPIPipelineCompilable, "compile_fastapi_pipeline")` folds surface capabilities -- error handlers set up RFC 7807 responses, authentication sets up bearer extraction, rate limiting configures middleware. Then `assemble` produces the framework-native route.
 
-- uvicorn reads bytes from the TCP socket, parses HTTP headers, identifies the route as POST /users.
-- FastAPI's router matches the route to the compiled route function.
-- The route function executes:
+### 5.5.3 Pydantic Compilation and Enrichers (Folds 5-6)
+
+**Fold 5 (Schema):** Inside the assembled route function, when a request arrives, the Pydantic model validates the body. That model was built by fold at compile time: `fold_field(field, PydanticContext(...), PydanticCompilable, "compile_pydantic")` for each field. `MaxLen(255)` implements `PydanticCompilable` -- produces `max_length=255`. `Identity` implements it -- marks the field as auto-generated. `Unique` does not -- skipped (open-world). Per field, per endpoint that needs a request/response model.
+
+**Fold 6 (Enricher):** At request time, `fold_handler_runtime(capabilities)` extracts ScopeEnrichers from surface capabilities. `chain_enrichers(enrichers, core_handler)` builds the middleware stack: `e1(e2(e3(core)))`. First enricher runs first. Each enricher's method is target-specific: `BearerExtract.enrich_fastapi` reads the Authorization header; `BearerExtract.enrich_cli` reads a --token argument. Same capability, different extraction -- dispatched by the `target` parameter.
+
+### 5.5.4 Request to Response
+
+**Step 7: uvicorn.** `uvicorn.run(fastapi_app)` starts an asyncio event loop, binds TCP socket (default 8000), waits for connections.
+
+**Step 8: Request arrives.** `POST /users` with body `{"name": "Alice"}`.
+
+- uvicorn reads bytes from TCP, parses HTTP headers, identifies route.
+- FastAPI router matches to compiled route function.
+- Route function executes:
   1. Creates nodnod Scope. Injects `fastapi.Request`.
   2. Extracts JSON body: `{"name": "Alice"}`.
-  3. **Fold 5 (Schema):** Pydantic model class (compiled at step 3) validates the body. MaxLen? No MaxLen on name. Identity? id is auto-generated. The model accepts `{"name": "Alice"}`.
-  4. Builds the domain Op: `UserCreateOp(name="Alice", provider=memory_provider)`.
+  3. Pydantic model (compiled at Fold 5) validates. Identity field is auto-generated. Accepts `{"name": "Alice"}`.
+  4. Builds domain Op: `UserCreateOp(name="Alice", provider=memory_provider)`.
   5. `execute_rrc(handler, request_obj, scope)`:
-     - Extracts enrichers via `fold_handler_runtime(capabilities)` — **Fold 6 (Enricher)**.
-     - No enrichers in this example. Core handler runs directly.
-     - `request_obj.to_domain()` → `UserCreateOp(name="Alice", provider=...)`.
-     - `runner.run(op)` → nodnod composes the op node. InsertNew handler: generates id via `provider.next_id()` → `1`. Constructs `User(id=1, name="Alice")`. Calls `provider.insert(user)`. Returns `Ok(User(id=1, name="Alice"))`.
-     - `response_type.from_domain(Ok(User(id=1, name="Alice")))` → `{"id": 1, "name": "Alice"}`.
-  6. FastAPI serializes to JSON. Sets Content-Type. Returns 200.
+     - Enricher chain (Fold 6) runs. No enrichers in this example -- core handler runs directly.
+     - `request_obj.to_domain()` -> `UserCreateOp(name="Alice", ...)`.
+     - `runner.run(op)` -> nodnod composes the op node.
+     - Handler: generates id via `provider.next_id()` -> 1. Constructs `User(id=1, name="Alice")`. Inserts. Returns `Ok(User(id=1, name="Alice"))`.
+     - `response_type.from_domain(Ok(...))` -> `{"id": 1, "name": "Alice"}`.
+  6. FastAPI serializes to JSON. Sets Content-Type. Returns 201.
 - uvicorn writes HTTP response bytes to TCP socket.
 - Client receives: `{"id": 1, "name": "Alice"}`.
 
-**Six folds in this path.** Schema fold (field capabilities → Pydantic model). Generate fold (CRUD → OpSpecs). Modify fold (transforms → modified OpSpecs, trivial here). Surface fold (error capabilities → route config). Request fold (JSON → validated domain Op). Enricher fold (capabilities → enricher chain).
-
-Each fold is the same six lines. Each operates on different data. Each uses different protocols. But the mechanism is always: iterate frozen data, check isinstance, call compile_* method, accumulate context. From `@derive` annotation to TCP bytes — fold at every level.
-
-The abstraction we built in Chapters 1-4 — capabilities, data abstraction, the Log, metalinguistic fold — bottoms out here, at the metal: Python's asyncio event loop, uvicorn's HTTP parser, the OS kernel's TCP stack. But the structure is clear at every level because the structure is always the same: frozen data, compiled by fold.
+**Six folds in this path.** Generate (CRUD -> OpSpecs). Modify (transforms, trivial here). Augment (trivial). Surface (error capabilities -> route config). Schema (field capabilities -> Pydantic model). Enricher (capabilities -> middleware chain). Each fold is the same eight lines. Each operates on different data, uses different protocols. But the mechanism is always: iterate frozen data, check isinstance, call compile_* method, accumulate context.
 
 ---
 
-Kepler wanted to show that the heavenly machine is clockwork — all manifold motions caused by a single weight. We have tried to show something similar: that the manifold compilations of emergent — schema, query, verification, derivation, scheduling, distributed computation — are caused by a single fold. The capabilities change. The contexts change. The protocols change. fold does not.
+## 5.6 The Crisis
 
-One fold. Three language primitives. The rest is consequences.
+### 5.6.1 The Cost of Abstraction
+
+The reader has been treating fold as a single primitive operation -- "iterate capabilities, accumulate context." Now count what that operation costs.
+
+Consider a system with 10 entities, 7 fields each, 5 compilation phases (Pydantic, OpenAPI, SQLAlchemy, Verification, Constraints), and 3 capabilities per field.
+
+For field-level compilation alone:
+
+```
+10 entities x 7 fields x 5 phases x 3 capabilities = 1,050 fold iterations
+```
+
+Each iteration: one `isinstance(item, protocol)` check (MRO traversal of the item's class hierarchy), one `getattr(item, method)` call (dict lookup on the class), one method call (function invocation creating a new frozen context via `dataclasses.replace`). The fold's "one line of iteration" is actually: MRO check + dict lookup + function call + dataclass copy. Per capability. Per field. Per phase.
+
+Add schema-level folds: 10 entities x 5 phases x ~2 schema caps = 100 more. Derive folds: 10 entities x 3 phases = 30 more. Surface folds: 10 entities x 7 endpoints x 1 pipeline fold = 70 more. Pydantic model construction: 10 entities x 7 fields = 70 fold_field calls. Total: over 1,300 fold invocations.
+
+**Stop and predict.** The "six-line function" is a loop that runs 1,300 times. Each iteration involves Python's MRO traversal, dict lookup, function call, and frozen dataclass replacement. The machine cost of the abstraction is not zero. It is O(entities x fields x phases x capabilities).
+
+This is SICP's crisis made concrete. The metacircular evaluator of Chapter 4 seemed to "just work." Now we see the register operations: every isinstance is a real computation. Every getattr is a real dict lookup. Every compile_* method call is a real function invocation that allocates a new frozen dataclass.
+
+### 5.6.2 The Optimization: 31 vs 144 Pushes
+
+SICP's revelation: `(factorial 5)` compiled = 31 pushes, interpreted = 144 pushes. The interpreter does unnecessary work -- conservative save/restore that the compiler skips.
+
+nodnod's revelation: the dependency graph that fold produces CAN be parallelized.
+
+Consider a World with 10 computations, each with 4 internal nodes (perception, action, lifecycle, plan). Under Cooperative (the "interpreter"): one event loop, one thread. 40 node compositions executed in dependency order but interleaved on a single thread. If each node takes ~10ms: total time is roughly O(critical-path-length x 10ms), but the event loop adds scheduling overhead per node (asyncio future creation, callback registration, task switching).
+
+Under WorkStealing(workers=4) (the "compiler"): 4 OS threads. Independent computations run truly in parallel. If the 10 computations have no inter-dependencies: 10 computations / 4 workers = ~3 waves. Each wave: 4 x (4 nodes x 10ms) = 40ms. Total: ~120ms. Cooperative with one thread: 10 x (4 nodes x 10ms) = 400ms. 3.3x speedup.
+
+The abstract `RuntimePolicy(scheduling=WorkStealing(workers=4))` -- a frozen dataclass, a capability consumed by fold -- produces a 3x+ speedup. The abstraction that describes the machine is compiled by the same fold that describes the data.
+
+And the cost of the 1,300 fold invocations during compilation? They happen ONCE, at import time. At runtime, the compiled artifacts (Pydantic models, FastAPI routes, nodnod DAGs) execute without re-folding. Compilation is O(entities x fields x phases x capabilities). Execution is O(request). The compiler's work is amortized across all requests -- just as SICP's compiler does classification once at compile time rather than per-evaluation.
+
+---
+
+## 5.7 Storage
+
+SICP Chapter 5.3 addresses memory management -- how cons cells are allocated and garbage collected. The emergent analog is not memory management (delegated to Python's runtime) but the *Log* -- theworld's append-only event store.
+
+The Log grows without bound. Querying the entire Log to reconstruct state becomes expensive as events accumulate. `ViewSnapshot` provides incremental computation:
+
+```python
+await put(log, ViewSnapshot(view_id="progress", state=progress_state, cursor=current_position))
+```
+
+A ViewSnapshot is an event -- a frozen dataclass in the Log, queryable through Lens. On restart, a Computation queries the last ViewSnapshot, recovers its cursor, and continues folding from that point. O(delta) recovery instead of O(all events).
+
+This is the emergent analog of garbage collection. SICP's GC reclaims memory by identifying unreachable data. The append-only Log cannot discard events -- but ViewSnapshot makes it *unnecessary* to process old data. Where GC says "this cons cell is unreachable, reclaim it," ViewSnapshot says "these events are summarized in this checkpoint, skip them."
+
+The TieredLog extends this with multiple storage backends:
+
+```python
+log = TieredLog(
+    TierBinding(Ephemeral, InMemoryLog()),    # fast, volatile
+    TierBinding(Durable, sqlite_log),          # persistent
+)
+```
+
+Events carry a tier marker. The SQLite backend uses emergent's wire compilation: `compile_sa(EventType, "table_name")` produces a SQLAlchemy model from the event's frozen dataclass. The same fold that generates Pydantic models also generates the storage layer. One encoding. Every level.
+
+---
+
+Kepler wanted to show that the heavenly machine is clockwork -- all manifold motions caused by a single weight. We have traced the clockwork. The Scope is the register file. The Node is the instruction, compiled at class definition time. The GraphInfo is the controller sequence. CallbackAgent is the simulator -- asyncio tasks wired by futures. WorkStealing is the compiler -- OS threads with work-stealing deques. World.run() is the explicit-control evaluator -- fold becoming register operations.
+
+The fold that compiles capabilities to Pydantic models is the same fold that compiles capabilities to scheduling decisions. The machine that executes compiled capabilities is itself configured by fold. The compiler compiles the compiler's own configuration.
+
+1,300 fold invocations for 10 entities. Each one: isinstance, getattr, method call, frozen dataclass replacement. The "six-line function" is a loop that runs a thousand times. But it runs ONCE -- at import time. At runtime, the compiled artifacts execute without re-folding. The penalty of explicit mechanism is also the opportunity for optimization. The abstraction that seemed to cost nothing has a measurable price. The explicit-control machine reveals that price. The compiler -- WorkStealing, target compilation, the `preserving` analog of build-time dependency resolution -- eliminates the overhead that the interpreter could not avoid.
+
+One fold. Three language primitives. The rest is clockwork.
 
 ---
 
 ## Exercises
 
-**Exercise 5.1.** Design a register-machine simulator for fold. The "registers" are: `items` (list), `idx` (current index), `ctx` (current context), `protocol` (the protocol type), `method` (the method name). The "instructions" are: LOAD_ITEM, CHECK_HANDLER, CHECK_ISINSTANCE, CALL_METHOD, SKIP, INCREMENT, TEST_DONE, HALT. Write the instruction sequence for folding `[MaxLen(255), Unique, sql.Index()]` through PydanticCompilable. Trace the register state at each step.
+**Exercise 5.1.** Design a register-machine simulator for fold. The "registers" are: `items` (list), `idx` (current index), `ctx` (current context), `protocol` (the protocol type), `method` (the method name). The "instructions" are: LOAD_ITEM, CHECK_HANDLER, CHECK_ISINSTANCE, CALL_METHOD, SKIP, INCREMENT, TEST_DONE, HALT. Write the instruction sequence for folding `[MaxLen(255), Unique, sql.Index()]` through PydanticCompilable. Trace the register state at each step. How many total instructions for this three-item fold?
 
-**Exercise 5.2.** The Cooperative runtime uses asyncio — single-thread, coroutine-based concurrency. The WorkStealing runtime uses N OS threads. Design a THIRD runtime: DistributedAgent, where nodes execute on remote machines via a shared Log. Each machine runs a subset of nodes. Dependencies cross machine boundaries through Log events. What are the challenges? (Hint: consider scope access across machines.)
+**Exercise 5.2.** The Cooperative runtime uses asyncio -- single-thread, coroutine-based concurrency. The WorkStealing runtime uses N OS threads. Design a THIRD runtime: `DistributedAgent`, where nodes execute on remote machines via a shared Log. Each machine runs a subset of nodes. Dependencies cross machine boundaries through Log events. What are the challenges? (Hint: consider scope access across machines, and how `retrieve` would work when the value was computed on a different host.)
 
-**Exercise 5.3.** The GraphInfo data structure contains `initial_pending` — the number of unsatisfied dependencies for each node. This is computed once and reused. Design a scenario where the dependency count changes dynamically — a node that, depending on its input, spawns additional dependencies. Can the current GraphInfo structure support this? What changes would be needed?
+**Exercise 5.3.** The `GraphInfo` data structure contains `initial_pending` -- the number of unsatisfied dependencies for each node, computed once. Design a scenario where the dependency count changes dynamically -- a node that, depending on its input, spawns additional dependencies. Can the current GraphInfo structure support this? How does the `Spawnable` protocol (spawn/despawn) relate to dynamic dependency management?
 
-**Exercise 5.4.** traced_fold records a FoldStep per capability. For a compilation with 100 fields × 5 phases × 10 capabilities per field = 5000 FoldSteps. Design a "sampling trace" that records only every Nth step, or only steps where the context changed, or only steps for capabilities of a specified type. What information is lost? For debugging, which sampling strategy would you recommend?
+**Exercise 5.4.** Enable tracing for a User entity with Identity, MaxLen(255), Unique, Timestamps, SchemaName("users"). Count: how many FoldSteps across PydanticCompilable, SQLAlchemyCompilable, and OpenAPICompilable? How many "skipped" vs "protocol" dispatches? What is the ratio? What does the ratio tell you about the open-world design?
 
-**Exercise 5.5.** The full execution path from `@derive` annotation to HTTP response involves six fold operations (enumerated in 5.5.3). Instrument each fold with tracing and compute the total number of FoldSteps for a system with 10 entities, 7 fields each, 3 capabilities per field, 5 compilation phases. How does this scale with entity count? With field count? With phase count? Is the scaling linear, quadratic, or worse?
+**Exercise 5.5.** Instrument the 6-fold trace from Section 5.5 for a system with 10 entities, 7 fields each, 3 capabilities per field, 5 compilation phases. Compute the total number of isinstance checks, getattr calls, and dataclass.replace invocations. How does this scale with entity count (linear? quadratic?)? At what point would compilation time become noticeable (estimate: isinstance ~100ns, getattr ~50ns, replace ~500ns)?
 
-**Exercise 5.6.** SICP 5.3 discusses garbage collection — reclaiming memory from unreachable data. The append-only Log never reclaims. Design a "Log compaction" mechanism that: (a) preserves all ViewSnapshots, (b) removes raw events that are older than the oldest ViewSnapshot's cursor, (c) maintains correctness for all computations that use ViewSnapshot-based recovery. What invariants must hold? Under what conditions is compaction safe?
+**Exercise 5.6.** SICP 5.3 discusses garbage collection -- reclaiming memory from unreachable data. The append-only Log never reclaims. Design a "Log compaction" mechanism that: (a) preserves all ViewSnapshots, (b) removes raw events older than the oldest ViewSnapshot's cursor, (c) maintains correctness for all computations that use ViewSnapshot-based recovery. What invariants must hold? Under what conditions is compaction safe?
 
-**Exercise 5.7.** The enricher chain `chain_enrichers(enrichers, core_handler, target="fastapi")` wraps the core handler with middleware. The execution order is: first enricher runs first (outermost wrapper). Design an enricher `TimeExecution` that measures the time taken by all inner enrichers plus the core handler. Where must it be placed in the chain? Can it be placed anywhere? What if you want to measure EACH enricher separately?
+**Exercise 5.7.** The enricher chain `chain_enrichers(enrichers, core_handler, target="fastapi")` wraps the core handler. Execution order: first enricher runs first (outermost). Design an enricher `TimeExecution` that measures time taken by all inner enrichers plus the core handler. Where must it be placed? Can it be placed anywhere? What if you want to measure EACH enricher separately?
 
-**Exercise 5.8.** WorkStealing uses hash-based task distribution: `hash(node) % len(workers)`. This is simple but may produce unbalanced loads. Design an alternative distribution strategy based on the GraphInfo structure — assign layers (from get_layers) to workers in round-robin fashion. Show that this produces better load balance for wide, shallow graphs and worse balance for narrow, deep graphs.
+**Exercise 5.8.** WorkStealing uses `hash(node) % len(workers)` for task distribution. This may produce unbalanced loads. Design an alternative using GraphInfo's `get_layers`: assign layers to workers in round-robin. Show that this produces better balance for wide, shallow graphs and worse for narrow, deep graphs.
 
-**Exercise 5.9.** The target compilation (5.5) produces framework-native routes. But the compilation itself happens at import time (or at app startup). Design a JIT compilation model where routes are compiled on first request. What data structures would you lazy-initialize? What happens to verify() — can it still run at import time if routes haven't been compiled yet?
+**Exercise 5.9.** `AutoDowngrade` silently falls back from WorkStealing to Cooperative when GIL is enabled. Design a THIRD GIL policy: `HybridMode`, which uses WorkStealing for I/O-bound nodes and Cooperative for CPU-bound nodes within the same graph. How would you classify nodes? (Hint: capabilities could declare `compile_work_stealing` with an `io_bound` flag.) What changes to the agent architecture would this require?
 
-**Exercise 5.10.** Kepler's epigraph: "all manifold motions caused by a single weight." The "single weight" in emergent is fold. But fold has five parameters (items, initial, protocol, method, handlers). Is there a simpler formulation? Can fold be expressed as a method on the items tuple itself — `items.fold(initial, protocol)`? What would this gain? What would it cost? (Hint: consider the handler map.)
+**Exercise 5.10.** SICP Exercise 5.50: "Use the compiler to compile the metacircular evaluator." In emergent: `WorkStealing.build_agent()` folds capabilities using `WorkStealingCompilable` -- the fold compiling the fold's own scheduling. Write a capability `AdaptiveScheduling` that implements both `compile_work_stealing` and `compile_pydantic`. When attached to an entity, it affects both the Pydantic model (adds a computed field showing scheduling priority) and the WorkStealing scheduler (sets priority). One frozen dataclass, two compilation targets, zero coupling between them. Is this the fold compiling the fold?
+
+**Exercise 5.11.** The full path from `@derive` annotation to TCP bytes involves six folds (Section 5.5). But World.run() adds more: `fold(computations, WorldContext, WorldCompilable, "compile_world")` plus four per-cycle folds per computation (perception, action, lifecycle, plan). For a World with 5 computations running 100 cycles each: how many total fold invocations? How does this compare to the static compilation cost?
