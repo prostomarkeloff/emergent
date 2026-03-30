@@ -71,34 +71,32 @@ if TYPE_CHECKING:
 class SchemaAxisCapability(RootCapability):
     """Base for all schema axis capabilities.
 
-    Inherits from root Capability to maintain the capability hierarchy.
-    All dialect capabilities (sql, openapi, pydantic, cli, etc.) inherit from this.
+    ONE base. A capability works at field-level (Annotated[T, Cap]),
+    entity-level (@schema_meta(Cap)), or both. The compile_* methods
+    it implements determine where it participates:
+      - compile_pydantic / compile_sqlalchemy / ... → field-level
+      - compile_pydantic_model / compile_sqlalchemy_table / ... → entity-level
+      - compile_log_query / compile_world / ... → any level
+    No artificial split. One capability, many compile targets.
     """
 
     pass
 
 
-class UniversalCapability(SchemaAxisCapability):
-    """Base for universal capabilities — all compilers understand."""
-
-    pass
+# Backwards compat — same type, no hierarchy split
+UniversalCapability = SchemaAxisCapability
+SchemaCapability = SchemaAxisCapability
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Schema-Level
+# Schema-Level Attachment
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
 _SCHEMA_META_ATTR = "__schema_capabilities__"
 
 
-class SchemaCapability(SchemaAxisCapability):
-    """Schema-level capability — applied to whole class via @schema_meta."""
-
-    pass
-
-
-def schema_meta(*capabilities: SchemaCapability):
+def schema_meta(*capabilities: SchemaAxisCapability):
     """Attach schema-level capabilities to a class."""
 
     def decorator[T](cls: T) -> T:

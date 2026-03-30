@@ -348,7 +348,7 @@ requires-dist = [
     { name = "combinators-py", git = "https://github.com/prostomarkeloff/combinators.py.git" },
     { name = "emergent", extras = ["fastapi", "sa", "tg", "cli"], marker = "extra == 'all'" },
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115.0" },
-    { name = "kungfu-fp", git = "https://github.com/timoniq/kungfu.git" },
+    { name = "kungfu-fp", specifier = ">=1.0.0" },
     { name = "libcst", marker = "extra == 'cli'", specifier = ">=1.0" },
     { name = "nodnod", specifier = ">=1.0.1" },
     { name = "sqlalchemy", marker = "extra == 'sa'", specifier = ">=2.0.46" },
@@ -694,9 +694,13 @@ wheels = [
 [[package]]
 name = "kungfu-fp"
 version = "1.0.0"
-source = { git = "https://github.com/timoniq/kungfu.git#04ec11e3930fc7875a46de0a0747438ce2210593" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d7/4d/eabe910c80edb9972393f9b623b30c0cc433f454905b4ac60f5223f7b628/kungfu_fp-1.0.0.tar.gz", hash = "sha256:b3e4bbaf096f3ee532e800b6c548c80ea53c321f1205725880fc41750a9c0c49", size = 36132, upload-time = "2026-01-22T14:18:06.379Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/60/48d1f811515a4ce3f5430b48a4382f13a6f3f7ff648dd090235b69c77f65/kungfu_fp-1.0.0-py3-none-any.whl", hash = "sha256:fd61cc0a7bbac979bf914322e384148cb43db9c3645635631c0aad5adc6b925d", size = 18455, upload-time = "2026-01-22T14:18:04.571Z" },
 ]
 
 [[package]]

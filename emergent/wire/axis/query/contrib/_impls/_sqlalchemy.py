@@ -66,7 +66,7 @@ from emergent.wire.axis.query._provider import NextId
 from emergent.wire.compile._core import fold
 
 # Reuse from compile target
-from emergent.wire.compile._phase import Compilation
+from emergent.wire.compile._phase import Compilation, to_storage_dict
 from emergent.wire.compile.targets.sqlalchemy import (
     compile_sa,
     compile_expr as _compile_expr_raw,
@@ -194,7 +194,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
     async def insert(self, entity: T) -> T:
         if not dataclasses.is_dataclass(entity) or isinstance(entity, type):
             raise TypeError(f"insert() requires a dataclass entity, got {type(entity).__name__}")
-        data = dataclasses.asdict(entity)
+        data = to_storage_dict(entity, self._compiled.fields)
 
         # If identity field has autoincrement placeholder (0 or None),
         # exclude it so the database assigns the real ID.

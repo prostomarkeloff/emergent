@@ -34,6 +34,7 @@ from emergent.wire.axis.schema._universal import SchemaCapability
 
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx
+    from emergent.wire.axis._capability import SQLAlchemyContext
 from emergent.wire.axis._capability import (
     SQLAlchemyTableContext,
     PydanticModelContext,
@@ -176,24 +177,30 @@ class Temporal(TemporalCapability):
 
 @dataclass(frozen=True, slots=True)
 class CreatedAt(TemporalCapability):
-    """Audit: when entity was created.
+    """Temporal ordering: when event/entity was created.
 
-    Auto-set on insert, never updated.
+    Works at both levels:
+    - Field-level: `created_at: Annotated[datetime, CreatedAt]` → SA column with server_default
+    - Entity-level: `@schema_meta(CreatedAt())` → adds created_at column if not a field
 
-    Compiles to:
-    - SQLAlchemy: DateTime column with server_default=now()
+    Also compiles for theworld Log ordering: marks this field as the cursor.
     """
 
     field_name: str = "created_at"
 
+    # Entity-level: add column if not already a field
     def compile_sqlalchemy_table(self, ctx: SQLAlchemyTableContext) -> SQLAlchemyTableContext:
-        """Add created_at column."""
         from sqlalchemy import DateTime, func
 
         return sqlalchemy_table(ctx, add_column=ExtraColumnSpec(
             self.field_name, DateTime, nullable=False,
             server_default=func.now(),
         ))
+
+    # Field-level: compile the field itself as DateTime with server_default
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        from emergent.wire.axis._capability import sqlalchemy_column
+        return sqlalchemy_column(ctx, server_default="(CURRENT_TIMESTAMP)")
 
 
 @dataclass(frozen=True, slots=True)

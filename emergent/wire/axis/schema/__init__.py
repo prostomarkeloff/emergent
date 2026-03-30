@@ -118,6 +118,7 @@ from emergent.wire.axis.schema._patterns import (
 from emergent.wire.axis.schema._inspect import (
     # Core types
     FieldInfo,
+    NO_DEFAULT,
     Inspector,
     # Combinator
     first_match,

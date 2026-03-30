@@ -289,12 +289,15 @@ def _build_method_operation(
         )
 
     fields: dict[str, type] = {}
+    defaults: dict[str, object] = {}
     params: list[str] = []
-    for name in sig.parameters:
+    for name, param in sig.parameters.items():
         if name in ("self", "cls"):
             continue
         fields[name] = hints[name]
         params.append(name)
+        if param.default is not inspect.Parameter.empty:
+            defaults[name] = param.default
 
     # We validated that raw_fn is a coroutine function above, so method_fn
     # (the bound/resolved version from getattr) returns Awaitable at runtime.
@@ -330,15 +333,18 @@ def _build_method_operation(
 
     trigger = _enhance_trigger_with_args(trigger, fields)
 
-    # Build Op type — ALL fields (compose.Node fields resolved by build_request)
-    field_items: list[FieldSpec] = list(fields.items())
+    # Build Op type — ALL fields, with defaults where declared
+    field_items: list[FieldSpec] = [
+        (name, tp, defaults[name]) if name in defaults else (name, tp)
+        for name, tp in fields.items()
+    ]
     op_type = create_dataclass(
         op_name + "Op",
         field_items,
         frozen=True,
     )
 
-    # Build Request type — ALL fields (compose.Node handled by build_field_value)
+    # Build Request type — ALL fields, with defaults where declared
     request_type = create_request_type(
         op_name + "Request",
         field_items,

@@ -16,8 +16,9 @@ call compile_* on each that implements the protocol, accumulate context.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
+from inspect import isawaitable
 from typing import Any, Callable, Protocol, TYPE_CHECKING
 
 from emergent.wire.axis.schema import inspect_dataclass, FieldInfo
@@ -163,6 +164,30 @@ def fold[Ctx](
             ctx = handlers[item_cls](item, ctx)
         elif isinstance(item, protocol):
             ctx = getattr(item, method)(ctx)
+    return ctx
+
+
+async def async_fold[Ctx](
+    items: Iterable[Any],
+    initial: Ctx,
+    protocol: type,
+    method: str,
+    handlers: Mapping[type, ItemHandler[Ctx]] | None = None,
+) -> Ctx:
+    """Async-aware fold — awaits results that are awaitables, passes through sync results.
+
+    Same dispatch as fold(): handler map → protocol → skip.
+    Supports capabilities with both sync and async compile_* methods transparently.
+    """
+    ctx = initial
+    for item in items:
+        item_cls: type = item.__class__
+        if handlers and item_cls in handlers:
+            result = handlers[item_cls](item, ctx)
+            ctx = await result if isawaitable(result) else result
+        elif isinstance(item, protocol):
+            result = getattr(item, method)(ctx)
+            ctx = await result if isawaitable(result) else result
     return ctx
 
 

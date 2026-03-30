@@ -26,6 +26,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     Text,
 )
 from sqlalchemy.orm import DeclarativeBase
@@ -88,6 +89,7 @@ DEFAULT_SA_TYPE_MAP: Mapping[type, type] = {
     float: Float,
     bool: Boolean,
     str: Text,
+    bytes: LargeBinary,
     datetime: DateTime,
 }
 

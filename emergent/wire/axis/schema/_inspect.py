@@ -56,10 +56,7 @@ from typing import (
     runtime_checkable,
 )
 
-from emergent.wire.axis.schema._universal import (
-    SchemaAxisCapability,
-    UniversalCapability,
-)
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,6 +73,15 @@ type Inspector = Callable[[type], dict[str, FieldInfo] | None]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class _NoDefault:
+    """Sentinel: field has no default. Distinct from dataclasses.MISSING to avoid recursion."""
+    __slots__ = ()
+    def __repr__(self) -> str:
+        return "NO_DEFAULT"
+
+NO_DEFAULT: Any = _NoDefault()
+
+
 @dataclass(frozen=True, slots=True)
 class FieldInfo:
     """Extracted information about a structured type field."""
@@ -85,11 +91,14 @@ class FieldInfo:
     is_optional: bool
     capabilities: tuple[SchemaAxisCapability, ...]
     has_default: bool = False
+    # Any — heterogeneous default (int, str, None, dataclass, etc.)
+    # NO_DEFAULT sentinel = field has no default value
+    default: Any = NO_DEFAULT
 
     @property
-    def universal(self) -> tuple[UniversalCapability, ...]:
-        """Get universal capabilities."""
-        return tuple(c for c in self.capabilities if isinstance(c, UniversalCapability))
+    def universal(self) -> tuple[SchemaAxisCapability, ...]:
+        """All capabilities. Deprecated — use .capabilities directly."""
+        return self.capabilities
 
     def dialect[D: SchemaAxisCapability](self, base: type[D]) -> tuple[D, ...]:
         """Get capabilities for specific dialect by base type.
@@ -143,6 +152,60 @@ def unwrap_optional(type_hint: Any) -> tuple[Any, bool]:
         return type_hint, False
 
     return type_hint, False
+
+
+def add_field_capability(cls: type, field_name: str, *caps: Any) -> None:
+    """Add capabilities to a field's Annotated at runtime.
+
+    If already Annotated — appends. Otherwise wraps in Annotated[type, *caps].
+    Works with inspect_field/fields_with_capability/compile_sa.
+
+        from emergent.wire.axis.schema import add_field_capability, Sensitive
+        add_field_capability(Reload, "capabilities", MyCoerce)
+    """
+    hints = cls.__annotations__
+    if field_name not in hints:
+        raise ValueError(f"{cls.__name__} has no field {field_name!r}")
+    current = hints[field_name]
+    if get_origin(current) is Annotated:
+        args = get_args(current)
+        hints[field_name] = Annotated[args[0], *args[1:], *caps]
+    else:
+        hints[field_name] = Annotated[current, *caps]
+
+
+def with_field_capability[T](cls: type[T], field_name: str, *caps: Any) -> type[T]:
+    """Return new dataclass type with capability added to a field.
+
+    Uses inspect infra: unwrap_annotated → append caps → make_dataclass.
+    Original class not modified.
+
+        ReloadSA = with_field_capability(Reload, "capabilities", PickleCoerce)
+    """
+    from dataclasses import fields as dc_fields, make_dataclass, MISSING
+
+    if field_name not in cls.__annotations__:
+        raise ValueError(f"{cls.__name__} has no field {field_name!r}")
+
+    new_fields: list[Any] = []
+    for f in dc_fields(cls):
+        hint = cls.__annotations__[f.name]
+        if f.name == field_name:
+            base, existing = unwrap_annotated(hint)
+            hint = Annotated[base, *existing, *caps]
+        if f.default is not MISSING:
+            new_fields.append((f.name, hint, f.default))
+        elif f.default_factory is not MISSING:
+            new_fields.append((f.name, hint, f.default_factory))
+        else:
+            new_fields.append((f.name, hint))
+
+    new_cls = make_dataclass(
+        cls.__name__, new_fields, bases=(cls,), frozen=True,
+    )
+    new_cls.__module__ = cls.__module__
+    new_cls.__qualname__ = cls.__qualname__
+    return new_cls
 
 
 def unwrap_annotated(type_hint: Any) -> tuple[Any, list[Any]]:
@@ -205,7 +268,7 @@ def extract_capabilities(annotations: Sequence[object]) -> tuple[SchemaAxisCapab
 
 
 def inspect_field(
-    name: str, type_hint: Any, *, has_default: bool = False
+    name: str, type_hint: Any, *, has_default: bool = False, default: Any = NO_DEFAULT,
 ) -> FieldInfo:
     """Inspect a single field type hint.
 
@@ -237,6 +300,7 @@ def inspect_field(
         is_optional=is_optional,
         capabilities=capabilities,
         has_default=has_default,
+        default=default,
     )
 
 
@@ -303,8 +367,13 @@ def dataclass_inspector(cls: type) -> dict[str, FieldInfo] | None:
             field.default is not dataclasses.MISSING
             or field.default_factory is not dataclasses.MISSING
         )
+        default: Any = NO_DEFAULT
+        if field.default is not dataclasses.MISSING:
+            default = field.default
+        elif field.default_factory is not dataclasses.MISSING:
+            default = field.default_factory()
         result[field.name] = inspect_field(
-            field.name, type_hint, has_default=has_default
+            field.name, type_hint, has_default=has_default, default=default
         )
 
     return result

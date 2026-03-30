@@ -732,13 +732,26 @@ def from_storage[T](
         SA:     lambda n: getattr(model_instance, n)
         Mongo:  lambda n: doc[n]
         Pandas: lambda n: row[n]
+
+    Auto-reconstructs Enum values from their stored representation.
     """
+    from enum import Enum as _Enum
+
     data: dict[str, object] = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getter(fc.name)
         if meta.from_storage is not None:
             value = meta.from_storage(value)
+        # Reconstruct enums: storage returns raw str/int, entity expects Enum
+        declared = fc.info.base_type
+        if (
+            isinstance(declared, type)
+            and issubclass(declared, _Enum)
+            and not isinstance(value, declared)
+            and value is not None
+        ):
+            value = declared(value)
         data[fc.name] = value
     return entity_cls(**data)
 
