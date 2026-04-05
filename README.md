@@ -122,10 +122,12 @@ INDEX_PHASE = CompilationPhase(
 class Searchable(SchemaAxisCapability):
     boost: float = 1.0
 
-    def compile_index(self, ctx: IndexFieldCtx) -> IndexFieldCtx:  # YOUR language
+    # YOUR language
+    def compile_index(self, ctx: IndexFieldCtx) -> IndexFieldCtx:  
         return replace(ctx, searchable=True, boost=self.boost)
 
-    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:  # emergent's
+    # emergent's!
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
         return openapi_schema(
             ctx, **{"x-searchable": True, "x-search-boost": self.boost}
         )
