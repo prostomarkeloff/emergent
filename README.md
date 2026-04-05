@@ -79,49 +79,143 @@ The 4 axes (Schema, Surface, Storage, Query) are **libraries** built on these pr
 
 ### Create your own compiler
 
-A `CompilationPhase` is a language definition. Context = value domain. Protocol = well-formed programs. `fold` = evaluator. This runs:
+`to_pydantic(User, axes)` reads capabilities, produces a Pydantic model. `to_json_schema` produces OpenAPI. You build `to_search_index` the same way. This runs:
 
 ```python
 from dataclasses import dataclass, replace
-from typing import Protocol, runtime_checkable
-from emergent.wire.compile._core import fold
+from typing import Annotated, Protocol, runtime_checkable
+
+from emergent.wire.compile._core import Axes
 from emergent.wire.compile._phase import CompilationPhase
+from emergent.wire.compile import to_pydantic, to_json_schema
+from emergent.wire.axis.schema import Identity, MaxLen, Min
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
+from emergent.wire.axis._capability import OpenAPIContext, openapi_schema
 
-# 1. Context — what the fold accumulates
+
+# ── Your language: search index ──────────────────────────────
+
 @dataclass(frozen=True, slots=True)
-class RankCtx:
-    score: float = 1.0
-    skip: bool = False
+class IndexFieldCtx:
+    field_name: str = ""
+    field_type: type = object
+    searchable: bool = False
+    boost: float = 1.0
+    facet: bool = False
 
-# 2. Protocol — what capabilities implement
+
 @runtime_checkable
-class RankCompilable(Protocol):
-    def compile_rank(self, ctx: RankCtx) -> RankCtx: ...
+class IndexCompilable(Protocol):
+    def compile_index(self, ctx: IndexFieldCtx) -> IndexFieldCtx: ...
 
-# 3. Phase — bundles context + protocol + initial factory
-RANK_PHASE = CompilationPhase(RankCtx, RankCompilable, lambda n, t: RankCtx())
 
-# 4. Capabilities — frozen data with compile_rank methods
+INDEX_PHASE = CompilationPhase(
+    IndexFieldCtx,
+    IndexCompilable,
+    lambda n, t: IndexFieldCtx(field_name=n, field_type=t),
+)
+
+
+# ── Capabilities: one atom, two languages ────────────────────
+
 @dataclass(frozen=True, slots=True)
-class RecencyBoost:
-    weight: float = 0.3
-    def compile_rank(self, ctx: RankCtx) -> RankCtx:
-        return replace(ctx, score=ctx.score * (1 + self.weight))
+class Searchable(SchemaAxisCapability):
+    boost: float = 1.0
+
+    def compile_index(self, ctx: IndexFieldCtx) -> IndexFieldCtx:  # YOUR language
+        return replace(ctx, searchable=True, boost=self.boost)
+
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:  # emergent's
+        return openapi_schema(
+            ctx, **{"x-searchable": True, "x-search-boost": self.boost}
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class AccessControl:
-    allowed: bool = True
-    def compile_rank(self, ctx: RankCtx) -> RankCtx:
-        if not self.allowed:
-            return replace(ctx, skip=True)
-        return ctx
+class Facet(SchemaAxisCapability):
+    def compile_index(self, ctx: IndexFieldCtx) -> IndexFieldCtx:
+        return replace(ctx, facet=True)
 
-# 5. Run your compiler
-ctx = fold((RecencyBoost(), AccessControl()), RankCtx(score=0.9), RankCompilable, "compile_rank")
-print(ctx)  # RankCtx(score=1.17, skip=False)
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
+        return openapi_schema(ctx, **{"x-facet": True})
+
+
+# ── Your compiler: to_search_index — same shape as to_pydantic
+
+@dataclass(frozen=True, slots=True)
+class IndexField:
+    name: str
+    searchable: bool = False
+    boost: float = 1.0
+    facet: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class SearchIndex:
+    entity: str
+    fields: tuple[IndexField, ...]
+
+
+INDEX_COMPILER = SchemaCompiler(phases=(INDEX_PHASE,))
+
+
+def to_search_index(cls: type, axes: Axes) -> SearchIndex:
+    ec = INDEX_COMPILER.compile(cls, axes)
+    return SearchIndex(
+        entity=cls.__name__,
+        fields=tuple(
+            IndexField(
+                name=c.field_name,
+                searchable=c.searchable,
+                boost=c.boost,
+                facet=c.facet,
+            )
+            for fc in ec
+            if (c := fc[INDEX_PHASE]).searchable or c.facet
+        ),
+    )
+
+
+# ── Entity ───────────────────────────────────────────────────
+
+@dataclass
+class Product:
+    id: Annotated[int, Identity]
+    name: Annotated[str, MaxLen(200), Searchable(boost=3.0)]
+    description: Annotated[str, Searchable()]
+    category: Annotated[str, Facet()]
+    price: Annotated[float, Min(0), Facet()]
+
+
+# ── Same axes, three compilers ───────────────────────────────
+
+axes = Axes.default()
+
+index  = to_search_index(Product, axes)   # YOUR compiler   → SearchIndex
+model  = to_pydantic(Product, axes)       # emergent's       → Pydantic BaseModel
+schema = to_json_schema(Product, axes)    # emergent's       → OpenAPI JSON Schema
+
 ```
 
-You just defined a search ranking language. Zero changes to emergent. The same `fold` that compiles Pydantic models compiles your ranking. The same `SchemaCompiler` algebra composes your phase with any other: `FASTAPI_SCHEMA + RANK_PHASE`.
+```python
+index → SearchIndex(entity='Product', fields=(
+    IndexField(name='name', searchable=True, boost=3.0),
+    IndexField(name='description', searchable=True, boost=1.0),
+    IndexField(name='category', facet=True),
+    IndexField(name='price', facet=True),
+))
+
+model → <class 'Product'>  (Pydantic BaseModel with MaxLen, Min validation)
+
+schema → {
+    "name": {"type": "string", "maxLength": 200, "x-searchable": true, "x-search-boost": 3.0},
+    "category": {"type": "string", "x-facet": true},
+    "price": {"type": "number", "minimum": 0, "x-facet": true},
+    ...
+}
+```
+
+`to_search_index` has the same shape as `to_pydantic` — takes a class and axes, returns a typed artifact. `Searchable` implements both `compile_index` and `compile_openapi`, so it participates in both compilers. `MaxLen` has no `compile_index` — your compiler never sees it.
 
 ### Execution: nodnod
 
