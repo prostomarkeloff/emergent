@@ -195,6 +195,22 @@ class User:
 
 `Paginated(20)` and `SoftDelete("deleted_at")` are also compound capabilities — they implement `DeriveModifiable`, meaning fold will call them during Phase 2 (Modify) after the CRUD operations have been generated. fold does not distinguish between primitive and compound capabilities. It dispatches on `isinstance`. Any capability that implements the protocol participates.
 
+**Exercise 1.4a.** Build a capability from scratch. The real codebase defines `Deprecated`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Deprecated(UniversalCapability):
+    reason: str | None = None
+
+    def compile_pydantic(self, ctx: PydanticContext) -> PydanticContext:
+        return pydantic_field(ctx, lambda fi: setattr(fi, "deprecated", self.reason or True))
+
+    def compile_openapi(self, ctx: OpenAPIContext) -> OpenAPIContext:
+        return openapi_schema(ctx, deprecated=True)
+```
+
+Now trace: `fold([MaxLen(255), Deprecated("use name_v2")], ctx, OpenAPICompilable, "compile_openapi")`. Both implement `OpenAPICompilable`. MaxLen adds `maxLength: 255`. Deprecated adds `deprecated: true`. Result: `{"maxLength": 255, "deprecated": true}`. You just created a capability. You changed zero lines of fold.
+
 ### 1.1.5 The Fold Model: A Worked Trace
 
 We now trace a complete compilation step by step — the emergent equivalent of SICP's substitution model applied to `(f 5)`. The reader should be able to reproduce this trace by hand for any combination of capabilities.
@@ -210,50 +226,18 @@ class User:
     email: Annotated[str, MaxLen(255), Unique]
 ```
 
-**Phase 1 — Field-level compilation (Pydantic).**
+**Phase 1 — Field-level compilation.**
 
-`compile_fields` iterates each field and runs `fold_field` through `PYDANTIC_PHASE`. Before reading the trace below, predict: for each field, which capabilities will participate and which will be skipped? What will the PydanticContext contain after each field's fold completes? Try to answer before reading on.
+`compile_fields` iterates each field and, for each phase, calls `fold_field`. Before reading the table below, predict: for each field and each phase, which capabilities will participate? Which will be skipped? Try to fill in the table yourself.
 
-*Field: id*
-- Capabilities: `(Identity,)`
-- Initial context: `PydanticContext(field_name="id", field_type=int, field_info=FieldInfo())`
-- Step 1: `Identity` — `isinstance(Identity, PydanticCompilable)`? Identity has no `compile_pydantic`. **Skipped.**
-- Final context: unchanged. PydanticContext for `id` has no constraints.
+| Field | Capability | Pydantic | OpenAPI | SQLAlchemy |
+|-------|-----------|----------|---------|------------|
+| id | Identity | skip (no `compile_pydantic`) | skip | `primary_key=True` |
+| name | *(none)* | default ctx | default ctx | default ctx |
+| email | MaxLen(255) | metadata: `max_length=255` | `{"maxLength": 255}` | column: `String(255)` |
+| email | Unique | skip | skip | `unique=True` |
 
-*Field: name*
-- Capabilities: `()` (no capabilities)
-- fold iterates zero items. Context unchanged.
-
-*Field: email*
-- Capabilities: `(MaxLen(255), Unique)`
-- Initial context: `PydanticContext(field_name="email", field_type=str, field_info=FieldInfo())`
-- Step 1: `MaxLen(255)` — `isinstance(MaxLen, PydanticCompilable)`? Yes. Calls `MaxLen.compile_pydantic(ctx)`. Inside: imports `MaxLen` from `annotated_types`, adds it to `ctx.field_info.metadata`. Context now carries `max_length=255`.
-- Step 2: `Unique` — `isinstance(Unique, PydanticCompilable)`? No `compile_pydantic` on Unique. **Skipped.**
-- Final context: PydanticContext with max_length=255.
-
-`assemble_pydantic` takes these three FieldCompilations and builds a Pydantic model with `email: Annotated[str, MaxLen(max_length=255)]`.
-
-**Phase 1 — Field-level compilation (SQLAlchemy) — same fields, different fold:**
-
-Now predict again: the same three fields, but the fold protocol is `SQLAlchemyCompilable` instead of `PydanticCompilable`. Which capabilities participate this time? The answer will be different — and that difference is the subject of Section 1.2.
-
-*Field: id*
-- Step 1: `Identity` — `isinstance(Identity, SQLAlchemyCompilable)`? Yes. Calls `Identity.compile_sqlalchemy(ctx)`. Sets `primary_key=True`.
-- Final context: SQLAlchemyContext with primary_key=True.
-
-*Field: email*
-- Step 1: `MaxLen(255)` — Yes. Calls `MaxLen.compile_sqlalchemy(ctx)`. Since `field_type is str`, replaces `column_type` with `String(255)`.
-- Step 2: `Unique` — Yes. Calls `Unique.compile_sqlalchemy(ctx)`. Sets `unique=True`.
-- Final context: SQLAlchemyContext with `String(255), unique=True`.
-
-Pause and observe. The same two capabilities — `MaxLen(255)` and `Unique` — produced different results under different folds:
-
-| | Pydantic fold | SQLAlchemy fold |
-|---|---|---|
-| MaxLen(255) | max_length metadata | String(255) column type |
-| Unique | skipped | unique=True |
-
-MaxLen participated in both but produced different artifacts. Unique participated only in SQLAlchemy. The capability did not change. The fold changed — specifically, the protocol and method name changed.
+Nine dispatch decisions. Three follow the same rule: `isinstance(item, protocol)` — yes means call, no means skip. Identity is invisible to Pydantic and OpenAPI but active in SQLAlchemy. MaxLen participates in all three but produces different artifacts each time. Unique participates only in SQLAlchemy. The capabilities did not change. The fold changed — the protocol and method name changed.
 
 **Phase 2 — Derivation (three-phase fold over schema_meta).**
 
@@ -274,9 +258,7 @@ MaxLen participated in both but produced different artifacts. Unique participate
 
 Final DeriveCtx: six OpSpecs, one modified with pagination. `materialize()` builds the types and handlers. `targets.fastapi.compile()` produces a FastAPI app with routes.
 
-The purpose of the fold model is to help us think about capability compilation, not to describe how emergent really works in every implementation detail. In practice, the compilation is accomplished by the six-line fold function with isinstance dispatch. Over the course of this book, we will present increasingly elaborate models of what compilation processes produce — from data structures to programs to distributed systems to the compiler that compiles itself.
-
-One property of this model is worth noting now. Because capabilities are frozen and contexts are replaced (via `dataclasses.replace`) rather than mutated, the fold model is *permanently valid*. SICP introduces the substitution model in Chapter 1, then abandons it in Chapter 3 when assignment enters — the model breaks because substitution cannot account for mutable state. The fold model has no such limitation. Capabilities cannot be assigned to. Contexts are never modified in place. `replace()` returns a new frozen object. The model we have just introduced will remain correct through all five chapters of this book. This is a direct consequence of the frozen-dataclass design, and it is why there is no "environment model" chapter in this book — we never need one.
+One property of this model is worth noting now. Because capabilities are frozen and contexts are replaced (not mutated), the fold model does not break when complexity increases. SICP's substitution model dies in Chapter 3 when assignment enters. The fold model survives. Chapter 3 will show why.
 
 **Exercise 1.1.** Trace fold for each annotation through PydanticCompilable. For each capability, state whether it participates or is skipped, and what the final context contains:
 
@@ -382,71 +364,7 @@ A capability is a pattern for the *local transformation* of a compilation contex
 
 ### 1.2.1 The Compilation That a Capability Generates
 
-Consider a User with three fields:
-
-```python
-@dataclass
-class User:
-    id: Annotated[int, Identity]
-    name: str
-    email: Annotated[str, MaxLen(255), Unique]
-```
-
-We compile this through two phases — Pydantic and SQLAlchemy — using `SchemaCompiler`:
-
-```python
-FULLSTACK = PYDANTIC_PHASE + OPENAPI_PHASE
-ec = FULLSTACK.compile(User, axes)
-```
-
-`compile_fields` inside `SchemaCompiler.compile()` iterates each field. For each field, it iterates each phase. For each phase, it calls `fold_field`. The result is a `FieldCompilation` per field — a dict of contexts keyed by phase.
-
-Let us trace every step. For each field, predict which capabilities participate in each phase before reading the table.
-
-**Field: id. Capabilities: (Identity,)**
-
-| Phase | Capability | isinstance? | Action | Context change |
-|-------|-----------|-------------|--------|----------------|
-| Pydantic | Identity | No compile_pydantic | Skip | none |
-| OpenAPI | Identity | No compile_openapi | Skip | none |
-
-Identity has no Pydantic or OpenAPI methods. It is a storage-layer capability. It is invisible here — open-world.
-
-**Field: name. Capabilities: ()**
-
-No capabilities. Both phases produce default contexts. `name` will appear as a plain `str` in the Pydantic model and a default string entry in the OpenAPI schema.
-
-**Field: email. Capabilities: (MaxLen(255), Unique)**
-
-| Phase | Capability | isinstance? | Action | Context change |
-|-------|-----------|-------------|--------|----------------|
-| Pydantic | MaxLen(255) | Yes | compile_pydantic | metadata += MaxLen(max_length=255) |
-| Pydantic | Unique | No compile_pydantic | Skip | none |
-| OpenAPI | MaxLen(255) | Yes | compile_openapi | schema["maxLength"] = 255 |
-| OpenAPI | Unique | No compile_openapi | Skip | none |
-
-Unique has no Pydantic or OpenAPI methods. It is purely a storage/constraint capability.
-
-Now add the SQLAlchemy phase:
-
-**Field: id. Capabilities: (Identity,)**
-
-| Phase | Capability | isinstance? | Action | Context change |
-|-------|-----------|-------------|--------|----------------|
-| SQLAlchemy | Identity | Yes | compile_sqlalchemy | primary_key=True |
-
-Identity *does* have `compile_sqlalchemy`. It sets the column as the primary key. The same capability that was invisible to Pydantic is now active.
-
-**Field: email. Capabilities: (MaxLen(255), Unique)**
-
-| Phase | Capability | isinstance? | Action | Context change |
-|-------|-----------|-------------|--------|----------------|
-| SQLAlchemy | MaxLen(255) | Yes | compile_sqlalchemy | column_type: Text -> String(255) |
-| SQLAlchemy | Unique | Yes | compile_sqlalchemy | unique=True |
-
-Both participate. The result: `Column(String(255), unique=True)`.
-
-**Summary across all three phases:**
+Return to the table from Section 1.1.5. `compile_fields` inside `SchemaCompiler.compile()` iterates each field, then each phase, then calls `fold_field`. The result is a `FieldCompilation` per field — a dict of contexts keyed by phase. We already traced all nine dispatch decisions:
 
 | Capability | Pydantic | OpenAPI | SQLAlchemy |
 |-----------|----------|---------|------------|
@@ -454,7 +372,7 @@ Both participate. The result: `Column(String(255), unique=True)`.
 | MaxLen(255) | max_length metadata | maxLength: 255 | String(255) |
 | Unique | skip | skip | unique=True |
 
-Three capabilities. Three folds. Nine dispatch decisions. The same frozen data, interpreted differently by each evaluation regime.
+The pattern is worth studying. Identity is a storage-only capability — invisible to presentation layers, active in the database layer. MaxLen participates everywhere but produces *different artifacts* in each: validation metadata for Pydantic, a JSON Schema constraint for OpenAPI, a physical column type for SQLAlchemy. Unique is similarly storage-only. The same frozen data, interpreted differently by each evaluation regime.
 
 ### 1.2.2 The Crisis: One Fact, Four Evaluators
 
@@ -758,22 +676,64 @@ class Poly(Capability):
 
 `Poly(1, 2, 1)` represents x^2 + 2x + 1. It is data. But fold it with `compile_eval` and it generates a *Python function*. Fold it with `compile_latex` and it generates a LaTeX string. Fold it with `compile_derivative` and it generates `(2, 2)` — the coefficients of the derivative — which are *themselves* valid input to another Poly, which is itself a valid input to another fold.
 
-This is Hutton's result (1999) that fold can generate *functions* as output. `foldl` is a `foldr` that produces a function and then applies it. The capability is data. The fold produces functions, strings, new data, even new capabilities. The fractal: fold consuming fold-described data, producing data that is itself fold-describable.
+This is Hutton's result (1999) that fold can generate *functions* as output. The capability is data. The fold produces functions, strings, new data, even new capabilities. The fractal: fold consuming fold-described data, producing data that is itself fold-describable.
 
 The fractal example has four levels:
 
 - **Level 0:** Expressions as capabilities (`Poly`, `Scale`, `Shift`)
 - **Level 1:** Compile entity to multiple targets (EvalCtx, LatexCtx, PythonCtx, DerivativeCtx)
 - **Level 2:** Derive new entities from compiled data (generate derivative entity whose fields are themselves capabilities)
-- **Level 3:** Compile *compiler configurations* — a meta-capability `IncludePhase(LATEX_PHASE)` that, when folded, tells the compiler *which phases to run*
+- **Level 3:** Compile *compiler configurations* — meta-capabilities that tell the compiler which phases to run
 
-At Level 3, capabilities describe the compiler itself. fold over capabilities produces a compiler configuration, which is used to fold over more capabilities. The fold folds over fold-described data.
+Level 3 deserves a concrete trace. Here is the machinery from `examples/fractal.py`:
+
+```python
+@dataclass(frozen=True, slots=True)
+class OutputCtx:
+    field_name: str
+    field_type: type
+    phases: tuple[CompilationPhase, ...] = ()
+    format: str = "dict"
+
+@runtime_checkable
+class OutputCompilable(Protocol):
+    def compile_output(self, ctx: OutputCtx) -> OutputCtx: ...
+
+@dataclass(frozen=True, slots=True)
+class IncludePhase(Capability):
+    phase: CompilationPhase
+
+    def compile_output(self, ctx: OutputCtx) -> OutputCtx:
+        return replace(ctx, phases=(*ctx.phases, self.phase))
+```
+
+`IncludePhase` is a capability whose fact is: "include this compilation phase." Its `compile_output` appends a phase to the context. Now trace:
+
+```python
+caps = [IncludePhase(LATEX_PHASE), IncludePhase(PYTHON_PHASE)]
+ctx = OutputCtx(field_name="formulas", field_type=str)
+result = fold(caps, ctx, OutputCompilable, "compile_output")
+```
+
+| Step | Capability | Action | ctx.phases after |
+|------|-----------|--------|-----------------|
+| 1 | IncludePhase(LATEX_PHASE) | append LATEX_PHASE | (LATEX_PHASE,) |
+| 2 | IncludePhase(PYTHON_PHASE) | append PYTHON_PHASE | (LATEX_PHASE, PYTHON_PHASE) |
+
+The fold produced `OutputCtx(phases=(LATEX_PHASE, PYTHON_PHASE))`. This is not a schema. It is a *compiler configuration*. Now use it:
+
+```python
+compiler = SchemaCompiler(phases=result.phases)
+ec = compiler.compile(Physics, axes)
+```
+
+The fold's output became a `SchemaCompiler`'s input. The compiler that compiles `Physics` was itself the output of a fold over capabilities. Capabilities described the compiler. The compiler compiles capabilities. The circle closes.
 
 We are not yet in a position to fully develop this idea — it requires the data abstractions of Chapter 2 and the metalinguistic framework of Chapter 4. But the fact that it is expressible at all — that the same six-line fold, the same frozen dataclasses, the same isinstance dispatch can bootstrap a compiler that compiles itself — should give the reader pause.
 
-Later we will discover that this is not a clever trick. It is a consequence of Hutton's universal property: fold is the *unique morphism* from the initial algebra (the list of capabilities) to any target algebra. If the target algebra is "compiler configurations," fold produces compiler configurations. If the target algebra is "functions," fold produces functions. If the target algebra is "new capabilities," fold produces new capabilities. The universal property says: any structural processing of capabilities *is* a fold. This is not a design choice. It is a mathematical necessity.
+This is a consequence of Hutton's universal property: fold is the *unique morphism* from the initial algebra (the list of capabilities) to any target algebra. If the target algebra is "compiler configurations," fold produces compiler configurations. If the target algebra is "functions," fold produces functions. If the target algebra is "new capabilities," fold produces new capabilities. The universal property says: any structural processing of capabilities *is* a fold. This is not a design choice. It is a mathematical necessity.
 
-The reader who senses that fold is not just a loop but an *evaluation model* — that capabilities are not just data but a *language* that fold interprets — is sensing correctly. Chapter 4 will make this precise.
+By Chapter 4, you will not merely use these levels. You will build your own.
 
 **Exercise 1.9.** In `examples/fractal.py`, `Poly(1,2,1).compile_eval(ctx)` produces a *function* as output. Can you write a capability whose `compile_*` method returns a context containing *another capability*? What would this mean for compilation?
 
@@ -813,7 +773,9 @@ We have established the primitives of compilation thinking:
 
 The crisis of this chapter: capabilities are not annotations. They are not metadata. They are the primitive that generates ALL computation through fold. The same `MaxLen(255)`, consumed by different folds, produces validation logic, documentation, DDL, constraints, and verification results. The capability is the meaning. fold is the evaluator. The protocol determines the semantics.
 
-Three questions remain open:
+One forward reference to hold: the five compilation protocols you have seen — PydanticCompilable, OpenAPICompilable, SQLAlchemyCompilable, ArgparseCompilable, ConstraintsCompilable — are not hardcoded into emergent. They are libraries. Each is a `CompilationPhase` — a frozen dataclass with three fields. emergent provides the mechanism (fold, CompilationPhase, SchemaCompiler). The specific targets are libraries built on the mechanism. By Chapter 4, you will build your own compilation targets — your own contexts, your own protocols, your own phases — and fold will give them meaning just as it gives meaning to Pydantic and OpenAPI. The framework is a platform. The targets are your languages.
+
+Four questions remain open:
 
 *How do we build compound data from capabilities?* We have seen capabilities on fields and on entities. But how do we compose schemas — entities that reference other entities, nested structures, the closure property that makes composition *compositional*? This is Chapter 2.
 

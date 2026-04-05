@@ -142,6 +142,16 @@ The problem: `balance = balance - amount` is three operations — read, compute,
 
 But serializers introduce deadlock. Process A holds lock 1 and waits for lock 2. Process B holds lock 2 and waits for lock 1. Neither can proceed. The cure is a disease.
 
+But what if Peter and Paul both *append* instead of modifying?
+
+```python
+# Peter:                           Paul:
+await put(log, Withdrawal("joint", 10))
+                                   await put(log, Withdrawal("joint", 25))
+```
+
+Both appends succeed. The Log now contains `[Deposit("joint", 100), Withdrawal("joint", 10), Withdrawal("joint", 25)]`. Balance = 100 - 10 - 25 = 65. Correct. The order of the two appends does not matter — addition is commutative. No interleaving corruption. No lock. We will develop this fully in 3.2, but note the structural difference: *append does not depend on current contents*.
+
 SICP: "The central issue lurking beneath the complexity of state, sameness, and change is that by introducing assignment we are forced to admit *time* into our computational models."
 
 ### 3.1.5 The Frozen Advantage
@@ -197,7 +207,7 @@ class Withdrawal:
     amount: float
 ```
 
-Events are frozen dataclasses — the same encoding as capabilities in Chapter 1 and query nodes in Chapter 2. They carry their own identity via the `Identity` annotation.
+Events carry their own identity via the `Identity` annotation.
 
 To operate the account:
 
@@ -236,7 +246,7 @@ This is the distinction that resolves SICP's bank-account problem. The balance d
 
 ### 3.2.2 Events as Facts
 
-An event is a frozen dataclass:
+An event is a dataclass carrying type and identity:
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -253,7 +263,7 @@ class OrderPlaced:
     side: str  # "buy" | "sell"
 ```
 
-Events carry their type — `MarketTick`, `OrderPlaced` — which is the same Python type used by `isinstance` dispatch. Events carry their identity via `Identity`-annotated fields, the same annotation used for database primary keys in Chapter 1. The Log indexes events by type and by identity: `Lens().of_type(MarketTick)` is O(1) type lookup. `Lens().of_type(MarketTick).of_identity("BTC")` filters by identity within the type bucket.
+Events carry their type — `MarketTick`, `OrderPlaced` — used by `isinstance` dispatch. Events carry their identity via `Identity`-annotated fields. The Log indexes events by type and by identity: `Lens().of_type(MarketTick)` is O(1) type lookup. `Lens().of_type(MarketTick).of_identity("BTC")` filters by identity within the type bucket.
 
 ### 3.2.3 Lens as Observation
 
@@ -332,7 +342,7 @@ async def run(self, log):
     return (*direct_events, *op_events)        # return, don't mutate
 ```
 
-`compile_perception()` folds the Computation's capabilities through `LensCompilable`:
+`compile_perception()` folds capabilities into a Lens:
 
 ```python
 ctx = fold(self.capabilities, LensContext(lens=Lens(), identity=self.identity),
@@ -340,7 +350,7 @@ ctx = fold(self.capabilities, LensContext(lens=Lens(), identity=self.identity),
 return ctx.lens
 ```
 
-`compile_action()` folds the perceived events through `ActionCompilable`:
+`compile_action()` folds perceived events into new events:
 
 ```python
 ctx = fold(self.capabilities, ActionContext(identity=self.identity, perceived=perceived),
@@ -348,7 +358,7 @@ ctx = fold(self.capabilities, ActionContext(identity=self.identity, perceived=pe
 return ctx.pending_events
 ```
 
-Both are fold. Both are pure. The Computation looks like an object — it has identity, its behavior depends on history, it interacts with other Computations. But it *is* a stream processor — it folds over immutable data and produces new immutable data.
+The Computation looks like an object — it has identity, its behavior depends on history, it interacts with other Computations. But it *is* a stream processor — it folds over immutable data and produces new immutable data.
 
 **Exercise 3.1.** Build a Log-based bank account. Define `Deposit` and `Withdrawal` event types. Write `compute_balance(log, account_id)` as a fold over events. Then show: (a) two concurrent deposits to the same account always produce the correct total balance, and (b) the Log-based account does not suffer from the Peter/Paul interleaving problem described in 3.1.4. What does the Log model *cost* that the mutable model does not? (Hint: storage.)
 
@@ -386,16 +396,12 @@ world = World(log=log, computations=(
 
 **Step 1: World.run().**
 
-`World.run()` folds computations into nodnod DAG nodes:
-
 ```python
 ctx = fold(self.computations, WorldContext(log=self.log),
            WorldCompilable, "compile_world")
 ```
 
-`Scoped.compile_world` starts an inner fold with empty nodes, folds the three `Script` items (each producing a node), then folds `Supervised` (which wraps all inner nodes with retry logic), and merges the result back. The coordinator's `Script` folds outside the scope — unwrapped.
-
-Result: four nodes — three supervised workers, one unsupervised coordinator.
+`Scoped.compile_world` runs an inner fold: the three `Script` items each produce a node, `Supervised` wraps them with retry logic, the result merges back. The coordinator folds outside the scope, unwrapped. Result: four nodes — three supervised workers, one unsupervised coordinator.
 
 **Step 2: The worker.**
 
@@ -449,9 +455,7 @@ A new instance of `mortal_worker` starts. It has no state from the previous gene
 
 Two workers take the same chunk simultaneously. Both compute the result. Both append `RowResult` to the Log. Two events for the same chunk exist in the Log.
 
-Is this a problem? No. The computation is pure — same input, same output. Both results are identical. `_find_unclaimed` uses a set of done starts: `{r.data.start for r in ...}`. Duplicate `RowResult` for the same start = one entry in the set. The coordinator sees `len(done_starts) == 150` — all chunks done. The duplicate event is harmless redundancy.
-
-In SICP's terms: Peter and Paul both withdraw from the joint account. With mutable state, the interleaving corrupts the balance. With an append-only Log, both withdrawals appear as separate events. The balance is derived by folding all events — the order of appends does not matter for the final result. No serializer needed. No deadlock possible.
+Is this a problem? No. The computation is pure — same input, same output. Both results are identical. `_find_unclaimed` uses a set of done starts: `{r.data.start for r in ...}`. Duplicate `RowResult` for the same start = one entry in the set. The coordinator sees `len(done_starts) == 150` — all chunks done. The duplicate event is harmless redundancy. No serializer needed. No deadlock possible.
 
 **Step 5: Mid-computation death.**
 
@@ -499,7 +503,7 @@ if snaps:
 
 O(delta) recovery, not O(all events). The dashboard — another computation or an external service — reads the same snapshot. It does not re-fold 150 `RowResult` events. It reads one event.
 
-This pattern generalizes. Any derived state that is expensive to recompute can be written as a `ViewSnapshot` to the Log. The snapshot is persistent, typed, queryable, and compilable (through emergent's wire, a `ViewSnapshot` can be stored in SQLite, serialized to JSON, or served via HTTP — the same compilation that generates REST endpoints in Chapter 1).
+This pattern generalizes. Any derived state that is expensive to recompute can be written as a `ViewSnapshot` to the Log. The snapshot is persistent, typed, queryable, and compilable through emergent's wire.
 
 ### 3.3.3 Three Worlds, One Log
 
@@ -552,6 +556,108 @@ Helland frames this clearly: "Append-only using more disk is an engineering choi
 
 **Exercise 3.6.** Helland: "The truth is the log. The database is a cache of a subset of the log." Design a caching layer for theworld that maintains an in-memory index of the latest event per identity-type pair (like a key-value store). Show that the cache can be reconstructed from the Log at any time. What happens when the cache is stale? What is the relationship between this cache and `ViewSnapshot`?
 
+### 3.3.5 Budget as Log Projection
+
+A budget is not a counter to be incremented atomically. A budget is a *fold over resource usage events*.
+
+Consider an API with a rate limit: 3 requests per minute. Multiple workers compete for slots. Mutable approaches (Redis INCR, semaphores, distributed mutexes) suffer the pathologies of 3.1. The Log approach requires no counter and no lock.
+
+First, define the event type:
+
+```python
+@dataclass(frozen=True, slots=True)
+class ResourceUsage:
+    id: Annotated[int, Identity, Ordered(int)] = 0
+    resource_name: str = ""
+    claim_id: str = ""
+    amount: float = 0.0
+    date: str = ""  # ISO 8601
+```
+
+The algorithm:
+
+1. Wait for the minimum interval between requests (a timing discipline, not a lock -- one Lens query, no race).
+2. Write ONE claim to the Log with a unique `claim_id`. The Log assigns a monotonic ID via the `Ordered(int)` annotation.
+3. Query all claims in the current window. Our claim has a *position* -- determined by its Log-assigned ID relative to other claims in the window.
+4. If position <= limit: proceed. We are within budget.
+5. If position > limit: wait for the (position - limit)th claim to expire from the window, then re-check.
+
+No re-writing. Our single claim stays in the Log. We only re-check our position as the window slides.
+
+Trace it with four concurrent workers, limit = 3, window = 60s:
+
+```
+Worker A claims at Log position 17 (limit=3, window=60s)
+Worker B claims at Log position 18
+Worker C claims at Log position 19
+Worker D claims at Log position 20
+
+Claims in window: A(17), B(18), C(19), D(20)
+A: position in window = 1 → proceed
+B: position in window = 2 → proceed
+C: position in window = 3 → proceed
+D: position in window = 4 > 3 → wait for A's claim to expire
+
+[60 seconds pass, A's claim falls out of window]
+D re-checks: claims in window = B(18), C(19), D(20)
+D: position in window = 3 → proceed
+```
+
+No claim was rewritten. D's claim existed from the moment it was appended. Only its *position within the window* changed as older claims expired.
+
+The budget check itself is a fold over Log events:
+
+```python
+async def check_budget(log, resource_name, window_seconds):
+    cutoff_iso = datetime.fromtimestamp(
+        time.time() - window_seconds, tz=timezone.utc
+    ).isoformat()
+    events = await log.query(
+        Lens().of_type(ResourceUsage)
+              .where(ResourceUsage, lambda e: e.resource_name == resource_name
+                     and e.date >= cutoff_iso)
+    )
+    return sum(e.data.amount for e in events)
+```
+
+The cutoff is converted to ISO 8601 to match the event's `date` field — both sides of the comparison use the same format. This is a fold with a predicate: balance = fold over Deposit/Withdrawal events; budget consumed = fold over ResourceUsage events in a time window.
+
+Why does this work without locks? Because the Log assigns monotonic IDs. Given N claims in a window, the first 3 (by Log ID) proceed. The 4th waits. The ordering is total and deterministic for any number of concurrent writers. Two workers writing claims at the same instant get different Log IDs. No ambiguity. No lost updates.
+
+theworld provides this pattern through `BudgetPolicy` and `check_budget`:
+
+```python
+@runtime_checkable
+class BudgetPolicy[D](Protocol):
+    @property
+    def total(self) -> float: ...
+    @property
+    def fork_at(self) -> float: ...
+    def is_spend(self, event: Event[D]) -> float | None: ...
+    def estimate_cost(self, work: D) -> float: ...
+
+async def check_budget(log, policy):
+    spent = await fold_log(
+        log, 0.0,
+        lambda s, e: s + (c if (c := policy.is_spend(e)) is not None else 0.0),
+    )
+    return BudgetState(total=policy.total, spent=spent, fork_at=policy.fork_at)
+```
+
+`BudgetState` has `remaining` and `should_fork` properties. The state is derived, never stored. The truth is the events; the budget is the fold.
+
+`BudgetGuard` takes this further. When the budget approaches exhaustion (`remaining <= fork_at`), the guard triggers a `ForkStrategy` -- spawning a new World to continue the work. The guard itself is a `WorldCompilable` capability: it compiles to a nodnod node via `compile_world`, exactly like `Script` or `HotReloadable`. Budget enforcement is not a framework feature bolted on after the fact. It is a capability, participating in the same fold as every other World-level description.
+
+```python
+world = World(log=log, computations=(
+    BudgetGuard(policy=CpuBudget(), strategy=SubprocessFork(cmd), work=run_work),
+))
+```
+
+The insight: rate limiting, budget tracking, and resource accounting are not special mechanisms. They are Log projections -- folds over events in a time window. The Log provides the total ordering that makes the projection deterministic. The fold provides the accumulation that makes the projection pure. No new primitive is needed. The bank account (3.2.1), the mortal workers (3.3.1), and the budget (here) are the same pattern: derive state from the Log, act on the derived state, append new events.
+
+**Exercise 3.6a.** Design a budget system with nested limits on the same resource: `Budget("rpm", window=60, limit=3)` AND `Budget("daily", window=86400, limit=1000)`. Each Budget is an independent fold over the same events with a different window. What is the position calculation when a claim falls within the rpm limit but exceeds the daily limit? How do you compose multiple budget checks without introducing a lock between them?
+
 ---
 
 ## 3.4 Concurrency: Time Is of the Essence
@@ -562,41 +668,11 @@ In 3.3, we modeled systems with multiple computations communicating through a sh
 
 SICP 3.4 confronts the fundamental problem: "a computation might read a shared variable, compute a new value, and write it back — but another computation might have modified the variable in between." This is the read-modify-write race. It requires serializers. Serializers require ordering. Ordering between concurrent processes requires synchronization. Synchronization introduces deadlock.
 
-Let us see this concretely with Peter and Paul's joint account. With mutable state:
-
-```python
-# Peter (Thread 1):                Paul (Thread 2):
-balance = read(account)  # 100
-                                   balance = read(account)  # 100
-write(account, balance - 10)  # 90
-                                   write(account, balance - 25)  # 75
-
-# Final balance: 75. Expected: 65. Peter's withdrawal lost.
-```
-
-The problem is the three-step dance: read, compute, write. Between read and write, the world changes.
-
 ### 3.4.2 Append-Only Eliminates the Race
 
-Now the same scenario with the Log:
+Recall the bank account from 3.1.4. With mutable state, the interleaving of Peter's and Paul's withdrawals corrupted the balance — final balance 75 instead of 65. With the Log, both withdrawals are separate events. The balance is a commutative fold: 100 - 10 - 25 = 65 regardless of append order.
 
-```python
-# Peter:                           Paul:
-await put(log, Withdrawal("joint", 10))
-                                   await put(log, Withdrawal("joint", 25))
-```
-
-Both appends succeed. The Log now contains:
-
-```
-[Deposit("joint", 100), Withdrawal("joint", 10), Withdrawal("joint", 25)]
-```
-
-Balance = 100 - 10 - 25 = 65. Correct. The order of Peter's and Paul's appends does not matter — whether Peter's withdrawal appears before or after Paul's in the Log, the balance is the same, because addition is commutative and associative.
-
-There is no read-modify-write. There is only append. Concurrent appends do not interfere — each appends its own event, and the Log serializes them internally (an asyncio lock for `InMemoryLog`, a Kafka producer for distributed logs). No external serializer needed. No deadlock possible.
-
-This is not a clever trick. It is a consequence of the architecture. Append-only means the only write operation is *append*, and append does not depend on the current contents of the Log. Peter's `Withdrawal(10)` does not need to know Paul's `Withdrawal(25)` exists. Each event is self-contained. Each event is correct independently. The aggregate — the balance — is correct because it folds over *all* events, regardless of their order of arrival.
+The general principle: append-only means the only write operation is *append*, and append does not depend on the current contents of the Log. Peter's `Withdrawal(10)` does not need to know Paul's `Withdrawal(25)` exists. Each event is self-contained. The aggregate is correct because it folds over *all* events. Concurrent appends do not interfere — the Log serializes them internally (an asyncio lock for `InMemoryLog`, a Kafka producer for distributed logs). No external serializer. No deadlock.
 
 ### 3.4.3 What Append-Only Does Not Solve
 
@@ -696,20 +772,7 @@ The reader of SICP is left genuinely stuck. Neither model is sufficient.
 
 The merge problem arises because two independent streams must be combined into one, and the combination requires knowing the real-time relationship between their elements.
 
-The Log has no merge problem. There *is* no merge — there is one Log with multiple writers.
-
-Peter and Paul do not have separate transaction streams that must be merged. They both append to the same Log:
-
-```python
-await put(log, Withdrawal(account="joint", amount=10))   # Peter
-await put(log, Withdrawal(account="joint", amount=25))    # Paul
-```
-
-The Log imposes a total order (append order). Peter's event might come before or after Paul's — it does not matter. Both events exist in the Log. The balance is derived by folding all events. No merge procedure. No synchronization. No real-time ordering constraint.
-
-In SICP's stream model, the merge must decide: does Peter's withdrawal come before or after Paul's in the merged stream? This decision requires access to real time, which reintroduces all the problems that streams were designed to avoid.
-
-In the Log model, the question is meaningless. The Log does not merge streams. It accumulates events. The events are facts — "Peter withdrew 10" and "Paul withdrew 25" — and facts do not require ordering with respect to each other. The balance is a commutative fold over unordered facts.
+The Log has no merge problem. Peter and Paul do not have separate streams to merge — they both append to the same Log. The ordering question that paralyzed SICP's streams is meaningless here. The Log does not merge streams. It accumulates events. The events are facts, and the balance is a commutative fold over those facts — the order of arrival is irrelevant.
 
 ### 3.5.3 Lens Is the Stream
 
@@ -775,7 +838,7 @@ The balance does not change from 100 to 75. A `Withdrawal` event is appended, an
 
 Heraclitus: "Even while it changes, it stands still." The Log stands still — events never change, never move, never disappear. But the view through the Lens changes — new events arrive, the derived state evolves, the Computation's behavior adapts. The river flows. The water is new. The river is the same.
 
-And the fold model survives. `Computation.run()` is fold. `compile_perception()` is fold. `compile_action()` is fold. `World.run()` is fold. The same six-line function from Chapter 1. The same frozen contexts. The same protocol dispatch. No mutation, no environment model, no `set!`. The promise made in Chapter 1 — that the fold model is permanently valid — is kept here, in the chapter where SICP's equivalent promise (the substitution model) dies.
+And the fold model survives. Every phase — perception, action, lifecycle, plan, world — is a fold over capabilities. No mutation, no environment model, no `set!`. The promise made in Chapter 1 — that the fold model is permanently valid — is kept here, in the chapter where SICP's equivalent promise (the substitution model) dies.
 
 This is the divergence point. SICP: "the substitution model breaks at Chapter 3, replaced by the environment model." emergent: "the fold model survives Chapter 3, because state is accumulation, not mutation."
 
@@ -795,9 +858,176 @@ The mortal workers are the proof. Three workers, dying every 30 seconds, coordin
 
 ---
 
-## 3.6 The Complete Architecture
+## 3.6 Capability Evolution: The Frozen That Changes
 
-### 3.6.1 World as Operating System
+Throughout this chapter we have relied on a powerful invariant: capabilities are frozen. A `Supervised(max_restarts=50)` is the same value forever. A `Computation("trader", caps)` never changes its capabilities tuple. This invariant is what preserves the fold model -- the same capabilities, the same fold, the same result.
+
+But production systems must change. A trader's risk parameters need adjustment at 3 AM without a redeploy. A worker pool needs to scale from 3 to 8 nodes under load. A model version needs to be swapped while the system is serving traffic.
+
+How do you change what is frozen?
+
+You do not change it. You *replace* it. And the channel for replacement is the same channel for everything else: the Log.
+
+### 3.6.1 HotReloadable
+
+`HotReloadable` is a `WorldCompilable` capability. When included in a World's computations, it compiles to a watcher node that subscribes to `Reload` events in the Log:
+
+```python
+world = World(log=log, computations=(
+    Script(fn=worker_a),
+    HotReloadable(),
+))
+
+# Later, from anywhere -- another coroutine, an HTTP endpoint, another World:
+await put(log, Reload(life="world", capabilities=(
+    Script(fn=new_worker),
+    HotReloadable(),
+)))
+```
+
+`Reload` is a frozen dataclass:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Reload:
+    id: Annotated[int, Identity, Ordered(int)] = 0
+    life: str = "world"
+    capabilities: tuple[WorldCompilable, ...] = ()
+    mode: str = "add"  # "add" | "remove" | "replace"
+```
+
+The watcher's logic, stripped to its essence:
+
+```python
+async def _reload_watcher(spawnable: Spawnable) -> None:
+    epoch = 0
+    async for event in log.subscribe(Lens().of_type(Reload)):
+        new_nodes = _fold_to_nodes(event.data.capabilities)
+        old_nodes = spawnable.living_nodes
+
+        if mode == "add":
+            to_add = new_nodes - old_nodes
+        elif mode == "remove":
+            to_remove = new_nodes & old_nodes
+        else:  # replace
+            to_remove = old_nodes - new_nodes - {watcher_node}
+            to_add = new_nodes - old_nodes
+
+        spawnable.despawn(to_remove)
+        spawnable.spawn(to_add)
+        epoch += 1
+        await put(log, ReloadApplied(life="world", epoch=epoch,
+                                      added=len(to_add), removed=len(to_remove)))
+```
+
+Trace a concrete reload. The World starts with two workers:
+
+```
+Initial World: living_nodes = {worker_a_node, worker_b_node}
+
+Event appended: Reload(capabilities=(Script(fn=worker_c),), mode="add")
+
+Watcher receives event:
+  _fold_to_nodes((Script(fn=worker_c),)) → {worker_c_node}
+  old_nodes = {worker_a_node, worker_b_node}
+  mode = "add"
+  to_add = {worker_c_node} - {worker_a_node, worker_b_node} = {worker_c_node}
+
+  spawnable.spawn({worker_c_node})
+  put(log, ReloadApplied(added=1, removed=0, epoch=1))
+
+Living nodes: {worker_a_node, worker_b_node, worker_c_node}
+```
+
+No existing node was touched. The watcher appended one node to the living set. The `ReloadApplied` event is itself in the Log — any computation can confirm the reload happened.
+
+Inside `_fold_to_nodes`:
+
+```python
+def _fold_to_nodes(caps):
+    new_ctx = fold(caps, WorldContext(log=log), WorldCompilable, "compile_world")
+    return new_ctx.nodes
+```
+
+The same fold that `World.run()` uses. The result is a `frozenset[type]` of nodnod node types. The watcher diffs this set against `spawnable.living_nodes`, despawns the removed, spawns the added.
+
+`Spawnable` — implemented by both `CallbackAgent` (Cooperative) and `_WorkStealingAgent` — provides `spawn`, `despawn`, and `living_nodes`. `World.run()` injects it into the nodnod Scope; the watcher node declares `spawnable: Spawnable` in its signature and nodnod resolves it. Dependency injection through types, not globals.
+
+The confirmation — `ReloadApplied` — is itself an event in the Log. The reload is auditable. You can query "what capabilities was the system running at epoch 3?" by reading the Reload events.
+
+### 3.6.2 Why This Does Not Break the Fold Model
+
+The fold model says: same capabilities, same fold, same result.
+
+HotReload does not violate this. It *replaces* the capabilities. The old capabilities, if folded again, still produce the same node set they always did. The new capabilities produce a different node set. The change happened at the specification level -- a new `Reload` event was appended to the Log -- not at the execution level. No existing frozen value was mutated. A new frozen value (the Reload event) was created, and the watcher responded by swapping the running nodes.
+
+This is the chapter's thesis applied to the system's own configuration: **change is accumulation, not mutation.** The old Reload events are not overwritten. A new Reload event is appended. The watcher reads the latest specification from the Log. The Log grows. The specification evolves. Nothing is erased.
+
+### 3.6.3 Migration: Capabilities Cross World Boundaries
+
+If capabilities are frozen data -- serializable, transmittable -- then they can cross machine boundaries. (With one caveat: capabilities that close over Python callables — `Script(fn=my_func)` — require the function to be importable on the receiving machine, or serialized via cloudpickle. Pure-data capabilities like `Supervised(max_restarts=5)` serialize trivially.) `MigrationWatcher` implements exactly this:
+
+```python
+@dataclass(frozen=True, slots=True)
+class NodeFork:
+    life: Annotated[str, Identity] = ""
+    capabilities: tuple[object, ...] = ()
+    reason: str = ""
+
+@dataclass(frozen=True, slots=True)
+class MigrationWatcher:
+    world_id: str = ""
+    accept_filter: str = "*"
+
+    def compile_world(self, ctx: WorldContext) -> WorldContext:
+        # ... compiles to a watcher node, same pattern as HotReloadable
+```
+
+World A detects overload and forks a computation's capabilities to the Log:
+
+```python
+await put(log, NodeFork(
+    life="worker-7",
+    capabilities=(Script(fn=restored_worker),),
+    reason="no resources",
+))
+```
+
+World B's `MigrationWatcher` subscribes to `NodeFork` events:
+
+```python
+async for event in log.subscribe(Lens().of_type(NodeFork)):
+    new_ctx = fold(
+        event.data.capabilities,
+        WorldContext(log=log),
+        WorldCompilable,
+        "compile_world",
+    )
+    spawnable.spawn(set(new_ctx.nodes))
+    await put(log, NodeRestored(life=event.data.life, world_id=self.world_id))
+```
+
+The capabilities travel as frozen data through the Log. World B folds them -- the same fold, producing the same nodes -- and spawns the result. The computation *migrates* without any IPC protocol, without shared memory, without a migration framework. The Log is the migration medium. fold is the recompiler. Capabilities are the portable specification.
+
+The `accept_filter` field narrows which forks a watcher accepts. `MigrationWatcher(world_id="pool-b", accept_filter="team-a")` only restores computations whose `life` contains "team-a". Selective migration through data, not configuration files.
+
+### 3.6.4 The Living Specification
+
+HotReload and Migration together reveal a pattern: the system's specification is not a static configuration file. It is a *living document in the Log*.
+
+At any moment, the system's current specification is the fold of all Reload and NodeFork events, filtered by World identity. The specification has a history (all events). It has a current value (the latest fold). It is auditable (query the Log). It is reproducible (replay the events on a fresh World). It is distributed (the Log can be shared across machines).
+
+This is the Log model applied to the system itself. The bank account's balance is a fold over transaction events. The system's configuration is a fold over Reload events. The fold of all events on the same Log always produces the same result.
+
+**Exercise 3.11a.** Design a verification step for hot reload: before spawning new nodes, fold the new capabilities through `VerifyCompilable` and reject the reload if contradictions are found (emit `ReloadRejected` instead of `ReloadApplied`). Write the pseudocode. Why is this important for production systems? What happens if a Reload event specifies capabilities that conflict -- for example, two `Supervised` with different `max_restarts` in the same scope?
+
+**Exercise 3.11b.** HotReload replaces capabilities at the World level. Design a finer-grained mechanism: capability replacement at the *Computation* level. A `ReloadComputation(identity="trader", capabilities=(...))` event should replace only the trader's capabilities, leaving all other computations unchanged. What changes in the watcher? What changes in the fold? (Hint: you need to track per-identity capability sets, not just a flat node set.)
+
+---
+
+## 3.7 The Complete Architecture
+
+### 3.7.1 World as Operating System
 
 The full architecture:
 
@@ -828,9 +1058,9 @@ await world.run()
 3. Result: `WorldContext(nodes={supervised_worker_0, supervised_worker_1, observer})`
 4. Nodes are assembled into a nodnod DAG, and `RuntimeAgent` executes them according to the policy.
 
-This is fold, the same fold, applied to a new domain. In Chapter 1, capabilities folded into Pydantic/SQLAlchemy contexts. In Chapter 2, query operations folded into backend contexts. Now, Computations fold into a World. The mechanism does not change. The domain does.
+Computations fold into a World. The mechanism does not change. The domain does.
 
-### 3.6.2 The Perceive-Act-Emit Cycle
+### 3.7.2 The Perceive-Act-Emit Cycle
 
 Each Computation's lifecycle is an infinite loop:
 
@@ -856,9 +1086,9 @@ async def live(self, log):
 
 This is a metamorphism in the sense of Gibbons (2007): the output of one cycle feeds the input of the next. `run()` is a hylomorphism — an unfold (query the Log) composed with a fold (compile events). `live()` wraps it in a feedback loop: output events enter the Log, which is the input of the next unfold. Streaming. Self-referential. The recursion scheme that describes ongoing existence.
 
-### 3.6.3 Forward References
+### 3.7.3 Forward References
 
-In Chapter 4, we will turn from how systems are organized to how the compilation framework itself is organized. We will see that fold — the six-line function that has been our constant companion — is not merely a useful utility. It is an evaluator, and like SICP's metacircular evaluator, it determines the meaning of capabilities. The capabilities that describe a World's computations are themselves consumed by fold. The fold that compiles your program *is itself compiled by fold*. To appreciate this is to change our image of ourselves as programmers: we come to see ourselves as designers of compilation languages.
+In Chapter 4, we will turn from how systems are organized to how the compilation framework itself is organized. We will see that fold is not merely a useful utility. It is an evaluator, and like SICP's metacircular evaluator, it determines the meaning of capabilities. The fold that compiles your program *is itself compiled by fold*. To appreciate this is to change our image of ourselves as programmers: we come to see ourselves as designers of compilation languages.
 
 In Chapter 5, we will see the exact machine that executes fold. The abstract `RuntimePolicy` that we used in 3.4.4 — Cooperative, WorkStealing — will be opened up. The nodnod DAG, the Scope registry, the Node lifecycle, the thread pool, the work-stealing deques — the mechanics that turn the abstract fold into concrete execution on real hardware.
 
@@ -882,7 +1112,7 @@ This chapter confronted the problem of modeling change — the same problem SICP
 
 SICP introduces assignment (`set!`), gains modularity, and pays the price: the substitution model breaks, referential transparency dies, identity becomes circular, concurrency requires serializers, serializers cause deadlock. Streams offer an escape — model state as infinite lazy sequences — but the merge problem reintroduces time when multiple agents interact. SICP ends with the tension unresolved: "A grand unification has yet to emerge."
 
-emergent refuses assignment. The Log replaces `set!`: events accumulate rather than overwrite. The Lens replaces the environment model: state is derived by querying immutable data, not by looking up mutable bindings. The fold model survives — the same six-line function, the same frozen data, the same protocol dispatch. No environment model is needed because there is no assignment.
+emergent refuses assignment. The Log replaces `set!`: events accumulate rather than overwrite. The Lens replaces the environment model: state is derived by querying immutable data, not by looking up mutable bindings. The fold model survives. No environment model is needed because there is no assignment.
 
 The Log dissolves the merge problem. There is no merge — there is one Log with multiple writers. The balance is a commutative fold over events. The order of appends does not matter. Concurrency requires no locks, no serializers, no deadlock prevention.
 

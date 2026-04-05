@@ -990,13 +990,208 @@ Events carry a tier marker. The SQLite backend uses emergent's wire compilation:
 
 ---
 
+## 5.8 The Duality: fold and nodnod
+
+We have been treating nodnod as the machine that executes fold's output. Scope is the register file, Node is the instruction, Agent is the controller. This framing is correct but incomplete. It makes nodnod sound like an implementation detail -- the hardware under the abstraction. It is not. nodnod is the second primitive.
+
+### 5.8.1 Two Primitives, One Platform
+
+emergent is built on two co-equal primitives:
+
+| | fold | nodnod |
+|---|---|---|
+| **Reads** | Annotated capabilities | `__compose__` signatures |
+| **Produces** | Compiled context (PydanticContext, OpSpec...) | Parallel execution plan (DAG) |
+| **When** | Import / compile time | Request / run time |
+| **Data structure** | Flat list (free monoid) | Dependency graph (DAG) |
+| **Accumulator** | Context (frozen, immutable via replace) | Scope (mutable OrderedDict with parent chain) |
+| **Dispatch** | `isinstance(item, protocol)` | type-keyed `scope.retrieve(Node)` |
+
+Both share one design principle: **types are the specification language**.
+
+In fold, `Annotated[str, MaxLen(255)]` IS the compilation input. The type annotation carries the metadata. The fold reads it.
+
+In nodnod, `async def __compose__(cls, db: Database, user: CurrentUser)` IS the dependency graph. The function signature carries the edges. The agent reads them.
+
+Neither requires registration. Neither requires a separate declaration file. Neither has a central dispatch table. The structure IS the program.
+
+### 5.8.2 Node.__init_subclass__: nodnod's fold
+
+nodnod's compilation happens at class definition time, inside `Node.__init_subclass__`. When you write:
+
+```python
+@G.node
+class FetchUser:
+    @classmethod
+    async def __compose__(cls, order: Order, db: Database) -> FetchUser:
+        return cls(await db.get_user(order.user_id))
+```
+
+Python calls `__init_subclass__` before any instance exists. Inside:
+
+1. `resolve_signature(cls.__compose__)` extracts the parameter types: `{"order": Order, "db": Database}`.
+2. For each param, classify:
+   - `is_type(dep_type, Node)` → add to `__dependencies__` (graph edge)
+   - `is_type(dep_type, Composable)` → auto-create node wrapper, add to `__dependencies__`
+   - `is_union(dep_type)` → create `SequentialEither` node
+   - `is_option(dep_type)` → create `SomeNode | NothingNode` either
+   - `is_result(dep_type)` → create `ResultNode`
+   - else → add to `__injections__` (runtime scope lookup)
+3. Build `__initialize__`: a composed pipeline that maps scope Values to keyword arguments:
+   ```python
+   kungfu.F[set[Value]]()
+       .then(lambda values: {name_by_type[v.cls]: v.unbox() for v in values})
+       .then(lambda ctx: call_with_context(__compose__, ctx).unwrap())
+   ```
+4. Compute `__traverse__` via depth-first topological sort.
+
+Compare this with fold:
+
+| fold compilation | nodnod compilation |
+|---|---|
+| For each item in capability list | For each param in signature |
+| `isinstance(item, protocol)` → call compile_* | `is_type(param, Node)` → add to __dependencies__ |
+| Unknown items silently skipped (open-world) | Non-node types become injections |
+| Result: transformed Context | Result: compiled Node with __initialize__ |
+| Happens when fold() is called | Happens at class definition time |
+
+Both are "read typed metadata, produce compiled artifact." Both enable open-world extension. The difference: fold processes a list of capabilities sequentially. nodnod processes a signature of types simultaneously (because the dependency graph resolves in parallel).
+
+### 5.8.3 ScopeFamily: nodnod's SchemaCompiler
+
+`SchemaCompiler` is a composable set of phases keyed by `context_type`:
+
+```python
+FULLSTACK = FASTAPI_SCHEMA + CLI_SCHEMA + SA_SCHEMA
+ec = FULLSTACK.compile(User, axes)
+```
+
+`ScopeFamily` is a composable set of type-to-tier bindings keyed by node type:
+
+```python
+family = (
+    ScopeFamily[Tier]()
+    .bind(App, DBPool, Config)
+    .bind(Request, CurrentUser, AuthToken)
+)
+combined = auth_family | db_family   # merge, right wins
+mapped = family.materialize({App: app_scope, Request: req_scope})
+```
+
+| SchemaCompiler | ScopeFamily |
+|---|---|
+| Keyed by context_type | Keyed by node_type |
+| `+` (left-biased union) | `\|` (right-biased merge) |
+| `.compile(entity) → EntityCompilation` | `.materialize(scopes) → mapped_scopes` |
+| Combines compilation phases | Combines DI tiers |
+
+Same idea: **composable typed mapping, interpreted into a concrete artifact**. This is the platform pattern. SchemaCompiler is one algebra on the platform. ScopeFamily is another. Both use frozen dataclasses, immutable operations, and pure interpretation. The platform doesn't privilege either -- they are independent libraries built on the same foundation.
+
+### 5.8.4 ops/ — The Simplest Pipeline
+
+The `emergent.ops` module is 400 lines. It is the simplest possible emergent pipeline: compile-time wiring + runtime execution, with nothing in between. No wire, no derive, no FastAPI. Just the core pattern.
+
+**The description:**
+
+```python
+@dataclass(frozen=True, slots=True)
+class GetPrice(Op[float, str]):
+    product_id: int
+
+@dataclass(frozen=True, slots=True)
+class BuildSummary(Op[str, str]):
+    product_id: int
+    price: GetPrice     # dependency — graph edge
+    stock: GetStock     # dependency — graph edge
+```
+
+`Op[T, E]` is a frozen dataclass. Like a capability, it is data that describes intent. Unlike a capability, it also describes *dependencies* -- its dataclass fields that are themselves Ops become edges in the execution graph.
+
+**The compilation:**
+
+```python
+runner = (
+    ops()
+    .on(GetPrice, get_price_handler)
+    .on(GetStock, get_stock_handler)
+    .on(BuildSummary, build_summary_handler)
+    .compile()
+)
+```
+
+`compile()` reads each handler's signature, creates a nodnod Node per handler, and wires Op dependencies as graph edges. `build_summary_handler(req, price: GetPrice, stock: GetStock)` -- the `price` and `stock` params are Op types, so their nodes become dependencies.
+
+**Stop and predict.** When `runner.run(BuildSummary(product_id=42, price=GetPrice(42), stock=GetStock(42)))` executes, which operations run in parallel?
+
+The answer: `GetPrice` and `GetStock` have no dependencies on each other -- both depend only on injected data. nodnod schedules them concurrently. `BuildSummary` depends on both -- it waits. When both complete, their results are wrapped in `_CachedOp` (instant `.get()`) and passed to the summary handler. The programmer wrote *zero concurrency code*. The parallelism was derived from the type structure.
+
+**The microcosm:**
+
+| emergent concept | ops/ analog |
+|---|---|
+| Capability (frozen data) | Op (frozen dataclass) |
+| compile_* method | handler function |
+| CompilationPhase | handler registration (ops().on()) |
+| SchemaCompiler.compile() | runner = ops().compile() |
+| fold(capabilities → context) | agent.run(scope → results) |
+| FastAPI route (compiled artifact) | nodnod DAG (execution plan) |
+
+ops/ demonstrates that emergent's two primitives -- fold for compilation, nodnod for execution -- compose into complete systems with minimal ceremony. The 400 lines include: Op base class, handler registration, node creation from signatures, dependency collection, agent execution, and result caching. That's an entire compile-and-execute pipeline. Everything larger (wire, derive, theworld) is this pattern scaled up.
+
+### 5.8.5 Either: combinators Lifted to the Graph
+
+The tower from the architecture document (kungfu → combinators → nodnod → emergent) is not metaphorical. It is concrete in code.
+
+`SequentialEither` is combinators.py's `fallback_chain` lifted to the graph level. In combinators:
+
+```python
+result = await fallback_chain(
+    fetch_from_cache,
+    fetch_from_db,
+    fetch_from_remote,
+)
+```
+
+Try each computation in order. First success wins. In nodnod:
+
+```python
+class Data(SequentialEither):
+    __either__ = (CacheData, DBData, RemoteData)
+```
+
+Same semantics: try alternatives in order, first success wins. But the alternatives are *nodes in a dependency graph*, not functions in a chain. If `CacheData` fails, `DBData`'s dependencies are built and scheduled lazily -- only when needed. The fallback is driven by graph structure, not explicit sequencing.
+
+`ConcurrentEither` is combinators.py's `race_ok` lifted:
+
+```python
+class Data(ConcurrentEither):
+    __either__ = (SourceA, SourceB, SourceC)
+```
+
+All alternatives race concurrently. First success wins. Others are abandoned. In combinators, this is `race_ok(a, b, c)`. In nodnod, it is a node whose dependencies are the alternatives, all scheduled at once.
+
+Each level of the tower lifts the previous level's primitives to a higher abstraction:
+
+| Level | Primitive | Lifted to graph |
+|---|---|---|
+| kungfu | `Result[T, E]` — typed errors | Node returns `Result` |
+| combinators | `fallback_chain` — sequential try | `SequentialEither` |
+| combinators | `race_ok` — concurrent race | `ConcurrentEither` |
+| combinators | `retry` / `timeout` | (future: scheduling capabilities) |
+
+The abstraction doesn't add complexity. It removes it. `fallback_chain` requires you to compose the chain explicitly. `SequentialEither` discovers the chain from type declarations.
+
+---
+
 Kepler wanted to show that the heavenly machine is clockwork -- all manifold motions caused by a single weight. We have traced the clockwork. The Scope is the register file. The Node is the instruction, compiled at class definition time. The GraphInfo is the controller sequence. CallbackAgent is the simulator -- asyncio tasks wired by futures. WorkStealing is the compiler -- OS threads with work-stealing deques. World.run() is the explicit-control evaluator -- fold becoming register operations.
 
 The fold that compiles capabilities to Pydantic models is the same fold that compiles capabilities to scheduling decisions. The machine that executes compiled capabilities is itself configured by fold. The compiler compiles the compiler's own configuration.
 
 1,300 fold invocations for 10 entities. Each one: isinstance, getattr, method call, frozen dataclass replacement. The "six-line function" is a loop that runs a thousand times. But it runs ONCE -- at import time. At runtime, the compiled artifacts execute without re-folding. The penalty of explicit mechanism is also the opportunity for optimization. The abstraction that seemed to cost nothing has a measurable price. The explicit-control machine reveals that price. The compiler -- WorkStealing, target compilation, the `preserving` analog of build-time dependency resolution -- eliminates the overhead that the interpreter could not avoid.
 
-One fold. Three language primitives. The rest is clockwork.
+Two primitives. fold compiles descriptions. nodnod executes dependency graphs. RuntimePolicy bridges them -- a compiler that uses fold to read capabilities and nodnod to run the result. The scheduling policy is itself a compilation target. The execution plan is itself compiled. The clockwork compiles the clockwork.
+
+One fold. One graph executor. The rest is clockwork.
 
 ---
 
@@ -1023,3 +1218,11 @@ One fold. Three language primitives. The rest is clockwork.
 **Exercise 5.10.** SICP Exercise 5.50: "Use the compiler to compile the metacircular evaluator." In emergent: `WorkStealing.build_agent()` folds capabilities using `WorkStealingCompilable` -- the fold compiling the fold's own scheduling. Write a capability `AdaptiveScheduling` that implements both `compile_work_stealing` and `compile_pydantic`. When attached to an entity, it affects both the Pydantic model (adds a computed field showing scheduling priority) and the WorkStealing scheduler (sets priority). One frozen dataclass, two compilation targets, zero coupling between them. Is this the fold compiling the fold?
 
 **Exercise 5.11.** The full path from `@derive` annotation to TCP bytes involves six folds (Section 5.5). But World.run() adds more: `fold(computations, WorldContext, WorldCompilable, "compile_world")` plus four per-cycle folds per computation (perception, action, lifecycle, plan). For a World with 5 computations running 100 cycles each: how many total fold invocations? How does this compare to the static compilation cost?
+
+**Exercise 5.12.** Section 5.8.2 shows that `Node.__init_subclass__` classifies params by type: Node → dependency, Composable → auto-node, union → SequentialEither, Option → SomeNode|NothingNode. This parallels fold's dispatch: isinstance(item, protocol) → call, else → skip. Design a scenario where a node's `__compose__` signature contains `data: Option[CachedResult]`. Trace: what node types does nodnod create? What does the dependency graph look like? What happens if `CachedResult` fails to compose?
+
+**Exercise 5.13.** `ScopeFamily[Tier]().bind(App, DBPool).bind(Request, CurrentUser)` produces a composable typed mapping. `SchemaCompiler(phases=(PYDANTIC_PHASE, OPENAPI_PHASE))` also produces a composable typed mapping. Both use frozen dataclasses and support algebraic operations. Design a THIRD composable typed mapping: `PolicyFamily[Priority]().bind(High, AuthNode, PaymentNode).bind(Low, LogNode, MetricsNode)`. What would `.materialize()` produce? How would a custom scheduling policy use it?
+
+**Exercise 5.14.** The ops/ module (Section 5.8.4) creates nodnod Nodes from handler signatures at compile time. This is the same staging pattern as wire.derive: read types → build IR → execute. Write a minimal ops system in ~50 lines: just Op base class, one `.on()` registration, and `.run()` that creates a Scope, injects the request, builds an EventLoopAgent, and retrieves the result. How many of the 400 lines in `_graph.py` are essential vs. convenience?
+
+**Exercise 5.15.** Section 5.8.5 claims that `SequentialEither` is `fallback_chain` lifted to the graph. Verify this: write a computation that uses `fallback_chain(fetch_cache, fetch_db)` from combinators.py, then rewrite it as a nodnod graph with `class Data(SequentialEither): __either__ = (CacheData, DBData)`. Are the semantics identical? What happens when the fallback's second alternative has its own dependencies? Which version handles that automatically?

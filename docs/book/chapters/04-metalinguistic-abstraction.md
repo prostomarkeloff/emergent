@@ -609,9 +609,399 @@ The combination -- semantic dispatch on effects, composition via monoid, open-wo
 
 ---
 
-## 4.5 Capabilities as Propositions
+## 4.5 Designing Your Own Compilation Language
 
-### 4.5.1 The Correspondence
+Everything so far has been consumption. MaxLen(255) is a capability someone else defined. PydanticCompilable is a protocol someone else chose. PYDANTIC_PHASE is a CompilationPhase someone else bundled. You used these to learn how fold works. Now the question changes: can you create your own compilation languages -- your own contexts, protocols, phases -- using nothing but the same fold?
+
+The answer will reframe the entire book.
+
+### 4.5.1 The Problem: One Atom, Four Meanings
+
+You have entities with hierarchical scope metadata. A meeting has a path like `"acme:engineering:backend:meeting:2026-03-28"`. An internal doc has a path like `"acme:engineering:backend:docs:architecture"`. Scopes form a tree: `"acme:engineering:backend"` is a prefix of both.
+
+You need four things from the same metadata:
+
+1. **Access control.** Given a viewer's scopes, does the viewer have permission to see this entity?
+2. **Display labels.** A human-readable breadcrumb for the UI.
+3. **Serialization.** JSON representation for storage and transmission.
+4. **Search ranking.** How relevant is this entity to a query, given the viewer's scope?
+
+In a traditional system, these would be four separate subsystems: an ACL module, a label renderer, a serializer, a search ranker. Each with its own data model, its own traversal, its own tests. Four systems that know about the same metadata but cannot share a representation.
+
+In emergent, they are four CompilationPhases over the same capabilities.
+
+### 4.5.2 Four Contexts
+
+Each compilation language needs a context -- a frozen dataclass that fold accumulates into. Here are four, from `emergent/wire/compile/_phase.py`'s pattern:
+
+```python
+@dataclass(frozen=True, slots=True)
+class MatchCtx:
+    viewer_scopes: tuple[str, ...] = ()
+    matches: bool = True
+    reason: str = ""
+
+@dataclass(frozen=True, slots=True)
+class LabelCtx:
+    parts: tuple[str, ...] = ()
+
+@dataclass(frozen=True, slots=True)
+class SerializeCtx:
+    items: tuple[Mapping[str, object], ...] = ()
+
+@dataclass(frozen=True, slots=True)
+class RankCtx:
+    score: float = 1.0
+    skip: bool = False
+    reason: str = ""
+    source: str = ""
+```
+
+`MatchCtx` carries the viewer's scopes and a running verdict: do they match? `LabelCtx` accumulates display parts. `SerializeCtx` accumulates JSON-serializable dicts. `RankCtx` carries a search score that capabilities can degrade or zero out.
+
+Four frozen dataclasses. Forty lines. No framework involvement.
+
+### 4.5.3 Four Protocols
+
+Each language needs a protocol -- a `runtime_checkable Protocol` with one `compile_*` method. This is the same pattern as `PydanticCompilable`, `OpenAPICompilable`, etc.:
+
+```python
+@runtime_checkable
+class MatchCompilable(Protocol):
+    def compile_match(self, ctx: MatchCtx) -> MatchCtx: ...
+
+@runtime_checkable
+class LabelCompilable(Protocol):
+    def compile_label(self, ctx: LabelCtx) -> LabelCtx: ...
+
+@runtime_checkable
+class SerializeCompilable(Protocol):
+    def compile_serialize(self, ctx: SerializeCtx) -> SerializeCtx: ...
+
+@runtime_checkable
+class RankCompilable(Protocol):
+    def compile_rank(self, ctx: RankCtx) -> RankCtx: ...
+```
+
+Four protocols. Twelve lines. Each declares what "well-formed in this language" means: any capability that implements `MatchCompilable` can participate in access-control compilation. Any that does not is silently skipped -- fold's open-world property.
+
+### 4.5.4 Four Phases
+
+Bundle context + protocol + initial factory into `CompilationPhase`:
+
+```python
+MATCH_PHASE = CompilationPhase(MatchCtx, MatchCompilable, lambda n, t: MatchCtx())
+LABEL_PHASE = CompilationPhase(LabelCtx, LabelCompilable, lambda n, t: LabelCtx())
+SERIALIZE_PHASE = CompilationPhase(SerializeCtx, SerializeCompilable, lambda n, t: SerializeCtx())
+RANK_PHASE = CompilationPhase(RankCtx, RankCompilable, lambda n, t: RankCtx())
+```
+
+Four phases. Four lines. Each is a complete language definition: what the fold accumulates (`MatchCtx`), what it dispatches on (`MatchCompilable`), how it starts (`lambda n, t: MatchCtx()`).
+
+These compose with the SchemaCompiler algebra from Section 4.1.3:
+
+```python
+HEADER_SCHEMA = SchemaCompiler(phases=(MATCH_PHASE, LABEL_PHASE, SERIALIZE_PHASE, RANK_PHASE))
+```
+
+One compiler. Four languages. Same fold.
+
+### 4.5.5 The Scope Capability
+
+Now the capability. A single frozen dataclass that implements whichever protocols it cares about:
+
+```python
+@dataclass(frozen=True, slots=True)
+class Scope:
+    path: str = ""
+
+    def compile_match(self, ctx: MatchCtx) -> MatchCtx:
+        for viewer_scope in ctx.viewer_scopes:
+            if self.path.startswith(viewer_scope) or viewer_scope.startswith(self.path):
+                return ctx  # match holds
+        return replace(ctx, matches=False, reason=f"no scope covers {self.path}")
+
+    def compile_label(self, ctx: LabelCtx) -> LabelCtx:
+        return replace(ctx, parts=(*ctx.parts, self.path.rsplit(":", 1)[-1]))
+
+    def compile_serialize(self, ctx: SerializeCtx) -> SerializeCtx:
+        return replace(ctx, items=(*ctx.items, {"t": "scope", "v": self.path}))
+
+    def compile_rank(self, ctx: RankCtx) -> RankCtx:
+        for viewer_scope in ctx.viewer_scopes if hasattr(ctx, "viewer_scopes") else ():
+            depth = len(set(self.path.split(":")) & set(viewer_scope.split(":")))
+            if depth > 0:
+                return replace(ctx, score=ctx.score * (1.0 + 0.1 * depth))
+        return ctx
+```
+
+One atom. Four compile methods. Each transforms a different context. `compile_match` checks prefix containment. `compile_label` extracts the last segment. `compile_serialize` appends a typed dict. `compile_rank` boosts score by scope overlap depth.
+
+**Stop and predict.** When fold encounters `Scope("acme:engineering:backend")` during `LABEL_PHASE` compilation, which method is called? What about during `MATCH_PHASE`? What if `Scope` did NOT implement `RankCompilable` -- what would fold do?
+
+The answers: `compile_label` during `LABEL_PHASE`, `compile_match` during `MATCH_PHASE`. If `Scope` did not implement `RankCompilable`, fold would check `isinstance(Scope(...), RankCompilable)` -- False -- and skip it. The open-world property: silence, not error.
+
+### 4.5.6 More Capabilities
+
+`Scope` is not the only metadata. An entity might have an expiration date or a required role:
+
+```python
+@dataclass(frozen=True, slots=True)
+class ExpiresAt:
+    deadline: datetime
+
+    def compile_match(self, ctx: MatchCtx) -> MatchCtx:
+        if datetime.now(timezone.utc) > self.deadline:
+            return replace(ctx, matches=False, reason=f"expired at {self.deadline}")
+        return ctx
+
+    def compile_label(self, ctx: LabelCtx) -> LabelCtx:
+        return replace(ctx, parts=(*ctx.parts, f"expires {self.deadline:%Y-%m-%d}"))
+
+    def compile_serialize(self, ctx: SerializeCtx) -> SerializeCtx:
+        return replace(ctx, items=(*ctx.items, {"t": "expires", "v": self.deadline.isoformat()}))
+
+    # No compile_rank -- expiration is irrelevant to search ranking.
+
+
+@dataclass(frozen=True, slots=True)
+class RequiresRole:
+    role: str
+
+    def compile_match(self, ctx: MatchCtx) -> MatchCtx:
+        # Role checking would consult ctx; simplified here
+        return ctx
+
+    def compile_label(self, ctx: LabelCtx) -> LabelCtx:
+        return replace(ctx, parts=(*ctx.parts, f"[{self.role}]"))
+
+    def compile_serialize(self, ctx: SerializeCtx) -> SerializeCtx:
+        return replace(ctx, items=(*ctx.items, {"t": "role", "v": self.role}))
+
+    def compile_rank(self, ctx: RankCtx) -> RankCtx:
+        # Elevated-role content is less relevant in general search
+        return replace(ctx, score=ctx.score * 0.8)
+```
+
+`ExpiresAt` implements three of the four protocols. It has no `compile_rank` because expiration does not affect search relevance. fold skips it during `RANK_PHASE`. `RequiresRole` implements all four: it degrades rank for role-restricted content (less broadly relevant).
+
+Each capability chooses which languages it speaks. The open-world property is not merely a tolerance for missing methods -- it is a design principle. A capability that implements three of four protocols is not "incomplete." It is precisely scoped: it has meaning in three languages and silence in the fourth.
+
+### 4.5.7 Four Folds, Same Data
+
+Now use them:
+
+```python
+headers = (
+    Scope("acme:engineering:backend"),
+    ExpiresAt(deadline=datetime(2026, 12, 31, tzinfo=timezone.utc)),
+    RequiresRole("admin"),
+)
+
+viewer_scopes = ("acme:engineering",)
+
+# Four folds. Same tuple. Four meanings.
+match = fold(headers, MatchCtx(viewer_scopes=viewer_scopes), MatchCompilable, "compile_match")
+label = fold(headers, LabelCtx(), LabelCompilable, "compile_label")
+serial = fold(headers, SerializeCtx(), SerializeCompilable, "compile_serialize")
+rank = fold(headers, RankCtx(score=0.95, source="search"), RankCompilable, "compile_rank")
+```
+
+Trace the match fold step by step:
+
+```
+ctx = MatchCtx(viewer_scopes=("acme:engineering",), matches=True, reason="")
+
+Scope("acme:engineering:backend"):
+  isinstance(Scope, MatchCompilable) → True
+  "acme:engineering:backend".startswith("acme:engineering") → True
+  ctx unchanged: matches=True
+
+ExpiresAt(deadline=2026-12-31):
+  isinstance(ExpiresAt, MatchCompilable) → True
+  now() < deadline → True
+  ctx unchanged: matches=True
+
+RequiresRole("admin"):
+  isinstance(RequiresRole, MatchCompilable) → True
+  (simplified) ctx unchanged: matches=True
+
+Result: MatchCtx(matches=True)
+```
+
+Trace the label fold:
+
+```
+ctx = LabelCtx(parts=())
+
+Scope: compile_label → parts=("backend",)
+ExpiresAt: compile_label → parts=("backend", "expires 2026-12-31")
+RequiresRole: compile_label → parts=("backend", "expires 2026-12-31", "[admin]")
+
+Result: LabelCtx(parts=("backend", "expires 2026-12-31", "[admin]"))
+```
+
+Trace the serialize fold:
+
+```
+ctx = SerializeCtx(items=())
+
+Scope: compile_serialize → items=({"t": "scope", "v": "acme:engineering:backend"},)
+ExpiresAt: compile_serialize → items=(..., {"t": "expires", "v": "2026-12-31T00:00:00+00:00"})
+RequiresRole: compile_serialize → items=(..., {"t": "role", "v": "admin"})
+
+Result: SerializeCtx with 3 items
+```
+
+Trace the rank fold:
+
+```
+ctx = RankCtx(score=0.95, source="search")
+
+Scope: compile_rank → depth=2 (overlap: "acme", "engineering") → score = 0.95 * 1.2 = 1.14
+ExpiresAt: isinstance(ExpiresAt, RankCompilable) → False → SKIPPED
+RequiresRole: compile_rank → score = 1.14 * 0.8 = 0.912
+
+Result: RankCtx(score=0.912, source="search")
+```
+
+The same three capabilities, the same eight-line fold, four completely different results. And `ExpiresAt` was skipped in the rank fold -- it participated in three languages and was silent in the fourth.
+
+### 4.5.8 The Revelation
+
+Count the lines. Four contexts: ~25 lines. Four protocols: ~12 lines. Four phases: ~4 lines. Three capabilities: ~50 lines. Usage: ~8 lines. Total: under 100 lines.
+
+You just created four compilation languages. Each has a context type (the value domain), a protocol (the set of well-formed expressions), and a phase (the language bundled for the compiler). Each capability implements whichever protocols it cares about. fold dispatches. The compiler composes them with `+`.
+
+And here is the shift from everything that came before.
+
+In Chapter 1, `MaxLen(255)` compiled through Pydantic, OpenAPI, SQLAlchemy, verification. The reader saw one capability with four meanings. But those four meanings were defined by someone else -- by the emergent framework. The protocols, contexts, and phases were provided. `MaxLen(255)` is a capability in someone else's language.
+
+`Scope("acme:engineering:backend")` is a capability in YOUR language. `MatchCtx` is YOUR context. `MatchCompilable` is YOUR protocol. `MATCH_PHASE` is YOUR phase. The six lines of fold serve your domain, your contexts, your protocols. You are not consuming a framework. You are building one.
+
+`CompilationPhase` is not a framework feature. It is a language definition. The reader who writes four phases has written four languages. The evaluator -- fold -- is the same eight lines that run MaxLen through Pydantic. But the languages are yours.
+
+This is what SICP means by "we come to see ourselves as designers of languages, rather than only users of languages designed by others." Not through a new evaluator. Through the same evaluator -- fold -- applied to your own protocols, your own contexts, your own capabilities.
+
+**Exercise 4.5a.** Build a fifth phase: `DeserializeCompilable` with `compile_deserialize`. The context `DeserializeCtx` carries `items: tuple[Mapping[str, object], ...]` (the serialized form) and `result: tuple[object, ...]` (reconstructed capability objects). Implement `Scope.compile_deserialize` and `ExpiresAt.compile_deserialize`. Show that serialize followed by deserialize is the identity: `deserialize(serialize(headers)) == headers`.
+
+**Exercise 4.5b.** Show that the four phases compose via SchemaCompiler algebra: `HEADER_SCHEMA = MATCH_PHASE + LABEL_PHASE + SERIALIZE_PHASE + RANK_PHASE`. What does `HEADER_SCHEMA - RANK_PHASE` produce? What does `HEADER_SCHEMA & SchemaCompiler(phases=(MATCH_PHASE, SERIALIZE_PHASE))` produce?
+
+**Exercise 4.5c.** Design a new capability `Budget(name: str, window: timedelta, limit: int)` that implements `compile_label` and `compile_serialize` but NOT `compile_match` or `compile_rank`. Budgets are cost boundaries, not access control or search relevance. Trace the four folds over `(Scope("team:ml"), Budget("inference", timedelta(hours=1), 1000))`. In which folds does `Budget` participate?
+
+**Exercise 4.5d.** The Scope capability's `compile_rank` method accesses `ctx.viewer_scopes`, but `RankCtx` as defined does not carry `viewer_scopes`. Redesign `RankCtx` to include the viewer's scope information. What does this reveal about the relationship between context design and capability design? When you define a context, you are defining the interface that capabilities can depend on.
+
+---
+
+## 4.6 The Evaluator That Perceives
+
+### 4.6.1 The Boundary
+
+All fold so far is synchronous and pure. `fold(items, ctx, protocol, method)` reads frozen data, produces frozen data. No I/O. No network calls. No database queries. The evaluator is blind -- it sees only what the capability tuple and the initial context contain.
+
+Here is `async_fold`, from `emergent/wire/compile/_core.py`:
+
+```python
+async def async_fold[Ctx](
+    items: Iterable[Any],
+    initial: Ctx,
+    protocol: type,
+    method: str,
+    handlers: Mapping[type, ItemHandler[Ctx]] | None = None,
+) -> Ctx:
+    ctx = initial
+    for item in items:
+        item_cls: type = item.__class__
+        if handlers and item_cls in handlers:
+            result = handlers[item_cls](item, ctx)
+            ctx = await result if isawaitable(result) else result
+        elif isinstance(item, protocol):
+            result = getattr(item, method)(ctx)
+            ctx = await result if isawaitable(result) else result
+    return ctx
+```
+
+Same dispatch: handler map, then isinstance, then skip. Same accumulation: `ctx = result`. One difference: after calling the method, it checks `isawaitable(result)`. If the result is a coroutine, it awaits. If it is a plain value, it passes through. Sync and async capabilities coexist in the same fold.
+
+### 4.6.2 Fold That Reads the World
+
+`Computation` in `theworld/src/theworld/_computation.py` uses async_fold for its action phase:
+
+```python
+async def compile_action(
+    self, perceived: tuple[Event[object], ...]
+) -> tuple[Event[object], ...]:
+    ctx = await async_fold(
+        self.capabilities,
+        ActionContext(identity=self.identity, perceived=perceived),
+        ActionCompilable,
+        "compile_action",
+    )
+    return ctx.pending_events
+```
+
+The action capabilities can be async. A capability can query the Log, check external state, or await a remote service -- during compilation. The fold that was a pure catamorphism over frozen data now reaches outside the program.
+
+Consider a monitoring capability that queries the Log for resource usage:
+
+```python
+@dataclass(frozen=True, slots=True)
+class ResourceMonitor:
+    budget_name: str
+    window: timedelta
+
+    async def compile_action(self, ctx: ActionContext) -> ActionContext:
+        # Query the Log for recent usage events
+        cutoff = datetime.now(timezone.utc) - self.window
+        lens = Lens().of_type(ResourceUsage).after(cutoff.timestamp())
+        match await ctx.log.query(lens):
+            case Ok(events):
+                total = sum(e.data.tokens for e in events)
+                metric = Event(data=UsageMetric(name=self.budget_name, total=total))
+                return replace(ctx, pending_events=(*ctx.pending_events, metric))
+            case Error(_):
+                return ctx  # Log unavailable; emit nothing
+```
+
+This is a `compile_*` method that queries the Log. The fold is doing I/O. The evaluator is perceiving.
+
+### 4.6.3 What Is Lost
+
+Sync fold has three properties that async_fold does not:
+
+**Purity.** Sync fold depends only on its inputs: the item tuple, the initial context, the protocol, the method. Given the same inputs, it produces the same output. async_fold depends on external state -- the Log's contents, the current time, network responses. Two calls with the same arguments may produce different results.
+
+**Determinism.** Sync fold's output is fully determined by the capability ordering and the context transformations. async_fold's output depends on what the Log contains at the moment each capability runs. Between two capabilities' execution, another computation may have appended to the Log.
+
+**Side-effect freedom.** Sync fold never modifies anything outside the accumulating context. async_fold's capabilities can append to the Log, send network requests, or trigger external systems.
+
+The trade-off is explicit: you gain power (world-observing compilation) and lose purity (compilation now depends on external state).
+
+### 4.6.4 What Is Preserved
+
+But the loss is controlled. async_fold preserves structure:
+
+**Sequential dispatch.** async_fold awaits each capability in order, one at a time. It does not parallelize. If two async capabilities both append to the Log, the first completes before the second begins. The order is deterministic -- it is the order of the capability tuple.
+
+**Open-world skip.** `isinstance` dispatch and the silent skip of non-matching capabilities work identically. A sync capability in an async fold runs synchronously -- `isawaitable` returns False, no await occurs.
+
+**Context accumulation.** The fold still threads context left-to-right: `ctx = result`. Each capability sees the accumulated context from all previous capabilities. The structure is the same catamorphism -- it merely permits each step to observe the world before producing its result.
+
+The connection to Chapter 3 is direct. The Log provides append-only accumulation: past events are immutable. async_fold's capabilities observe the Log during compilation. Because the Log is append-only, every observation a capability makes remains valid -- past events cannot be retracted. The Log's immutability partially compensates for async_fold's impurity: the world the evaluator perceives grows monotonically.
+
+This is the boundary between Chapters 3 and 4 made operational. Chapter 3 established that the Log resolves the tension between modularity and referential transparency. Now: async_fold is the mechanism by which compilation can benefit from that resolution. The evaluator does not merely process frozen descriptions. It perceives the accumulated truth of the system.
+
+**Exercise 4.6a.** async_fold awaits each capability sequentially. What would change if it dispatched all capabilities concurrently (e.g., with `asyncio.gather`)? Which property from Section 4.6.4 would break? (Hint: consider two capabilities where the second depends on events the first appends.)
+
+**Exercise 4.6b.** Design a `SessionResolver` capability with `async def compile_action(self, ctx: ActionContext) -> ActionContext`. It queries the Log for `SessionBinding` events matching the current identity. If found, it sets `ctx.session_id` from the most recent binding. If not, it creates a new session and appends a `SessionBinding` event. What happens if two Computations with the same identity run `SessionResolver` concurrently? Is the result consistent? (The Log is append-only -- both will append. The next query will find both. Which one wins?)
+
+**Exercise 4.6c.** The perception phase (`compile_perception`) is sync, not async. The action phase (`compile_action`) is async. Why? What about perception requires only frozen data, while action requires world access? (Hint: perception builds a Lens -- a query description. It does not execute the query. Action produces events that may need to read the Log first.)
+
+---
+
+## 4.7 Capabilities as Propositions
+
+### 4.7.1 The Correspondence
 
 Each capability on a field is a proposition about that field:
 
@@ -636,7 +1026,7 @@ class Bad:
 
 In logical terms: the conjunction `Min(100) AND Max(50)` has no model. No assignment to `value` makes both propositions true. `verify()` is a satisfiability checker for the specific constraint languages implemented (numeric ranges, length ranges, semantic consistency).
 
-### 4.5.2 The Subformula Principle
+### 4.7.2 The Subformula Principle
 
 Gentzen proved that in a normalized proof, only subformulas of the conclusion appear. A proof of `A AND B` uses only things relevant to `A` and `B`.
 
@@ -646,7 +1036,7 @@ In emergent: fold's open-world skip implements the subformula principle. `Unique
 
 Each compilation target defines a proof system. Each protocol defines which propositions (capabilities) are subformulas of that system. The open-world skip is the subformula principle made operational: irrelevant propositions are silently excluded.
 
-### 4.5.3 Verification IS Compilation
+### 4.7.3 Verification IS Compilation
 
 The deepest consequence: verification is not a separate system. It is another compilation target. `VERIFY_PHASES` are `CompilationPhase` instances, just like `PYDANTIC_PHASE`. They use the same `fold_field`. The same `compile_fields`. The same `SchemaCompiler`.
 
@@ -678,9 +1068,9 @@ This should be called Curry-Howard-*inspired*, not a formal Curry-Howard corresp
 
 ---
 
-## 4.6 The Fractal
+## 4.8 The Fractal
 
-### 4.6.1 Level 0: Expressions as Data
+### 4.8.1 Level 0: Expressions as Data
 
 In `examples/fractal.py`, the polynomial `x^2 + 2x + 1` is represented as:
 
@@ -728,7 +1118,7 @@ DERIVATIVE_PHASE = CompilationPhase(DerivativeCtx, DerivativeCompilable, lambda 
 
 Four languages. Same algebra. Same fold.
 
-### 4.6.2 Level 1: Compiling Entities
+### 4.8.2 Level 1: Compiling Entities
 
 An entity whose fields are formulas:
 
@@ -751,7 +1141,7 @@ One pass. Four languages. For the `position` field: fold processes `Poly(0.5, 0,
 
 This is Level 1 of the fractal: fold compiling an entity's fields through multiple languages.
 
-### 4.6.3 Level 2: Fold Producing Capabilities
+### 4.8.3 Level 2: Fold Producing Capabilities
 
 `derive_derivatives(Physics)` inspects the entity, compiles each field through `DERIVATIVE_PHASE` to get derivative coefficients, and creates a NEW entity type whose fields carry `Poly` capabilities with those coefficients:
 
@@ -773,7 +1163,7 @@ fold (via `compile_derivative`) produced coefficients. Those coefficients became
 
 This is Level 2: fold producing capabilities that are themselves fold-consumable.
 
-### 4.6.4 Level 3: Compiling the Compiler
+### 4.8.4 Level 3: Compiling the Compiler
 
 Now the metacircular capstone. A "compiler configuration" entity:
 
@@ -836,7 +1226,7 @@ It ends wherever you stop composing. fold always terminates (finite iteration ov
 
 ---
 
-## 4.7 What Doesn't Map Cleanly
+## 4.9 What Doesn't Map Cleanly
 
 Honesty about the SICP parallel requires noting where it breaks.
 
@@ -854,7 +1244,7 @@ These gaps are real. The emergent model is simpler than SICP's in some dimension
 
 ---
 
-## 4.8 The Evaluator as Program -- Reprise
+## 4.10 The Evaluator as Program -- Reprise
 
 SICP closes Chapter 4 with:
 
