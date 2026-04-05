@@ -79,24 +79,29 @@ The 4 axes (Schema, Surface, Storage, Query) are **libraries** built on these pr
 
 ### Create your own compiler
 
-A `CompilationPhase` is a language definition. Context = value domain. Protocol = well-formed programs. `fold` = evaluator. Define all three in ~15 lines:
+A `CompilationPhase` is a language definition. Context = value domain. Protocol = well-formed programs. `fold` = evaluator. This runs:
 
 ```python
+from dataclasses import dataclass, replace
+from typing import Protocol, runtime_checkable
+from emergent.wire.compile._core import fold
+from emergent.wire.compile._phase import CompilationPhase
+
+# 1. Context — what the fold accumulates
 @dataclass(frozen=True, slots=True)
 class RankCtx:
     score: float = 1.0
     skip: bool = False
 
+# 2. Protocol — what capabilities implement
 @runtime_checkable
 class RankCompilable(Protocol):
     def compile_rank(self, ctx: RankCtx) -> RankCtx: ...
 
+# 3. Phase — bundles context + protocol + initial factory
 RANK_PHASE = CompilationPhase(RankCtx, RankCompilable, lambda n, t: RankCtx())
-```
 
-Now any frozen dataclass with `compile_rank` participates:
-
-```python
+# 4. Capabilities — frozen data with compile_rank methods
 @dataclass(frozen=True, slots=True)
 class RecencyBoost:
     weight: float = 0.3
@@ -111,9 +116,9 @@ class AccessControl:
             return replace(ctx, skip=True)
         return ctx
 
-# Your compiler runs:
+# 5. Run your compiler
 ctx = fold((RecencyBoost(), AccessControl()), RankCtx(score=0.9), RankCompilable, "compile_rank")
-# → RankCtx(score=1.17, skip=False)
+print(ctx)  # RankCtx(score=1.17, skip=False)
 ```
 
 You just defined a search ranking language. Zero changes to emergent. The same `fold` that compiles Pydantic models compiles your ranking. The same `SchemaCompiler` algebra composes your phase with any other: `FASTAPI_SCHEMA + RANK_PHASE`.
