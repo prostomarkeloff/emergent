@@ -10,7 +10,7 @@
 
 </div>
 
-A type-algebraic framework where your code is pure domain meaning and compilation produces the rest — HTTP, CLI, Telegram, OpenAPI, Pydantic validation, SQL, RFC 7807 errors. All from the shape of your types.
+A compilation platform where frozen data compiles itself through `fold`. You build compilation languages — not applications. HTTP, CLI, Telegram, OpenAPI, Pydantic, SQL are libraries on the platform. Your custom compilers sit next to them.
 
 ```python
 @schema_meta(http_crud("/users", Users))
@@ -58,26 +58,108 @@ One place. Every concern — validation, CLI help text, OpenAPI description, SQL
 
 This is **locality by construction**, and it's what makes emergent work for humans and machines alike.
 
-> **[The entire framework is one function.](docs/essence.md)** Compilation, verification, explanation, LLM verification, query execution, derivation, semantic macros — all are the same `fold` applied to different data. Everything else is consequences.
+> **[The entire platform is one function.](docs/essence.md)** Compilation, verification, explanation, query execution, derivation — all are `fold` applied to different data. Everything else is consequences.
 
 ---
 
-## Why this matters now
+## Platform, not framework
 
-Coding agents are becoming primary authors of production code. But implicit architectures break them — AI-assisted development is often slower on real repos, developers ship AI code they don't fully understand, and refactoring drops dramatically.
+Frameworks prescribe structure. Rails prescribes MVC. Django prescribes models-views-templates. You write code *inside* the framework.
 
-The problem isn't the models. It's the code they're asked to work with. Non-local dependencies, implicit global state, and framework magic require understanding the whole program to change one part. LLMs fail at this — compositional reasoning across scattered files degrades fast.
+emergent provides primitives. You build *on* the platform:
 
-emergent is designed from the ground up so that **an agent never needs to understand the whole program**. Four structural properties make this work:
+| Primitive | What it does |
+|-----------|-------------|
+| `fold(items, ctx, protocol, method)` | Iterate capabilities, dispatch by protocol, accumulate context. 8 lines. |
+| `CompilationPhase(ctx_type, protocol, initial)` | Reified fold configuration. One phase = one compilation language. |
+| `SchemaCompiler(phases)` | Composable set of phases. Algebra: `+`, `\|`, `-`, `&`. |
+| `TargetCompiler(trigger, codecs, pipeline, assemble)` | Surface-level compilation: Application → framework artifact. |
+
+The 4 axes (Schema, Surface, Storage, Query) are **libraries** built on these primitives. `wire.derive` is a library. Your custom compilers sit next to them — not inside a framework, but on the same platform.
+
+### Create your own compiler
+
+A `CompilationPhase` is a language definition. Context = value domain. Protocol = well-formed programs. `fold` = evaluator. Define all three in ~15 lines:
+
+```python
+@dataclass(frozen=True, slots=True)
+class RankCtx:
+    score: float = 1.0
+    skip: bool = False
+
+@runtime_checkable
+class RankCompilable(Protocol):
+    def compile_rank(self, ctx: RankCtx) -> RankCtx: ...
+
+RANK_PHASE = CompilationPhase(RankCtx, RankCompilable, lambda n, t: RankCtx())
+```
+
+Now any frozen dataclass with `compile_rank` participates:
+
+```python
+@dataclass(frozen=True, slots=True)
+class RecencyBoost:
+    weight: float = 0.3
+    def compile_rank(self, ctx: RankCtx) -> RankCtx:
+        return replace(ctx, score=ctx.score * (1 + self.weight))
+
+@dataclass(frozen=True, slots=True)
+class AccessControl:
+    allowed: bool = True
+    def compile_rank(self, ctx: RankCtx) -> RankCtx:
+        if not self.allowed:
+            return replace(ctx, skip=True)
+        return ctx
+
+# Your compiler runs:
+ctx = fold((RecencyBoost(), AccessControl()), RankCtx(score=0.9), RankCompilable, "compile_rank")
+# → RankCtx(score=1.17, skip=False)
+```
+
+You just defined a search ranking language. Zero changes to emergent. The same `fold` that compiles Pydantic models compiles your ranking. The same `SchemaCompiler` algebra composes your phase with any other: `FASTAPI_SCHEMA + RANK_PHASE`.
+
+### Execution: nodnod
+
+emergent has two co-equal primitives. `fold` compiles descriptions. [nodnod](https://github.com/timoniq/nodnod) executes dependency graphs:
+
+```python
+@G.node
+class FetchPrice:
+    @classmethod
+    async def __compose__(cls, product: Product, db: Database) -> float:
+        return await db.get_price(product.id)
+
+@G.node
+class FetchStock:
+    @classmethod
+    async def __compose__(cls, product: Product, db: Database) -> int:
+        return await db.get_stock(product.id)
+
+# FetchPrice and FetchStock have no dependency on each other → run in parallel.
+# No asyncio.gather. No concurrency code. The type signatures ARE the graph.
+result = await G.compose(BuildReport, product, db)
+```
+
+Types are the specification. `fold` reads capabilities from `Annotated`. nodnod reads dependencies from `__compose__` signatures. Both: the structure IS the program.
+
+---
+
+## Why this matters
+
+A `User` in Django lives in a model, a serializer, a view, a URL config, a migration. Five files that must agree. When you change one, you grep for the others and hope. When a new developer joins, they trace the chain by hand. When a coding agent tries to add a field, it hallucinates a signal that doesn't exist because the pattern *looked right* from the three files it saw.
+
+This is the scattered meaning problem. It is not a tooling problem — it is a language problem. The absence of a primitive that lets you state a fact once and have every consumer derive what it needs.
+
+emergent is that primitive. Four properties make it work:
 
 | Property | What it means |
 |---|---|
-| **Locality** | All concerns for a field/entity live on it. O(1) navigation, zero cross-file dependencies. |
-| **Defunctionalization** | Behavior is frozen data (dataclasses), not functions. Every capability is inspectable, hashable, serializable. |
-| **Semantic dispatch** | Transforms operate on domain *meaning* (effects), not syntax. A `SoftDelete()` transform knows what "delete" means across all targets. |
-| **Composition algebra** | Capabilities compose via tuple concatenation (free monoid). All combinations are valid by construction. |
+| **Locality** | All concerns for a field live on the field. `Annotated[str, MaxLen(255), Unique, sql.Index()]` — validation, schema, DDL in one place. |
+| **Defunctionalization** | Behavior is data. `MaxLen(255)` is a frozen dataclass you can print, compare, serialize. Not a closure. Not a decorator. Data. |
+| **Open-world dispatch** | New capabilities participate via `isinstance`. No registration. No plugin system. Implement the protocol → fold picks you up. |
+| **Algebraic composition** | Compilers compose: `FASTAPI_SCHEMA + YOUR_PHASE`. Capabilities compose: `(MaxLen(255), Unique)`. No interference between independent concerns. |
 
-The result: a derivation is ~50 tokens of pure meaning. An LLM doesn't generate boilerplate — it generates *intent*, and `fold` compiles intent into code.
+The result: any observer — human, LLM, or your future self at 3 AM — reads one declaration and knows everything. One change propagates to all targets. Not by convention. By construction.
 
 ---
 
@@ -252,18 +334,19 @@ A story-driven, 27-chapter walkthrough — from first API to handing your codeba
 | [`docs/intro_ru.md`](docs/intro_ru.md) | Введение (RU) |
 | [`docs/essence.md`](docs/essence.md) | The essence — one function, one operator |
 | [`docs/philosophy.md`](docs/philosophy.md) | Design philosophy |
-| [`docs/architecture/`](docs/architecture/) | Architecture — theory, invariants, algebraic properties |
-| [`docs/reference/wire-reference.md`](docs/reference/wire-reference.md) | Wire reference — axes, capabilities, compile, bridge |
-| [`docs/reference/cheatsheet.md`](docs/reference/cheatsheet.md) | Cheatsheet — all axes, every import, every pattern |
-| [`docs/reference/universal-derivation.md`](docs/reference/universal-derivation.md) | Derivation — entity → endpoints via fold |
-| [`docs/architecture/compiler-deep-dive.md`](docs/architecture/compiler-deep-dive.md) | Compiler deep-dive — developing custom compilers |
-| [`docs/architecture/emergent-and-ai.md`](docs/architecture/emergent-and-ai.md) | emergent + AI agents |
+| [`docs/theory/architecture.md`](docs/theory/architecture.md) | Architecture — theory, invariants, algebraic properties |
+| [`docs/internal/wire-reference.md`](docs/internal/wire-reference.md) | Wire reference — axes, capabilities, compile, bridge |
+| [`docs/internal/cheatsheet.md`](docs/internal/cheatsheet.md) | Cheatsheet — all axes, every import, every pattern |
+| [`docs/theory/universal-derivation.md`](docs/theory/universal-derivation.md) | Derivation — entity → endpoints via fold |
+| [`docs/theory/compiler-deep-dive.md`](docs/theory/compiler-deep-dive.md) | Compiler deep-dive — developing custom compilers |
+| [`docs/emergent-and-ai.md`](docs/emergent-and-ai.md) | emergent + AI agents |
+| [`docs/book/`](docs/book/) | Book — 5-chapter SICP-style deep dive into compilation thinking |
 
 ---
 
 ## Where we are
 
-emergent is young — started January 2026, three months in. Already runs in production. The core architecture (IR model, compilers, capabilities, verify, explain, derive) is stable. What's still growing: the ecosystem, the stdlib, the number of built-in targets and dialects. Breaking changes happen, but we keep them well-motivated.
+emergent is young — started January 2026. Already runs in production. The core architecture (fold, CompilationPhase, SchemaCompiler, TargetCompiler, verify, explain, derive) is stable. What's still growing: the ecosystem, the stdlib, the number of built-in targets and dialects. Breaking changes happen, but we keep them well-motivated.
 
 ---
 
@@ -272,17 +355,20 @@ emergent is young — started January 2026, three months in. Already runs in pro
 | Layer | What |
 |---|---|
 | [deployme.py](https://github.com/prostomarkeloff/deployme.py) | Application → infrastructure (compose, k8s) |
-| emergent | ops, wire, derive, saga, cache, graph, idempotency, verify |
-| [nodnod](https://github.com/timoniq/nodnod) | dependency graphs |
-| [combinators.py](https://github.com/prostomarkeloff/combinators.py) | retry, timeout, fallback |
-| [kungfu](https://github.com/timoniq/kungfu) | Result, Option |
+| **emergent** | **platform**: fold, CompilationPhase, SchemaCompiler, TargetCompiler |
+| emergent.wire | **libraries**: axes (schema, surface, storage, query), derive, bridge, verify |
+| emergent.graph | **runtime**: Composer, ScopeFamily, RuntimePolicy (Cooperative / WorkStealing) |
+| emergent.ops/saga/cache | **patterns**: data-driven dispatch, compensation chains, tiered caching |
+| [nodnod](https://github.com/timoniq/nodnod) | typed dependency graphs, auto-parallelization, Either, Scope |
+| [combinators.py](https://github.com/prostomarkeloff/combinators.py) | retry, timeout, fallback, race |
+| [kungfu](https://github.com/timoniq/kungfu) | Result, Option, LazyCoroResult |
 
 ---
 
 <div align="center">
 
-**Describe. Access. Persist. Expose.**
+**Define a context. Define a protocol. Call fold.**
 
-**Plain Python. Write meaning, compile anywhere.**
+**You just created a compilation language.**
 
 </div>
