@@ -352,9 +352,11 @@ def filter_universal(
 ) -> tuple[UniversalCapability, ...]:
     """Get only universal capabilities.
 
-    Not a no-op: a SchemaAxisCapability is not necessarily a
-    UniversalCapability (e.g. Index, SQLCapability), so we filter by
-    isinstance to drop the non-universal ones.
+    Currently a no-op: UniversalCapability is aliased to SchemaAxisCapability,
+    so every schema cap is universal and the isinstance filter keeps all of
+    them. Kept as an explicit filter (rather than `return caps`) so it starts
+    dropping dialect caps automatically if UniversalCapability ever becomes a
+    distinct subtype. Dialect separation today is done by filter_by_dialect.
     """
     from emergent.wire.axis.schema._universal import UniversalCapability
 
