@@ -79,6 +79,19 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 _TEST_SLEEP_CAP_SECONDS = 0.05
 
 
+@pytest.fixture
+def anyio_backend() -> str:
+    """Force anyio tests onto asyncio only.
+
+    emergent's runtime (nodnod EventLoopAgent) uses asyncio.Task/Future
+    directly — it cannot run under trio (`RuntimeError: no current event
+    loop`). The [trio] backend variants always failed; tests/run.py already
+    filters them with `-k "not trio"`. Pinning the backend here drops the
+    [trio] parametrization everywhere (pytest and pytest-fast alike).
+    """
+    return "asyncio"
+
+
 @pytest.fixture(autouse=True)
 def _cap_asyncio_sleep(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Cap ``asyncio.sleep`` to 0.05s in every test.
