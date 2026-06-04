@@ -318,6 +318,13 @@ class TableConstraintSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class TableCheckSpec:
+    """A table-level CHECK constraint: a SQL boolean expression + optional name."""
+    expression: str
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SQLAlchemyTableContext:
     """SQLAlchemy table-level compilation context."""
     class_name: str
@@ -325,6 +332,7 @@ class SQLAlchemyTableContext:
     is_abstract: bool = False
     constraints: tuple[TableConstraintSpec, ...] = ()
     indexes: tuple[TableIndexSpec, ...] = ()
+    checks: tuple[TableCheckSpec, ...] = ()
     extra_columns: tuple[ExtraColumnSpec[Any], ...] = ()
 
 
@@ -529,6 +537,7 @@ def sqlalchemy_table(
     is_abstract: bool | None = None,
     add_constraint: TableConstraintSpec | None = None,
     add_index: TableIndexSpec | None = None,
+    add_check: TableCheckSpec | None = None,
     add_column: ExtraColumnSpec[Any] | None = None,
 ) -> SQLAlchemyTableContext:
     """Modify SQLAlchemy table context."""
@@ -538,6 +547,7 @@ def sqlalchemy_table(
         is_abstract=is_abstract if is_abstract is not None else ctx.is_abstract,
         constraints=(*ctx.constraints, add_constraint) if add_constraint else ctx.constraints,
         indexes=(*ctx.indexes, add_index) if add_index else ctx.indexes,
+        checks=(*ctx.checks, add_check) if add_check else ctx.checks,
         extra_columns=(*ctx.extra_columns, add_column) if add_column else ctx.extra_columns,
     )
 

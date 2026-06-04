@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -38,7 +39,7 @@ from emergent.wire.axis.schema._inspect import inspect_dataclass
 from emergent.wire.axis._capability import (
     SQLAlchemyContext, SQLAlchemyCompilable,
     SQLAlchemyTableContext, SQLAlchemyTableCompilable,
-    TableConstraintSpec, TableIndexSpec,
+    TableCheckSpec, TableConstraintSpec, TableIndexSpec,
 )
 from collections.abc import Sequence
 
@@ -84,7 +85,7 @@ from emergent.wire.axis.query._expr import (
 
 type SATypeMap = Mapping[type, type]
 type TableSchemaDict = dict[str, str]
-type TableArgItem = Index | UniqueConstraint | TableSchemaDict
+type TableArgItem = Index | UniqueConstraint | CheckConstraint | TableSchemaDict
 type TableArgs = tuple[TableArgItem, ...] | TableSchemaDict | None
 type ModelAttrs = dict[str, Column[Any] | str | TableSchemaDict | Table | tuple[TableArgItem, ...]]
 type ColumnKwargs = dict[str, str | int | bool | None]
@@ -162,17 +163,21 @@ class _GeneratedBase(DeclarativeBase):
 def _build_table_args(
     table_indexes: tuple[TableIndexSpec, ...],
     table_constraints: tuple[TableConstraintSpec, ...],
+    table_checks: tuple[TableCheckSpec, ...],
     schema: str | None,
 ) -> TableArgs:
-    """Assemble `__table_args__` from table-level index/constraint specs.
+    """Assemble `__table_args__` from table-level index/constraint/check specs.
 
     Columns are referenced by name (resolved against the table by SQLAlchemy).
     Returns a plain dict when only a schema is set, a tuple (optionally ending
-    with the schema dict) when there are indexes/constraints, or None.
+    with the schema dict) when there are indexes/constraints/checks, or None.
     """
     items: list[TableArgItem] = [
         UniqueConstraint(*spec.fields, name=spec.name) for spec in table_constraints
     ]
+    items.extend(
+        CheckConstraint(spec.expression, name=spec.name) for spec in table_checks
+    )
     items.extend(
         Index(spec.name, *spec.fields, unique=spec.unique, **spec.dialect_kwargs)
         for spec in table_indexes
@@ -192,6 +197,7 @@ def _assemble_model[T](
     schema: str | None,
     table_indexes: tuple[TableIndexSpec, ...] = (),
     table_constraints: tuple[TableConstraintSpec, ...] = (),
+    table_checks: tuple[TableCheckSpec, ...] = (),
 ) -> type[DeclarativeBase]:
     """Pure assembler: compiled fields → SA model class.
 
@@ -247,7 +253,7 @@ def _assemble_model[T](
         else:
             attrs[fc.name] = Column(col_type, **col_kwargs)
 
-    table_args = _build_table_args(table_indexes, table_constraints, schema)
+    table_args = _build_table_args(table_indexes, table_constraints, table_checks, schema)
     if table_args is not None:
         attrs["__table_args__"] = table_args
 
@@ -283,10 +289,11 @@ def assemble_sa[T](
     """
     table_indexes: tuple[TableIndexSpec, ...] = ()
     table_constraints: tuple[TableConstraintSpec, ...] = ()
+    table_checks: tuple[TableCheckSpec, ...] = ()
     if isinstance(fields, EntityCompilation):
         ec = fields
         fields_tuple = ec.fields
-        # Read entity context for table name + table-level indexes/constraints
+        # Read entity context for table name + table-level indexes/constraints/checks
         table_ctx = ec.get(SA_TABLE_FOLD)
         resolved_tablename = (
             tablename
@@ -296,6 +303,7 @@ def assemble_sa[T](
         if table_ctx is not None:
             table_indexes = table_ctx.indexes
             table_constraints = table_ctx.constraints
+            table_checks = table_ctx.checks
     else:
         fields_tuple = tuple(fields)
         resolved_tablename = tablename or entity.__name__.lower()
@@ -311,7 +319,7 @@ def assemble_sa[T](
 
     model_class = _assemble_model(
         list(fields_tuple), entity, resolved_tablename, base, schema,
-        table_indexes, table_constraints,
+        table_indexes, table_constraints, table_checks,
     )
     return Compilation(model=model_class, entity=entity, fields=fields_tuple)
 

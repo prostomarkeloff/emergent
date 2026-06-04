@@ -136,13 +136,24 @@ class OnUpdate(SQLCapability):
 class Check(SQLCapability):
     """Custom CHECK constraint.
 
-    Example:
-        age: Annotated[int, sql.Check("age >= 0 AND age <= 150")]
+    Example (table-level):
+        @schema_meta(sql.Check("weight BETWEEN 1 AND 10", name="ck_weight"))
+        @dataclass
+        class PersonTag: ...
 
-    Table-level DDL — no compile_sqlalchemy (read directly by table compiler).
+    SQL: CHECK (weight BETWEEN 1 AND 10) — emitted as a table-level constraint.
     """
     expression: str
     name: str | None = None
+
+    def compile_sqlalchemy_table(
+        self, ctx: "SQLAlchemyTableContext"
+    ) -> "SQLAlchemyTableContext":
+        from emergent.wire.axis._capability import TableCheckSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx, add_check=TableCheckSpec(expression=self.expression, name=self.name)
+        )
 
 
 @dataclass(frozen=True, slots=True)

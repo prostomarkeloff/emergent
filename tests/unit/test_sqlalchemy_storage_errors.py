@@ -20,7 +20,15 @@ from sqlalchemy.orm import DeclarativeBase
 from kungfu import Error
 
 from emergent.wire.axis.schema._universal import Identity, MaxLen, Unique, schema_meta
-from emergent.wire.axis.schema.dialects.sql import CompositeIndex, CompositeUnique, PostgresIndex, PrimaryKey
+from sqlalchemy import inspect as sa_inspect
+
+from emergent.wire.axis.schema.dialects.sql import (
+    Check,
+    CompositeIndex,
+    CompositeUnique,
+    PostgresIndex,
+    PrimaryKey,
+)
 from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     BoundSQLAlchemyStore,
     SQLAlchemyStorage,
@@ -486,6 +494,34 @@ class TestCompileModelTableLevelIndexesConstraints:
             c.name for c in table.constraints if type(c).__name__ == "UniqueConstraint"
         }
         assert "uq_email_tenant" in unique_constraint_names
+
+    def test_named_check_constraint_materializes(self) -> None:
+        """Table-level sql.Check materializes as a named CHECK constraint.
+
+        Regression guard: Check was a defined-but-unwired primitive — it populated
+        no table context, so a generated model silently lost CHECK constraints that
+        a hand-written schema had.
+        """
+
+        @schema_meta(Check("weight BETWEEN 1 AND 10", name="ck_weight_range"))
+        @dataclass
+        class Rating:
+            id: Annotated[int, Identity]
+            weight: int
+
+        class CheckBase(DeclarativeBase):
+            pass
+
+        model = compile_sa(Rating, "ratings", base=CheckBase).model
+        table = sa_inspect(model).local_table
+
+        checks = {
+            c.name: str(c.sqltext)
+            for c in table.constraints
+            if type(c).__name__ == "CheckConstraint"
+        }
+        assert "ck_weight_range" in checks
+        assert checks["ck_weight_range"] == "weight BETWEEN 1 AND 10"
 
 
 class TestBoundSQLAlchemyStoreProperties:
