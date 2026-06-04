@@ -22,7 +22,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 from emergent.wire.axis._capability import (
     TelegrinderHandlerContext,
@@ -40,6 +40,41 @@ from emergent.wire._telegrinder_compat import (
 if TYPE_CHECKING:
     from nodnod import Scope
 
+type RespDict = dict[str, Any]
+
+
+# Runtime-checkable duck-typing protocols for telegrinder's optional cute types.
+# telegrinder is an optional dependency, so its concrete classes are not importable
+# here; these protocols let us probe attributes via isinstance without reflection.
+@runtime_checkable
+class _HasValue(Protocol):
+    value: Any
+
+
+@runtime_checkable
+class _HasIncomingUpdate(Protocol):
+    incoming_update: Any
+
+
+@runtime_checkable
+class _HasMessage(Protocol):
+    message: Any
+
+
+@runtime_checkable
+class _HasV(Protocol):
+    v: Any
+
+
+@runtime_checkable
+class _HasChat(Protocol):
+    chat: Any
+
+
+@runtime_checkable
+class _HasId(Protocol):
+    id: Any
+
 
 def _unwrap_some(obj: Any) -> Any | None:
     """Extract .value from a Some instance typed as object.
@@ -47,7 +82,7 @@ def _unwrap_some(obj: Any) -> Any | None:
     This avoids passing Some[Unknown] directly to getattr, which triggers
     reportUnknownArgumentType when Some is narrowed from object via isinstance.
     """
-    return getattr(obj, "value", None)
+    return obj.value if isinstance(obj, _HasValue) else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,7 +114,7 @@ def _get_callback_query_from_scope(scope: Scope) -> _CQCuteProto | None:
         return None
 
     # telegrinder cute types expose incoming_update attribute
-    incoming: Any | None = getattr(update_cute, "incoming_update", None)
+    incoming: Any | None = update_cute.incoming_update if isinstance(update_cute, _HasIncomingUpdate) else None
     if incoming is None:
         return None
 
@@ -145,7 +180,7 @@ class EditMessage(ScopeEnricher):
             return None
 
         if isinstance(response, dict):
-            resp_dict: dict[str, Any] = response
+            resp_dict: RespDict = response
             if "text" in resp_dict:
                 text = str(resp_dict.pop("text"))
                 await cq.edit_text(text=text, **resp_dict)
@@ -299,16 +334,16 @@ class ReplyMessage(ScopeEnricher):
         if cq_value is None:
             return response
 
-        msg_option: Any | None = getattr(cq_value, "message", None)
+        msg_option: Any | None = cq_value.message if isinstance(cq_value, _HasMessage) else None
         if msg_option is None:
             return response
 
         msg_value: Any | None = _unwrap_some(msg_option)
         if msg_value is None:
             return response
-        v: Any = getattr(msg_value, "v", msg_value)
-        chat: Any | None = getattr(v, "chat", None)
-        chat_id: Any | None = getattr(chat, "id", None) if chat is not None else None
+        v: Any = msg_value.v if isinstance(msg_value, _HasV) else msg_value
+        chat: Any | None = v.chat if isinstance(v, _HasChat) else None
+        chat_id: Any | None = (chat.id if isinstance(chat, _HasId) else None) if chat is not None else None
         if chat_id is not None:
             await api.send_message(chat_id=chat_id, text=text)
             return None

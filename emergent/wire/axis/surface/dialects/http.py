@@ -34,6 +34,13 @@ from emergent.wire.axis._capability import (
 )
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 
+# Name → FastAPI model class, looked up by key.
+type FastAPIModels = dict[str, type]
+# OAuth2 scope name → human description.
+type OAuthScopes = dict[str, str]
+# OpenAPI fragment (JSON-shaped, heterogeneous values).
+type OpenAPISpec = dict[str, Any]
+
 if TYPE_CHECKING:
     from fastapi.openapi.models import (
         APIKey as FAAPIKey,
@@ -43,7 +50,7 @@ if TYPE_CHECKING:
     )
 
 
-def _get_fastapi_models() -> dict[str, type]:
+def _get_fastapi_models() -> FastAPIModels:
     """Import FastAPI models at runtime."""
     try:
         from fastapi.openapi.models import (
@@ -198,7 +205,7 @@ class OAuth2Auth(SurfaceCapability):
         cls,
         authorization_url: str,
         token_url: str,
-        scopes: dict[str, str],
+        scopes: OAuthScopes,
         refresh_url: str | None = None,
         description: str | None = None,
         required_scopes: tuple[str, ...] = (),
@@ -227,7 +234,7 @@ class OAuth2Auth(SurfaceCapability):
     def client_credentials(
         cls,
         token_url: str,
-        scopes: dict[str, str],
+        scopes: OAuthScopes,
         refresh_url: str | None = None,
         description: str | None = None,
         required_scopes: tuple[str, ...] = (),
@@ -255,7 +262,7 @@ class OAuth2Auth(SurfaceCapability):
     def password(
         cls,
         token_url: str,
-        scopes: dict[str, str],
+        scopes: OAuthScopes,
         refresh_url: str | None = None,
         description: str | None = None,
         required_scopes: tuple[str, ...] = (),
@@ -394,11 +401,11 @@ class ResponseHeader(SurfaceCapability):
 
     def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Add response header to OpenAPI spec."""
-        header_spec: dict[str, Any] = {
+        header_spec: OpenAPISpec = {
             "description": self.description,
             "schema": {"type": self.schema_type},
         }
-        responses: dict[str, Any] = {"200": {"headers": {self.name: header_spec}}}
+        responses: OpenAPISpec = {"200": {"headers": {self.name: header_spec}}}
         return fastapi_route(ctx, openapi_extra={"responses": responses})
 
 
@@ -415,7 +422,7 @@ class ContentType(SurfaceCapability):
 
     def compile_fastapi_route(self, ctx: FastAPIRouteContext) -> FastAPIRouteContext:
         """Set response content type in OpenAPI spec."""
-        responses: dict[str, Any] = {
+        responses: OpenAPISpec = {
             "200": {"content": {self.media_type: {"schema": {"type": "string"}}}},
         }
         return fastapi_route(ctx, openapi_extra={"responses": responses})

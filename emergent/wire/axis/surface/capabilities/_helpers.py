@@ -20,6 +20,10 @@ if TYPE_CHECKING:
     from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 
 
+# ── Named type alias (house style: alias instead of inline dict[...]) ──
+type CapabilityByType = dict[type, "SurfaceCapability"]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Find capabilities
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -111,7 +115,7 @@ def merge_capabilities(
         merged = merge_capabilities(base, override)
         # Result: (Tag("users"), Timeout(5))
     """
-    seen: dict[type, SurfaceCapability] = {}
+    seen: CapabilityByType = {}
     for caps in cap_tuples:
         for cap in caps:
             seen[type(cap)] = cap

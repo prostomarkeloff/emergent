@@ -12,14 +12,14 @@ Two layers:
     text = explain_application(app)         # -> str
 
 Open-world: unknown trigger/codec/capability types get generic fallback.
-Custom handlers via Mapping[type, SurfaceExplainHandler].
+Custom handlers via ExplainHandlers.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, TypeGuard
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 from emergent.wire.axis.surface._app import Application
 from emergent.wire.axis.surface._endpoint import Endpoint
@@ -39,7 +39,21 @@ from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, Immediat
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-type SurfaceExplainHandler = Callable[[Any], dict[str, Any]]
+type JsonDict = dict[str, Any]
+type SurfaceExplainHandler = Callable[[Any], JsonDict]
+type ExplainHandlers = Mapping[type, SurfaceExplainHandler]
+
+
+@runtime_checkable
+class _Named(Protocol):
+    __name__: str
+
+
+def _callable_name(fn: Callable[..., Any]) -> str:
+    """Name of a callable, falling back to repr when it has no __name__."""
+    if isinstance(fn, _Named):
+        return fn.__name__
+    return repr(fn)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -47,9 +61,9 @@ type SurfaceExplainHandler = Callable[[Any], dict[str, Any]]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _dataclass_dict(obj: Any) -> dict[str, Any]:
+def _dataclass_dict(obj: Any) -> JsonDict:
     """Any frozen dataclass -> dict via dataclass fields contract."""
-    d: dict[str, Any] = {"type": type(obj).__name__}
+    d: JsonDict = {"type": type(obj).__name__}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         for f in dataclasses.fields(obj):
             val = getattr(obj, f.name)
@@ -57,7 +71,7 @@ def _dataclass_dict(obj: Any) -> dict[str, Any]:
     return d
 
 
-def _unknown_dict(obj: Any) -> dict[str, Any]:
+def _unknown_dict(obj: Any) -> JsonDict:
     """Fallback for unknown types — just the type name."""
     return _dataclass_dict(obj)
 
@@ -67,29 +81,29 @@ def _unknown_dict(obj: Any) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_http_trigger(t: HTTPRouteTrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "HTTPRouteTrigger", "method": t.method, "path": t.path}
+def _explain_http_trigger(t: HTTPRouteTrigger) -> JsonDict:
+    d: JsonDict = {"type": "HTTPRouteTrigger", "method": t.method, "path": t.path}
     if t.headers:
         d["headers"] = sorted(t.headers)
     return d
 
 
-def _explain_cli_trigger(t: CLITrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "CLITrigger", "command": t.command}
+def _explain_cli_trigger(t: CLITrigger) -> JsonDict:
+    d: JsonDict = {"type": "CLITrigger", "command": t.command}
     if t.description:
         d["description"] = t.description
     return d
 
 
-def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "TelegrinderTrigger", "view": t.view}
+def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> JsonDict:
+    d: JsonDict = {"type": "TelegrinderTrigger", "view": t.view}
     rules: tuple[Any, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
     if rules:
         d["rules"] = [type(r).__name__ for r in rules]
     return d
 
 
-def _explain_event_trigger(t: EventTrigger[Any]) -> dict[str, Any]:
+def _explain_event_trigger(t: EventTrigger[Any]) -> JsonDict:
     return {"type": "EventTrigger", "event_type": t.event_type.__name__}
 
 
@@ -98,7 +112,7 @@ def _explain_event_trigger(t: EventTrigger[Any]) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_rrc(c: RequestResponseCodec) -> dict[str, Any]:
+def _explain_rrc(c: RequestResponseCodec) -> JsonDict:
     return {
         "type": "RequestResponseCodec",
         "request": c.request.__name__,
@@ -106,8 +120,8 @@ def _explain_rrc(c: RequestResponseCodec) -> dict[str, Any]:
     }
 
 
-def _explain_stateful(c: StatefulCodec) -> dict[str, Any]:
-    d: dict[str, Any] = {
+def _explain_stateful(c: StatefulCodec) -> JsonDict:
+    d: JsonDict = {
         "type": "StatefulCodec",
         "flow": c.flow.__name__,
     }
@@ -117,25 +131,25 @@ def _explain_stateful(c: StatefulCodec) -> dict[str, Any]:
     return d
 
 
-def _explain_delegate(c: DelegateCodec) -> dict[str, Any]:
-    d: dict[str, Any] = {
+def _explain_delegate(c: DelegateCodec) -> JsonDict:
+    d: JsonDict = {
         "type": "DelegateCodec",
-        "handler": getattr(c.handler, "__name__", repr(c.handler)),
+        "handler": _callable_name(c.handler),
     }
     return d
 
 
-def _explain_immediate(c: ImmediateCodec) -> dict[str, Any]:
+def _explain_immediate(c: ImmediateCodec) -> JsonDict:
     return {
         "type": "ImmediateCodec",
         "response": c.response.__name__,
     }
 
 
-def _explain_immediate_factory(c: ImmediateFactoryCodec) -> dict[str, Any]:
+def _explain_immediate_factory(c: ImmediateFactoryCodec) -> JsonDict:
     return {
         "type": "ImmediateFactoryCodec",
-        "factory": getattr(c.factory, "__name__", repr(c.factory)),
+        "factory": _callable_name(c.factory),
     }
 
 
@@ -144,7 +158,7 @@ def _explain_immediate_factory(c: ImmediateFactoryCodec) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
+SURFACE_EXPLAIN: ExplainHandlers = {
     # Triggers
     HTTPRouteTrigger: _explain_http_trigger,
     CLITrigger: _explain_cli_trigger,
@@ -166,8 +180,8 @@ SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
 
 def _explain_obj(
     obj: Any,
-    handlers: Mapping[type, SurfaceExplainHandler] | None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None,
+) -> JsonDict:
     """Explain any object using handler dispatch with fallback."""
     effective = handlers if handlers is not None else SURFACE_EXPLAIN
     handler = effective.get(type(obj))
@@ -178,8 +192,8 @@ def _explain_obj(
 
 def exposure_dict(
     exp: Exposure,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """One exposure as structured dict.
 
     Args:
@@ -189,7 +203,7 @@ def exposure_dict(
     Returns:
         Dict with trigger, codec, and capabilities info.
     """
-    d: dict[str, Any] = {
+    d: JsonDict = {
         "trigger": _explain_obj(exp.trigger, handlers),
         "codec": _explain_obj(exp.codec, handlers),
     }
@@ -200,8 +214,8 @@ def exposure_dict(
 
 def endpoint_dict(
     ep: Endpoint,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """One endpoint as structured dict.
 
     Args:
@@ -219,8 +233,8 @@ def endpoint_dict(
 
 def application_dict(
     app: Application,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """Full application as structured dict.
 
     Args:
@@ -236,7 +250,7 @@ def application_dict(
         data["global_capabilities"] # list of cap dicts
         data["endpoints"]           # list of endpoint dicts
     """
-    d: dict[str, Any] = {
+    d: JsonDict = {
         "endpoint_count": len(app.endpoints),
     }
     if app.capabilities:
@@ -252,7 +266,7 @@ def application_dict(
 
 def explain_application(
     app: Application,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
+    handlers: ExplainHandlers | None = None,
 ) -> str:
     """Human-readable explanation of an application. Formats from application_dict().
 
@@ -268,7 +282,7 @@ def explain_application(
 
 def explain_endpoint(
     ep: Endpoint,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
+    handlers: ExplainHandlers | None = None,
 ) -> str:
     """Human-readable explanation of one endpoint. Formats from endpoint_dict()."""
     data = endpoint_dict(ep, handlers)
@@ -280,7 +294,7 @@ def explain_endpoint(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _format_obj_short(d: dict[str, Any]) -> str:
+def _format_obj_short(d: JsonDict) -> str:
     """Format an explain dict as a short string."""
     name = d.get("type", "?")
     rest = {k: v for k, v in d.items() if k != "type"}
@@ -302,7 +316,7 @@ def _format_value(v: Any) -> str:
     return repr(v)
 
 
-def _format_trigger_short(d: dict[str, Any]) -> str:
+def _format_trigger_short(d: JsonDict) -> str:
     """Format trigger dict as a compact label."""
     t = d.get("type", "?")
     if t == "HTTPRouteTrigger":
@@ -318,7 +332,7 @@ def _format_trigger_short(d: dict[str, Any]) -> str:
     return _format_obj_short(d)
 
 
-def _format_application(data: dict[str, Any]) -> str:
+def _format_application(data: JsonDict) -> str:
     ep_count = data["endpoint_count"]
     global_caps = data.get("global_capabilities", [])
     cap_count = len(global_caps)
@@ -340,7 +354,7 @@ def _format_application(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_endpoint(data: dict[str, Any], *, idx: int) -> str:
+def _format_endpoint(data: JsonDict, *, idx: int) -> str:
     exp_count = data["exposure_count"]
     lines: list[str] = [
         f"  Endpoint #{idx} ({exp_count} exposure{'s' if exp_count != 1 else ''}):"
@@ -352,7 +366,7 @@ def _format_endpoint(data: dict[str, Any], *, idx: int) -> str:
     return "\n".join(lines)
 
 
-def _format_exposure(data: dict[str, Any]) -> str:
+def _format_exposure(data: JsonDict) -> str:
     trigger_str = _format_trigger_short(data["trigger"])
     codec_str = data["codec"].get("type", "?")
 

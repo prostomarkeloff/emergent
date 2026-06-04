@@ -26,13 +26,22 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from emergent.wire.axis.query._contexts import (
     EXPLAIN_QUERY,
     ExplainContext,
     ExplainEntry,
 )
+
+
+type ExplainDict = dict[str, Any]
+type ExplainDictList = list[dict[str, Any]]
+
+
+@runtime_checkable
+class _ExplainCompilable(Protocol):
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -93,10 +102,11 @@ def _format_entries(entries: Sequence[ExplainEntry]) -> str:
 
 
 type ExplainHandler = Callable[[Any], dict[str, Any]]
+type HandlerMap = Mapping[type, ExplainHandler]
 
 
-def _entry_to_dict(entry: ExplainEntry) -> dict[str, Any]:
-    d: dict[str, Any] = {"op": entry.op}
+def _entry_to_dict(entry: ExplainEntry) -> ExplainDict:
+    d: ExplainDict = {"op": entry.op}
     for k, v in entry.fields:
         d[k] = v
     return d
@@ -104,8 +114,8 @@ def _entry_to_dict(entry: ExplainEntry) -> dict[str, Any]:
 
 def explain_ops(
     ops: Sequence[Any],
-    handlers: Mapping[type, ExplainHandler] | None = None,
-) -> list[dict[str, Any]]:
+    handlers: HandlerMap | None = None,
+) -> ExplainDictList:
     """Backward-compat: dict-layer explain with optional handler overrides.
 
     Per-op:
@@ -115,14 +125,14 @@ def explain_ops(
       - Else return minimal ``{"op": <type_name>}``.
     """
     handlers = handlers or {}
-    result: list[dict[str, Any]] = []
+    result: ExplainDictList = []
     for op in ops:
         op_t = type(op)
         if op_t in handlers:
             result.append(handlers[op_t](op))
             continue
         ctx = ExplainContext()
-        if hasattr(op, "compile_explain"):
+        if isinstance(op, _ExplainCompilable):
             ctx = op.compile_explain(ctx)
         if ctx.entries:
             result.append(_entry_to_dict(ctx.entries[-1]))
@@ -133,7 +143,7 @@ def explain_ops(
 
 def format_ops(
     ops: Sequence[Any],
-    handlers: Mapping[type, ExplainHandler] | None = None,
+    handlers: HandlerMap | None = None,
 ) -> str:
     """Backward-compat: human-readable from dict layer."""
     entries = explain_ops(ops, handlers)
@@ -145,7 +155,7 @@ def format_ops(
     return "\n".join(lines)
 
 
-def _format_entry(entry: dict[str, Any]) -> str:
+def _format_entry(entry: ExplainDict) -> str:
     op_name = entry.get("op", "?")
     rest = {k: v for k, v in entry.items() if k != "op"}
     if not rest:
@@ -174,9 +184,9 @@ class ExplainDialect:
     do open-world self-compilation via fold.
     """
 
-    handlers: Mapping[type, ExplainHandler]
+    handlers: HandlerMap
 
-    def explain(self, ops: Sequence[Any]) -> list[dict[str, Any]]:
+    def explain(self, ops: Sequence[Any]) -> ExplainDictList:
         return explain_ops(ops, self.handlers)
 
     def format(self, ops: Sequence[Any]) -> str:
@@ -195,9 +205,9 @@ class ExplainDialect:
 
 # Empty handler maps — kept as constants for API compatibility. All ops are
 # self-compiling now; no registry needed.
-RELATIONAL_EXPLAIN: Mapping[type, ExplainHandler] = {}
-API_EXPLAIN: Mapping[type, ExplainHandler] = {}
-KV_EXPLAIN: Mapping[type, ExplainHandler] = {}
+RELATIONAL_EXPLAIN: HandlerMap = {}
+API_EXPLAIN: HandlerMap = {}
+KV_EXPLAIN: HandlerMap = {}
 
 RELATIONAL_EXPLAIN_DIALECT: ExplainDialect = ExplainDialect(handlers={})
 API_EXPLAIN_DIALECT: ExplainDialect = ExplainDialect(handlers={})

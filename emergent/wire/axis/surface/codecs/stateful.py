@@ -118,7 +118,17 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Never, Protocol, TypeVar, TYPE_CHECKING, cast
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    Never,
+    Protocol,
+    TypeVar,
+    TYPE_CHECKING,
+    cast,
+    runtime_checkable,
+)
 
 from kungfu import Option, Some, Nothing
 
@@ -132,6 +142,16 @@ if TYPE_CHECKING:
 
 
 _TRANSITION_MARKER = "__is_transition__"
+
+
+@runtime_checkable
+class _HasClassicTransition(Protocol):
+    __transition__: Callable[..., Any]
+
+
+@runtime_checkable
+class _HasToDomain(Protocol):
+    def to_domain(self) -> Any: ...
 
 
 def transition(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -174,9 +194,8 @@ def get_transitions(flow: type) -> list[Callable[..., Any]]:
 
     # Fallback to __transition__ if no decorators found
     if not transitions:
-        classic = getattr(flow, "__transition__", None)
-        if classic is not None:
-            transitions.append(classic)
+        if isinstance(flow, _HasClassicTransition):
+            transitions.append(flow.__transition__)
 
     return transitions
 
@@ -353,7 +372,7 @@ class StatefulBuilder:
                 f"{self._flow.__name__} must define __transition__ or @transition methods"
             )
 
-        if not hasattr(self._flow, "to_domain"):
+        if not isinstance(self._flow, _HasToDomain):
             raise ValueError(f"{self._flow.__name__} must define to_domain()")
 
         from nodnod.agent.event_loop.agent import EventLoopAgent

@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 # Type for OpenAPI example values
 ExampleValue = str | int | float | bool | None | list["ExampleValue"] | dict[str, "ExampleValue"]
 
+type TypeMapping = dict[str, type]
+type DiscriminatorSchema = dict[str, "JsonSchemaValue"]
+
 
 class OpenAPICapability(SchemaAxisCapability):
     """Base for OpenAPI-specific capabilities."""
@@ -157,14 +160,14 @@ class Discriminator(OpenAPICapability):
     field: str
     mapping: MappingProxyType[str, type]
 
-    def __init__(self, field: str, mapping: dict[str, type]) -> None:
+    def __init__(self, field: str, mapping: TypeMapping) -> None:
         object.__setattr__(self, "field", field)
         object.__setattr__(self, "mapping", MappingProxyType(mapping))
 
     def compile_openapi_schema(
         self, ctx: "OpenAPISchemaContext"
     ) -> "OpenAPISchemaContext":
-        disc: dict[str, "JsonSchemaValue"] = {"propertyName": self.field}
+        disc: DiscriminatorSchema = {"propertyName": self.field}
         if self.mapping:
             disc["mapping"] = {k: v.__name__ for k, v in self.mapping.items()}
         return replace(ctx, schema={**ctx.schema, "discriminator": disc})

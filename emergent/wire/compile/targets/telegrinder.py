@@ -77,6 +77,40 @@ from emergent.wire.axis._capability import (
 )
 
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type StrAnyMap = dict[str, Any]
+type CuteValue = tuple[StrAnyMap, bool]
+type NodeCompose = tuple[Callable[..., Any], StrAnyMap] | None
+
+
+@_runtime_checkable
+class _HasArguments(TypingProtocol):
+    """Structural guard: a rule exposing ``arguments`` (telegrinder Command)."""
+
+    @property
+    def arguments(self) -> tuple[ArgumentProto, ...]: ...
+
+
+@_runtime_checkable
+class _HasNames(TypingProtocol):
+    """Structural guard: a rule exposing ``names`` (telegrinder Command).
+
+    Used at runtime to feature-detect Command rules when the fallback
+    ``_tg_Command = ABCRule`` would otherwise match non-Command rules.
+    """
+
+    @property
+    def names(self) -> frozenset[str]: ...
+
+
+@_runtime_checkable
+class _HasIncomingUpdate(TypingProtocol):
+    """Structural guard: an update wrapper exposing ``incoming_update``."""
+
+    @property
+    def incoming_update(self) -> Any: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runtime telegrinder imports — hidden from pyright via TYPE_CHECKING guard.
 #
@@ -138,7 +172,7 @@ def _format_tg_response(response: Any) -> Any:
     tp = type(response)
     if tp in _PASSTHROUGH_TYPES:
         return response
-    if getattr(tp, "__module__", "").startswith("telegrinder"):
+    if tp.__module__.startswith("telegrinder"):
         return response
     if tp.__str__ is not object.__str__:
         return str(response)
@@ -231,7 +265,7 @@ def _is_command_without_args(rule: ABCRule) -> bool:
     Uses runtime _tg_Command for isinstance check. Separated to avoid
     pyright narrowing rule to ABCRule (which lacks Command attributes).
     """
-    return isinstance(rule, _tg_Command) and not getattr(rule, "arguments", True)
+    return isinstance(rule, _tg_Command) and isinstance(rule, _HasArguments) and not rule.arguments
 
 
 def enhance_command_with_args(
@@ -346,7 +380,7 @@ def _get_cute_value(compose_type: type, update_cute: Any) -> tuple[bool, Any]:
     if update_cute is None:
         return False, "no update_cute"
 
-    incoming: Any = getattr(update_cute, "incoming_update", None)
+    incoming: Any = update_cute.incoming_update if isinstance(update_cute, _HasIncomingUpdate) else None
     if incoming is not None and isinstance(incoming, compose_type):
         return True, incoming
     return False, f"update is {type(update_cute).__name__}, not {compose_type.__name__}"
@@ -439,7 +473,7 @@ async def try_compose_transition(
     ctx: Context,
     *,
     scope: Scope | None = None,
-) -> tuple[dict[str, Any], bool]:
+) -> CuteValue:
     """Try to compose params for transition. Returns (composed, all_satisfied).
 
     When *scope* is provided, threads it to compose_param for nodnod
@@ -450,7 +484,7 @@ async def try_compose_transition(
 
     params = get_method_params(method)
     update_cute = ctx.get("update_cute")
-    composed: dict[str, Any] = {}
+    composed: StrAnyMap = {}
     all_satisfied = True
 
     for name, (original_type, compose_type) in params.items():
@@ -480,7 +514,7 @@ async def resolve_transition(
     ctx: Context,
     *,
     scope: Scope | None = None,
-) -> tuple[Callable[..., Any], dict[str, Any]] | None:
+) -> NodeCompose:
     """Resolve first transition whose deps are satisfiable.
 
     When *scope* is provided, threads it through to transitions.
@@ -619,7 +653,7 @@ def wrap_stateful_telegrinder(
             def inject_done_scope(done_scope: Scope) -> None:
                 _inject_tg_context(done_scope, ctx)
 
-            async def _resolve() -> tuple[Callable[..., Any], dict[str, Any]] | None:
+            async def _resolve() -> NodeCompose:
                 return await resolve_transition(
                     transitions, agent_cls, ctx, scope=scope,
                 )
@@ -899,7 +933,7 @@ def extract_command_info[C](
     for rule in trigger.rules:
         # _tg_Command is bare `type` at static time — isinstance narrows to ABCRule,
         # not CommandProto. Runtime Command satisfies CommandProto structurally.
-        if isinstance(rule, _tg_Command) and hasattr(rule, "names"):
+        if isinstance(rule, _tg_Command) and isinstance(rule, _HasNames):
             cmd_rule = rule
             break
 

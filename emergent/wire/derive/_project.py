@@ -25,6 +25,10 @@ if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx
 
 
+type FieldMap = Mapping[str, AnnotationValue]
+type PaginationData = Mapping[str, Any] | Sequence[Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FieldProjection — entity fields → field subset
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -34,14 +38,14 @@ if TYPE_CHECKING:
 class FieldProjection(Protocol):
     """Project entity fields → field subset for derived types."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]: ...
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap: ...
 
 
 @dataclass(frozen=True, slots=True)
 class AllFields:
     """All entity fields."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return ctx.field_types()
 
 
@@ -49,7 +53,7 @@ class AllFields:
 class IdOnly:
     """All identity fields (supports composite keys)."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {name: info.base_type for name, info in ctx.identity_fields.items()}
 
 
@@ -57,7 +61,7 @@ class IdOnly:
 class NonId:
     """All fields except identity."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -69,7 +73,7 @@ class NonId:
 class NoFields:
     """Empty — no fields."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {}
 
 
@@ -77,7 +81,7 @@ class NoFields:
 class RequiredNonId:
     """Non-identity fields without defaults — user-provided input."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -92,7 +96,7 @@ class ExcludeFromProjection:
     inner: FieldProjection
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         result = self.inner.project(ctx)
         return {k: v for k, v in result.items() if k not in self.names}
 
@@ -103,7 +107,7 @@ class SelectFields:
 
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -117,7 +121,7 @@ class ExcludeFields:
 
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -129,7 +133,7 @@ class ExcludeFields:
 class OptionalNonId:
     """Non-identity fields, all wrapped in Optional[type]. For PATCH endpoints."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type | None
             for name, info in ctx.fields.items()
@@ -144,7 +148,7 @@ class MergeProjection:
     left: FieldProjection
     right: FieldProjection
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {**self.left.project(ctx), **self.right.project(ctx)}
 
 
@@ -308,7 +312,7 @@ class PaginatedResponse:
             ("page_size", int),
         ]
 
-        def _paginated_ok(cls: type, data: Mapping[str, Any] | Sequence[Any]) -> HasAnnotations:
+        def _paginated_ok(cls: type, data: PaginationData) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -376,7 +380,7 @@ class CursorPaginatedResponse:
             ("has_more", bool),
         ]
 
-        def _cursor_ok(cls: type, data: Mapping[str, Any] | Sequence[Any]) -> HasAnnotations:
+        def _cursor_ok(cls: type, data: PaginationData) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -404,8 +408,14 @@ def dict_converter[T, E](cls: type, result: Result[T, E]) -> HasAnnotations:
         case Ok(val):
             if isinstance(val, dict):
                 return cls(**val)
-            dc_fields: dict[str, type] = getattr(cls, "__dataclass_fields__", {})
-            return cls(**{f: getattr(val, f, None) for f in dc_fields})
+            # Local import: module-level `fields` is shadowed by the projection
+            # helper below, so reach the real dataclasses helpers here.
+            from dataclasses import fields as dataclass_fields, is_dataclass
+
+            field_names = (
+                [f.name for f in dataclass_fields(cls)] if is_dataclass(cls) else []
+            )
+            return cls(**{f: getattr(val, f, None) for f in field_names})
         case Err(err):
             return err
         case _:

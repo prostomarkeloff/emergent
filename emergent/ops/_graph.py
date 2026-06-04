@@ -34,7 +34,7 @@ Example:
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import (
     Any,
     TypeVar,
@@ -61,6 +61,14 @@ T_co = TypeVar("T_co", covariant=True)
 E_co = TypeVar("E_co", covariant=True)
 
 HandlerFunc = Callable[..., Awaitable[Result[Any, Any]]]
+
+type NodeRegistry = dict[type[Op[Any, Any]], type[Node[Any, Any]]]
+type OpParamNames = dict[type[Op[Any, Any]], set[str]]
+type OpHandlers = dict[type[Op[Any, Any]], HandlerFunc]
+type OpRegistrations = dict[type[Op[Any, Any]], _OpReg]
+type ComposeAnnotations = dict[str, Any]
+type WrappedKwargs = dict[str, Any]
+type ScopeExtras = dict[type, Any]
 
 
 class AgentFactory(Protocol):
@@ -134,8 +142,8 @@ class _CachedOp(Generic[T_co, E_co]):
 def _create_node_for_handler(
     op_type: type[Op[Any, Any]],
     handler: HandlerFunc,
-    registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]],
-    op_param_names: dict[type[Op[Any, Any]], set[str]],
+    registry: NodeRegistry,
+    op_param_names: OpParamNames,
 ) -> type[Node[Any, Any]]:
     """
     Create nodnod Node from handler function.
@@ -152,7 +160,7 @@ def _create_node_for_handler(
     op_dep_params: set[str] = set()
 
     # Build __compose__ annotations
-    compose_annotations: dict[str, Any] = {}
+    compose_annotations: ComposeAnnotations = {}
     compose_params: list[inspect.Parameter] = []
 
     for pname, p in sig.parameters.items():
@@ -178,7 +186,7 @@ def _create_node_for_handler(
     # Create __compose__ function that wraps Op deps in _CachedOp
     async def compose_fn(**kwargs: Any) -> Result[Any, Any]:
         # Wrap Op dependency results in _CachedOp so handler can await them
-        wrapped_kwargs: dict[str, Any] = {}
+        wrapped_kwargs: WrappedKwargs = {}
         for k, v in kwargs.items():
             if k in op_dep_params and isinstance(v, (Ok, Error)):
                 # Wrap Result in _CachedOp
@@ -239,14 +247,14 @@ class OpsBuilder:
         Creates nodnod nodes for all handlers with proper dependency wiring.
         """
         # First pass: collect all op types
-        op_handlers: dict[type[Op[Any, Any]], HandlerFunc] = {}
+        op_handlers: OpHandlers = {}
         for op_type, handler in self._items:
             op_handlers[op_type] = handler
 
         # Second pass: create nodes (need to handle dependencies)
-        node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]] = {}
-        registrations: dict[type[Op[Any, Any]], _OpReg] = {}
-        op_param_names: dict[type[Op[Any, Any]], set[str]] = {}
+        node_registry: NodeRegistry = {}
+        registrations: OpRegistrations = {}
+        op_param_names: OpParamNames = {}
 
         # Build in dependency order (simple: just iterate, nodes reference by type)
         for op_type, handler in op_handlers.items():
@@ -281,8 +289,8 @@ class Runner:
     """
 
     _agent: AgentFactory
-    _registry: dict[type[Op[Any, Any]], _OpReg]
-    _node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]]
+    _registry: OpRegistrations
+    _node_registry: NodeRegistry
     _global_scope: G.TypedScope = field(
         default_factory=lambda: G.TypedScope(detail="ops:global")
     )
@@ -307,7 +315,7 @@ class Runner:
                 return
             visited.add(op_id)
 
-            if not hasattr(op, "__dataclass_fields__"):
+            if not is_dataclass(op):
                 return
 
             for f in fields(op):
@@ -326,7 +334,7 @@ class Runner:
     async def run(
         self,
         req: Op[T, E],
-        scope_extras: dict[type, Any] | None = None,
+        scope_extras: ScopeExtras | None = None,
     ) -> Result[T, E]:
         """
         Execute operation with automatic parallelization.

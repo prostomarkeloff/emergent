@@ -23,6 +23,7 @@ Use .to_relational() to strip SQL ops for universal providers.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable, Generic, TypeVar
 
@@ -157,7 +158,7 @@ class WindowBuilder:
             else:
                 names: list[str] = []
                 for p in partition_by:
-                    if not hasattr(p, "name"):
+                    if not isinstance(p, FieldProxy):
                         raise TypeError(f"partition_by expects FieldProxy, got {type(p)}")
                     names.append(p.name)
                 pb = tuple(names)
@@ -171,13 +172,13 @@ class WindowBuilder:
                 ob = (OrderSpec(order_by.name, ascending=True),)
             else:
                 # Runtime guard: callers may pass invalid types (e.g. str) despite type signature.
-                if not hasattr(order_by, "__iter__") or isinstance(order_by, str):
+                if not isinstance(order_by, Iterable) or isinstance(order_by, str):
                     raise TypeError(f"order_by expects OrderSpec, FieldProxy, or tuple, got {type(order_by)}")
                 resolved: list[OrderSpec] = []
                 for o in order_by:
                     if isinstance(o, OrderSpec):
                         resolved.append(o)
-                    elif hasattr(o, "name"):
+                    elif isinstance(o, FieldProxy):
                         resolved.append(OrderSpec(o.name, ascending=True))
                     else:
                         raise TypeError(f"order_by expects OrderSpec or FieldProxy, got {type(o)}")

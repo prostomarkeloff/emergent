@@ -78,13 +78,26 @@ from emergent.wire.axis.query._expr import (
     fold_expr,
 )
 
+from typing import Protocol, runtime_checkable
+
+type SATypeMap = Mapping[type, type]
+type ModelAttrs = dict[str, Column[Any] | str | dict[str, str]]
+type ColumnKwargs = dict[str, str | int | bool | None]
+type SAExprHandlers = dict[type, ExprHandler[Any]]
+type SAExprHandlersRO = Mapping[type, ExprHandler[Any]]
+
+
+@runtime_checkable
+class _HasTablename(Protocol):
+    __tablename__: str
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Type Mapping + SA Phase
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-DEFAULT_SA_TYPE_MAP: Mapping[type, type] = {
+DEFAULT_SA_TYPE_MAP: SATypeMap = {
     int: Integer,
     float: Float,
     bool: Boolean,
@@ -95,7 +108,7 @@ DEFAULT_SA_TYPE_MAP: Mapping[type, type] = {
 
 
 def make_sa_initial(
-    type_map: Mapping[type, type] = DEFAULT_SA_TYPE_MAP,
+    type_map: SATypeMap = DEFAULT_SA_TYPE_MAP,
 ) -> Callable[[str, type], SQLAlchemyContext]:
     """Factory for SA initial function with custom type map.
 
@@ -162,10 +175,11 @@ def _assemble_model[T](
     # Reuse existing model if table already compiled
     if tablename in model_base.metadata.tables:
         for mapper in model_base.registry.mappers:
-            if hasattr(mapper.class_, '__tablename__') and mapper.class_.__tablename__ == tablename:
+            mapped = mapper.class_
+            if isinstance(mapped, _HasTablename) and mapped.__tablename__ == tablename:
                 return mapper.class_
 
-    attrs: dict[str, Column[Any] | str | dict[str, str]] = {
+    attrs: ModelAttrs = {
         "__tablename__": tablename,
     }
 
@@ -176,7 +190,7 @@ def _assemble_model[T](
         sa = fc[SA_PHASE]
 
         col_type = sa.column_type
-        col_kwargs: dict[str, str | int | bool | None] = dict(sa.column_kwargs)
+        col_kwargs: ColumnKwargs = dict(sa.column_kwargs)
         col_kwargs.setdefault("nullable", fc.info.is_optional)
 
         # Extract FK config
@@ -316,7 +330,7 @@ def compile_expr[T](
 def _make_sa_expr_handlers(
     model: type[DeclarativeBase],
     *extra_models: type[DeclarativeBase],
-) -> dict[type, ExprHandler[Any]]:
+) -> SAExprHandlers:
     """Build handler map for Expr → SA expression. Closures capture model.
 
     Open-world: callers can extend the returned map with custom Expr handlers.
@@ -402,7 +416,7 @@ def _compile_expr_raw(
     expr: Expr,
     model: type[DeclarativeBase],
     *extra_models: type[DeclarativeBase],
-    handlers: Mapping[type, ExprHandler[Any]] | None = None,
+    handlers: SAExprHandlersRO | None = None,
 ) -> Any:
     """Raw Expr → SA expression compiler. No coercion — pure translation.
 

@@ -41,6 +41,10 @@ from emergent.wire.axis.query._expr import (
     fold_expr,
 )
 
+type CoercerMap = Mapping[str, Callable[[object], object]]
+type CoercionMap = Mapping[str, Callable[[Any], Any]]
+type HandlerMap = dict[type, ExprHandler[Expr]]
+
 
 @dataclass(frozen=True, slots=True)
 class ExprCoercer:
@@ -50,7 +54,7 @@ class ExprCoercer:
     No-op when coercion map is empty.
     """
 
-    _coercion: Mapping[str, Callable[[object], object]]
+    _coercion: CoercerMap
 
     def __call__(self, expr: Expr) -> Expr:
         if not self._coercion:
@@ -71,7 +75,7 @@ def _passthrough(node: Expr, recurse: Callable[[Expr], Expr]) -> Expr:
     return node
 
 
-def _coerce_const(field_name: str, value: Any, coercion: Mapping[str, Callable[[Any], Any]]) -> Any:
+def _coerce_const(field_name: str, value: Any, coercion: CoercionMap) -> Any:
     """Apply coercion to a raw value if the field has a coercion function."""
     fn = coercion.get(field_name)
     if fn is not None:
@@ -93,7 +97,7 @@ def _field_name(expr: Expr) -> str | None:
 
 def _make_binary_handler(
     node_type: type[Eq] | type[Ne] | type[Lt] | type[Le] | type[Gt] | type[Ge],
-    coercion: Mapping[str, Callable[[Any], Any]],
+    coercion: CoercionMap,
 ) -> ExprHandler[Expr]:
     """Create a handler for binary comparison nodes (Eq, Ne, Lt, Le, Gt, Ge).
 
@@ -125,7 +129,7 @@ def _make_binary_handler(
 def _make_field_string_handler(
     node_type: type[Contains] | type[StartsWith] | type[EndsWith] | type[Like] | type[ILike],
     attr_name: str,
-    coercion: Mapping[str, Callable[[Any], Any]],
+    coercion: CoercionMap,
 ) -> ExprHandler[Expr]:
     """Create a handler for field+string ops (Contains, StartsWith, EndsWith, Like, ILike)."""
     def handler(node: Expr, recurse: Callable[[Expr], Expr]) -> Expr:
@@ -159,7 +163,7 @@ def _not_handler(node: Expr, recurse: Callable[[Expr], Expr]) -> Expr:
     return node
 
 
-def _in_handler(coercion: Mapping[str, Callable[[Any], Any]]) -> ExprHandler[Expr]:
+def _in_handler(coercion: CoercionMap) -> ExprHandler[Expr]:
     def handler(node: Expr, recurse: Callable[[Expr], Expr]) -> Expr:
         if isinstance(node, In):
             return _coerce_in(node, coercion)
@@ -167,7 +171,7 @@ def _in_handler(coercion: Mapping[str, Callable[[Any], Any]]) -> ExprHandler[Exp
     return handler
 
 
-def _between_handler(coercion: Mapping[str, Callable[[Any], Any]]) -> ExprHandler[Expr]:
+def _between_handler(coercion: CoercionMap) -> ExprHandler[Expr]:
     def handler(node: Expr, recurse: Callable[[Expr], Expr]) -> Expr:
         if isinstance(node, Between):
             return _coerce_between(node, coercion)
@@ -176,10 +180,10 @@ def _between_handler(coercion: Mapping[str, Callable[[Any], Any]]) -> ExprHandle
 
 
 def _build_coerce_handlers(
-    coercion: Mapping[str, Callable[[Any], Any]],
-) -> dict[type, ExprHandler[Expr]]:
+    coercion: CoercionMap,
+) -> HandlerMap:
     """Build handler map for coercion — closures capture the coercion map."""
-    handlers: dict[type, ExprHandler[Expr]] = {
+    handlers: HandlerMap = {
         # Leaf nodes — pass through
         Field: _passthrough,
         Const: _passthrough,
@@ -213,7 +217,7 @@ def _build_coerce_handlers(
     return handlers
 
 
-def _coerce_in(node: In, coercion: Mapping[str, Callable[[Any], Any]]) -> Expr:
+def _coerce_in(node: In, coercion: CoercionMap) -> Expr:
     """Coerce In values."""
     name = _field_name(node.field)
     if name is not None:
@@ -223,7 +227,7 @@ def _coerce_in(node: In, coercion: Mapping[str, Callable[[Any], Any]]) -> Expr:
     return node
 
 
-def _coerce_between(node: Between, coercion: Mapping[str, Callable[[Any], Any]]) -> Expr:
+def _coerce_between(node: Between, coercion: CoercionMap) -> Expr:
     """Coerce Between low/high."""
     name = _field_name(node.field)
     if name is not None:

@@ -46,6 +46,9 @@ if TYPE_CHECKING:
     from emergent.wire.axis.surface._endpoint import Endpoint
 
 
+type BridgeHandlerMap = Mapping[type[BridgeCapability], BridgeCapabilityHandler]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # BridgeContext Builder
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +81,7 @@ def build_application(
     *,
     axes: BridgeAxes | None = None,
     registry: BridgeRegistry | None = None,
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeHandlerMap | None = None,
 ) -> Application:
     """Convert framework source to wire Application.
 

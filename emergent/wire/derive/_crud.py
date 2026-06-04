@@ -91,7 +91,7 @@ def provider_fields(
     from emergent.wire.axis.schema.dialects.compose import Node as ComposeNode
 
     op_field: tuple[str, type] = ("provider", MutatingRelationalProvider)
-    annotated_getitem = getattr(typing, "Annotated").__getitem__
+    annotated_getitem = typing.Annotated.__getitem__
     request_field: tuple[str, type] = (
         "provider",
         annotated_getitem((MutatingRelationalProvider, ComposeNode(provider_node))),

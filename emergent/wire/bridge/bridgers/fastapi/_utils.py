@@ -13,6 +13,8 @@ import inspect
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
+type ExceptionHandlerMap = Mapping[Any, Callable[..., Any]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI Protocols (for type safety without importing fastapi)
@@ -41,7 +43,7 @@ class FastAPIAppProtocol(Protocol):
     def router(self) -> FastAPIRouterProtocol: ...
 
     @property
-    def exception_handlers(self) -> Mapping[Any, Callable[..., Any]]: ...
+    def exception_handlers(self) -> ExceptionHandlerMap: ...
 
     @property
     def user_middleware(self) -> Sequence[Any]: ...
@@ -57,9 +59,17 @@ def is_depends(obj: Any) -> bool:
     return type(obj).__name__ == "Depends"
 
 
+@runtime_checkable
+class _HasDependency(Protocol):
+    """A FastAPI ``Depends`` instance exposing its ``dependency`` callable."""
+
+    @property
+    def dependency(self) -> Any: ...
+
+
 def get_depends_func(depends: Any) -> Any | None:
     """Get the dependency function from Depends instance."""
-    return getattr(depends, "dependency", None)
+    return depends.dependency if isinstance(depends, _HasDependency) else None
 
 
 def find_depends_param(handler: Any, depends_func: Any) -> str | None:

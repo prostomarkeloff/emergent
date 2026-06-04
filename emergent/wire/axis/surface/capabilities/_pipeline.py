@@ -113,9 +113,8 @@ class Extraction(SurfaceCapability):
 def _get_pydantic_coercion() -> CoercionSpec:
     import emergent.wire.compile._generate as _gen
 
-    # _pydantic_coercion is exported in _generate.__all__ despite underscore prefix;
-    # accessing via module attribute avoids reportPrivateUsage.
-    factory: Callable[[], CoercionSpec] = getattr(_gen, "_pydantic_coercion")
+    # _pydantic_coercion is exported in _generate.__all__ despite underscore prefix.
+    factory: Callable[[], CoercionSpec] = _gen._pydantic_coercion
     return factory()
 
 

@@ -41,6 +41,9 @@ if TYPE_CHECKING:
     from emergent.wire.derive._trigger import TriggerGen
 
 
+type FieldMap = Mapping[str, AnnotationValue]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Op — transport-agnostic operation descriptor
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -84,8 +87,8 @@ class OpSpec:
 
     name: str
     entity_name: str
-    input_fields: Mapping[str, AnnotationValue]
-    request_fields: Mapping[str, AnnotationValue]
+    input_fields: FieldMap
+    request_fields: FieldMap
     response_spec: ResponseSpec
     handler_template: HandlerTemplate
     trigger: Trigger

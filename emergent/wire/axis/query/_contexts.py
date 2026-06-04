@@ -53,6 +53,14 @@ from emergent.wire.compile._core import ItemHandler
 from emergent.wire.compile._core import fold as _core_fold
 
 
+type StrObjMap = dict[str, object]
+type ObjMap = dict[object, object]
+type HandlerMap[Ctx] = Mapping[type, ItemHandler[Ctx]]
+type TypeAnyMap = Mapping[type, Any]
+type TypeObjMap = dict[type, object]
+type TypeAnyDict = dict[type, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Memory Query Context
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -201,29 +209,29 @@ class HTTPAPIContext:
         # use ctx.params, ctx.body for the HTTP request
     """
 
-    params: dict[str, object]
-    body: dict[str, object] | None
+    params: StrObjMap
+    body: StrObjMap | None
 
     # Expr → filter params dict (closure over FilterEncoding + entity + profile)
-    encode_filter: Callable[[Expr], dict[str, object]]
+    encode_filter: Callable[[Expr], StrObjMap]
 
     # (params_dict, pagination_mod) → mutates params (closure over Pagination)
-    apply_pagination: Callable[[dict[str, object], _PaginationMod], None]
+    apply_pagination: Callable[[StrObjMap, _PaginationMod], None]
 
     # True when FilterEncoding produces body, not query params
     is_body_filter: bool
 
     # OrderSpec sequence → order params dict
     # Provider configures param names/format (e.g. "sort", "order_by", "-field" vs "field:desc")
-    encode_order: Callable[[Sequence[OrderSpec]], dict[str, object]] | None = None
+    encode_order: Callable[[Sequence[OrderSpec]], StrObjMap] | None = None
 
     # int → limit params dict
     # Provider configures param name (e.g. "limit", "per_page", "max_results")
-    encode_limit: Callable[[int], dict[str, object]] | None = None
+    encode_limit: Callable[[int], StrObjMap] | None = None
 
     # field names → select/fields params dict
     # Provider configures param name/format (e.g. "fields", "select", "columns")
-    encode_select: Callable[[Sequence[str]], dict[str, object]] | None = None
+    encode_select: Callable[[Sequence[str]], StrObjMap] | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -262,7 +270,7 @@ class MemoryKVContext:
         value = ctx.result  # raw value; provider wraps in Ok()
     """
 
-    store: dict[object, object]
+    store: ObjMap
     result: object = None
 
 
@@ -295,17 +303,17 @@ class HTTPKVContext:
     # Request spec — accumulated by ops
     method: str = "GET"
     path: str = ""
-    params: dict[str, object] | None = None
-    body: dict[str, object] | None = None
+    params: StrObjMap | None = None
+    body: StrObjMap | None = None
 
     # key → URL path segment (closure over serialization)
     encode_key: Callable[[object], str] = lambda k: str(k)
 
     # pattern → query params dict (closure over pattern format)
-    encode_pattern: Callable[[str], dict[str, object]] = lambda p: {"pattern": p}
+    encode_pattern: Callable[[str], StrObjMap] = lambda p: {"pattern": p}
 
     # (value, ttl | None) → request body dict (closure over serialization)
-    encode_value: Callable[[object, int | None], dict[str, object]] = (
+    encode_value: Callable[[object, int | None], StrObjMap] = (
         lambda v, ttl: {"value": v, **({"ttl": ttl} if ttl is not None else {})}
     )
 
@@ -422,7 +430,7 @@ class QueryPhase[Ctx]:
 
     protocol: type
     method: str
-    handlers: Mapping[type, ItemHandler[Ctx]] | None = None
+    handlers: HandlerMap[Ctx] | None = None
 
     def fold(self, ops: Iterable[Any], initial: Ctx) -> Ctx:
         """Run fold() with this phase's protocol and handlers."""
@@ -501,7 +509,7 @@ class QueryCompilation:
         http_ctx = result[HTTP_API]              # HTTPAPIContext
     """
 
-    _contexts: dict[type, object]
+    _contexts: TypeObjMap
 
     def __getitem__[Ctx](self, phase: QueryPhase[Ctx]) -> Ctx:
         ctx = self._contexts.get(phase.protocol)
@@ -555,7 +563,7 @@ class QueryCompiler:
     def compile(
         self,
         ops: Iterable[Any],
-        initials: Mapping[type, Any],
+        initials: TypeAnyMap,
     ) -> QueryCompilation:
         """Compile ops through ALL phases. Each phase folds independently.
 
@@ -563,7 +571,7 @@ class QueryCompiler:
         Ops are materialized once (as tuple) and reused across phases.
         """
         ops_tuple = tuple(ops)
-        contexts: dict[type, Any] = {}
+        contexts: TypeAnyDict = {}
         for phase in self.phases:
             ctx = initials[phase.protocol]
             contexts[phase.protocol] = phase.fold(ops_tuple, ctx)

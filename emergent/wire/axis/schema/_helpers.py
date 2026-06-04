@@ -30,11 +30,14 @@ if TYPE_CHECKING:
     from emergent.wire.axis.schema._inspect import FieldInfo
 
 
+type FieldMap = dict[str, "FieldInfo"]
+type CapabilityByType = dict[type, "SchemaAxisCapability"]
+
 # Type alias for schema inspector function
-SchemaInspector = Callable[[type], dict[str, "FieldInfo"]]
+SchemaInspector = Callable[[type], FieldMap]
 
 
-def _get_schema(cls: type, axes: Any | None) -> dict[str, "FieldInfo"]:
+def _get_schema(cls: type, axes: Any | None) -> FieldMap:
     """Get schema using axes if provided, otherwise default inspect_type."""
     if axes is not None and hasattr(axes, "schema"):
         return axes.schema(cls)
@@ -273,7 +276,7 @@ def merge_capabilities(
         merged = merge_capabilities(base, override)
         # Result: (Doc("Name"), MaxLen(50))
     """
-    seen: dict[type, SchemaAxisCapability] = {}
+    seen: CapabilityByType = {}
     for caps in cap_tuples:
         for cap in caps:
             seen[type(cap)] = cap

@@ -18,6 +18,9 @@ from nodnod import Scope, EventLoopAgent
 from nodnod.agent.base import Agent
 from nodnod.node import Node
 
+type MappedScopes = Mapping[type, Scope]
+type ResolvedParams = dict[str, Any]
+
 
 def _as_node_set(typ: type[Any]) -> set[type[Node]]:
     """Widen an arbitrary type to set[type[Node]] for Agent.build().
@@ -45,14 +48,14 @@ class Composer:
 
     scope: Scope
     agent_cls: type[Agent]
-    mapped_scopes: Mapping[type, Scope] = field(default_factory=lambda: dict[type, Scope]())
+    mapped_scopes: MappedScopes = field(default_factory=lambda: dict[type, Scope]())
 
     @classmethod
     def create(
         cls,
         scope: Scope,
         agent_cls: type[Agent] | None = None,
-        mapped_scopes: Mapping[type, Scope] | None = None,
+        mapped_scopes: MappedScopes | None = None,
     ) -> Composer:
         """Create Composer, defaulting to EventLoopAgent."""
         return cls(
@@ -130,7 +133,7 @@ class Composer:
     async def resolve_params(
         self,
         handler: Callable[..., Any],
-    ) -> dict[str, Any]:
+    ) -> ResolvedParams:
         """Resolve handler params using compose dialect.
 
         Delegates to _delegate.resolve_handler_params with this Composer's

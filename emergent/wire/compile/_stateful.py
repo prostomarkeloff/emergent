@@ -12,7 +12,7 @@ ScopeEnricher capabilities run when Done, before Op execution.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from kungfu import Ok, Some
 
@@ -34,6 +34,11 @@ ScopeSetup = Callable[
     [Any, list[Callable[..., Any]], type],  # context, transitions, agent_cls
     Any,  # Awaitable[Option[tuple[method, params]]]
 ]
+
+
+type ComposedParams = dict[str, Any]
+type ScopeExtras = dict[type, Any]
+type StatefulMetadata = dict[str, Any]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -58,8 +63,13 @@ def _call_from_domain(cls: type, domain_value: Any) -> Any:
     Using getattr on the un-narrowed `type` avoids pyright seeing
     the argument as `type[FromDomain[Unknown]]`.
     """
-    from_domain_fn: Callable[[Any], Any] = getattr(cls, "from_domain")
-    return from_domain_fn(domain_value)
+    from emergent.wire.axis.surface.codecs.rrc import FromDomain
+
+    # cls is guaranteed to implement FromDomain by callers (_has_from_domain).
+    # cast at the type-erasure boundary; the `type` arg is intentionally
+    # un-narrowed to avoid pyright Unknown propagation in the generic param.
+    from_domain_cls = cast(type[FromDomain[Any]], cls)
+    return from_domain_cls.from_domain(domain_value)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -71,7 +81,7 @@ async def execute_stateful_turn(
     handler: Handler[StatefulCodec],
     state: Any,
     resolved_method: Callable[..., Any],
-    composed_params: dict[str, Any],
+    composed_params: ComposedParams,
 ) -> tuple[Any, Any | None, bool]:
     """Execute single stateful turn.
 
@@ -103,7 +113,7 @@ async def execute_stateful_done(
     # Core handler: state → op → result → response
     async def core_handler(scope: Scope) -> Any:
         op = state.to_domain()
-        scope_extras: dict[type, Any] = {}
+        scope_extras: ScopeExtras = {}
         for key, value in scope.merge().items():
             if key is not Scope:
                 scope_extras[key] = value.value
@@ -167,7 +177,7 @@ async def delete_state(codec: StatefulCodec, store_key: str) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def get_stateful_metadata(handler: Handler[StatefulCodec]) -> dict[str, Any]:
+def get_stateful_metadata(handler: Handler[StatefulCodec]) -> StatefulMetadata:
     """Extract metadata for framework wrappers.
 
     Returns info needed by wrappers (transitions, key_node, etc.)

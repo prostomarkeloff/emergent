@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from nodnod.agent.base import Agent
 
 
+type ResolvedParams = dict[str, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Compose Dialect Support — resolve handler params via compose.*
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -29,7 +32,7 @@ async def resolve_handler_params(
     handler: Callable[..., Any],
     scope: Scope,
     agent_cls: type[Agent],
-) -> dict[str, Any]:
+) -> ResolvedParams:
     """Resolve handler params using compose dialect.
 
     For each param:
@@ -58,7 +61,7 @@ async def resolve_handler_params(
         hints = {}
 
     sig = inspect.signature(handler)
-    result: dict[str, Any] = {}
+    result: ResolvedParams = {}
 
     for name, param in sig.parameters.items():
         if name in ("self", "cls"):

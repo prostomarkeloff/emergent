@@ -26,15 +26,19 @@ type AnnotationValue = type | types.UnionType | types.GenericAlias
 # Default may be any Python value — dataclasses accept arbitrary defaults.
 type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, object]
 
+type AnnotationMap = dict[str, type]
+type ScalarFieldMap = Mapping[str, str | int | float | bool | None]
+type NamespaceMap = dict[str, Callable[..., HasAnnotations | str | int | float | bool | None]]
+
 
 class HasAnnotations(Protocol):
     """Protocol for objects with __annotations__ attribute."""
-    __annotations__: dict[str, type]
+    __annotations__: AnnotationMap
 
 
 class FieldMapper(Protocol):
     """Protocol for custom field extraction from request to dict."""
-    def __call__(self, request: HasAnnotations) -> Mapping[str, str | int | float | bool | None]: ...
+    def __call__(self, request: HasAnnotations) -> ScalarFieldMap: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -49,7 +53,7 @@ class DirectMapper:
     Inspectable replacement for the closure in create_request_type.
     """
 
-    def __call__(self, request: HasAnnotations) -> Mapping[str, str | int | float | bool | None]:
+    def __call__(self, request: HasAnnotations) -> ScalarFieldMap:
         return {k: getattr(request, k) for k in type(request).__annotations__}
 
 
@@ -84,7 +88,7 @@ def create_dataclass(
     *,
     frozen: bool = True,
     bases: tuple[type, ...] = (),
-    namespace: dict[str, Callable[..., HasAnnotations | str | int | float | bool | None]] | None = None,
+    namespace: NamespaceMap | None = None,
 ) -> type:
     """Create dataclass with proper __name__ and __qualname__."""
     cls = make_dataclass(

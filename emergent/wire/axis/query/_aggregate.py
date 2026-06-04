@@ -189,12 +189,13 @@ class AggregateExpr:
 
 
 type AggHandler[Ctx] = Callable[[AggregateSpec, Ctx], object]
+type AggHandlerMap[Ctx] = Mapping[type[AggregateFunc], Callable[[AggregateSpec, Ctx], Any]]
 
 
 def fold_aggregate(
     spec: AggregateSpec,
     ctx: _Ctx,
-    handlers: Mapping[type[AggregateFunc], Callable[[AggregateSpec, _Ctx], Any]],
+    handlers: AggHandlerMap[_Ctx],
 ) -> Any:
     """Dispatch aggregate computation by AggregateFunc type.
 

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from emergent.wire.axis.surface._app import Application
 
+type MountMap = dict[str, Application | AppStack]
+
 
 @dataclass(slots=True)
 class AppStack:
@@ -27,7 +29,7 @@ class AppStack:
     """
 
     root_app: Application = field(default_factory=Application)
-    mounts: dict[str, Application | AppStack] = field(default_factory=dict)
+    mounts: MountMap = field(default_factory=dict)
 
     def root(self, app: Application) -> AppStack:
         """Set root application (top-level commands)."""

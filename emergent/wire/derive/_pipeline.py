@@ -38,6 +38,10 @@ if TYPE_CHECKING:
     from emergent.wire.derive._handler import HandlerSpec, HasProvider
 
 
+type EntityData = dict[str, object]
+type EntityFieldData = dict[str, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PipelineContext — mutable runtime accumulator
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,10 +64,10 @@ class PipelineContext[EntityT]:
     # Accumulated state — steps read/write these
     query: RelationalQuerySet[EntityT] | None = None
     existing: EntityT | None = None
-    entity_data: dict[str, object] | None = None
+    entity_data: EntityData | None = None
     items: list[EntityT] | None = None
     result: object = None
-    extras: dict[str, object] = dataclass_field(default_factory=lambda: dict[str, object]())
+    extras: EntityData = dataclass_field(default_factory=lambda: dict[str, object]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -261,7 +265,7 @@ class BuildEntityData:
         pctx: PipelineContext[EntityT],
     ) -> PipelineContext[EntityT]:
         spec = pctx.spec
-        entity_data: dict[str, Any] = {
+        entity_data: EntityFieldData = {
             f: getattr(pctx.op, f)
             for f in spec.non_identity_names
             if hasattr(pctx.op, f)
@@ -295,7 +299,7 @@ class MergeFields:
     ) -> PipelineContext[EntityT]:
         assert pctx.existing is not None
         spec = pctx.spec
-        entity_data: dict[str, Any] = {
+        entity_data: EntityFieldData = {
             f: getattr(pctx.op, f, getattr(pctx.existing, f))
             for f in spec.non_identity_names
         }
@@ -319,7 +323,7 @@ class PatchMergeFields:
     ) -> PipelineContext[EntityT]:
         assert pctx.existing is not None
         spec = pctx.spec
-        entity_data: dict[str, Any] = {
+        entity_data: EntityFieldData = {
             name: getattr(pctx.existing, name)
             for name in (*spec.non_identity_names, *spec.identity_names)
         }

@@ -228,11 +228,16 @@ type BridgeCapabilityHandler = Callable[
     BridgeContext[object, ..., object],
 ]
 
+type BridgeCapabilityHandlers = Mapping[type[BridgeCapability], BridgeCapabilityHandler]
+
+type NameTypeMap = dict[str, type]
+type NameCodecMap = dict[str, object]
+
 
 def fold_bridge[T, **P, R](
     ctx: BridgeContext[T, P, R],
     capabilities: Sequence[BridgeCapability],
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeCapabilityHandlers | None = None,
 ) -> BridgeContext[T, P, R]:
     """Universal bridge-level capability fold — THE bridge primitive.
 
@@ -266,7 +271,7 @@ def fold_bridge[T, **P, R](
 def apply_bridge_capabilities[T, **P, R](
     ctx: BridgeContext[T, P, R],
     capabilities: Sequence[BridgeCapability],
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeCapabilityHandlers | None = None,
 ) -> BridgeContext[T, P, R]:
     """Apply BridgeCompilable capabilities to context.
 
@@ -409,7 +414,7 @@ class AddCapability(BridgeCapability):
 class SetRequestTypeByName(BridgeCapability):
     """Set request type by handler name."""
 
-    type_map: dict[str, type]
+    type_map: NameTypeMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]
@@ -425,7 +430,7 @@ class SetRequestTypeByName(BridgeCapability):
 class SetResponseTypeByName(BridgeCapability):
     """Set response type by handler name."""
 
-    type_map: dict[str, type]
+    type_map: NameTypeMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]
@@ -451,7 +456,7 @@ class SetCodecByName(BridgeCapability):
         })
     """
 
-    codec_map: dict[str, object]
+    codec_map: NameCodecMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]

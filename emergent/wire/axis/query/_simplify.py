@@ -24,6 +24,9 @@ from emergent.wire.axis.query._expr import (
     Not,
 )
 
+# Field-name → replacement Expr, splatted into dataclasses.replace().
+type ExprChanges = dict[str, Expr]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Simplification Rules
@@ -193,7 +196,7 @@ def _simplify_children(expr: Expr) -> Expr:
     Uses dataclass fields introspection to find Expr children,
     simplifies them, and reconstructs the node only if something changed.
     """
-    changes: dict[str, Expr] = {}
+    changes: ExprChanges = {}
     for f in _dc.fields(expr):
         val = getattr(expr, f.name)
         if isinstance(val, Expr):

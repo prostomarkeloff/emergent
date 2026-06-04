@@ -70,6 +70,9 @@ if TYPE_CHECKING:
 
 F = Callable[..., object]
 
+type FieldTypeMap = dict[str, type]
+type StrAnyMap = dict[str, Any]
+
 TRIGGER_ENTRIES_ATTR = "__trigger_entries__"
 OP_ENTRIES_ATTR = "__op_entry__"
 
@@ -198,7 +201,7 @@ except (ImportError, RuntimeError):
 
 def _enhance_trigger_with_args(
     trigger: Trigger,
-    fields: dict[str, type],
+    fields: FieldTypeMap,
 ) -> Trigger:
     """Enhance TelegrindTrigger Command rule with Arguments from field annotations."""
     if _TelegrindTrigger is None or not isinstance(trigger, _TelegrindTrigger):
@@ -280,16 +283,17 @@ def _build_method_operation(
 
     # Validate the method is async — sync methods will crash at await
     # Extract __func__ from classmethod/staticmethod descriptors
-    _has_func = hasattr(raw_attr, "__func__")
-    raw_fn: Callable[..., Any] = getattr(raw_attr, "__func__") if _has_func else raw_attr
+    raw_fn: Callable[..., Any] = (
+        raw_attr.__func__ if isinstance(raw_attr, (staticmethod, classmethod)) else raw_attr
+    )
     if not inspect.iscoroutinefunction(raw_fn):
         raise TypeError(
             f"{service.__name__}.{method_name} must be async. "
             f"Use 'async def {method_name}(...)' instead of 'def {method_name}(...)'."
         )
 
-    fields: dict[str, type] = {}
-    defaults: dict[str, Any] = {}
+    fields: FieldTypeMap = {}
+    defaults: StrAnyMap = {}
     params: list[str] = []
     for name, param in sig.parameters.items():
         if name in ("self", "cls"):
@@ -386,7 +390,7 @@ def _build_method_operation(
     return op_type, annotated_handler, exposure_obj
 
 
-def _result_type_fields(result_type: type) -> dict[str, type]:
+def _result_type_fields(result_type: type) -> FieldTypeMap:
     """Extract fields from result type for response.
 
     If result_type is a dataclass, uses its fields. Otherwise treats as
@@ -456,8 +460,9 @@ class Methods(SchemaCapability):
             raw: Callable[..., Any] | None = inspect.getattr_static(entity, name, None)
             if raw is None:
                 continue
-            _has_func = hasattr(raw, "__func__")
-            fn: Callable[..., Any] = getattr(raw, "__func__") if _has_func else raw
+            fn: Callable[..., Any] = (
+                raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+            )
 
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             for i, entry in enumerate(entries):
@@ -508,8 +513,9 @@ class MethodDialect(SchemaCapability):
             raw: Callable[..., Any] | None = inspect.getattr_static(entity, method_name, None)
             if raw is None:
                 continue
-            _has_func = hasattr(raw, "__func__")
-            fn: Callable[..., Any] = getattr(raw, "__func__") if _has_func else raw
+            fn: Callable[..., Any] = (
+                raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+            )
 
             entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
             if entry is None:

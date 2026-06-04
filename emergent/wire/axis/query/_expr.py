@@ -515,11 +515,12 @@ class JsonHasKey(Expr):
 
 
 type ExprHandler[R] = Callable[["Expr", Callable[["Expr"], R]], R]
+type ExprHandlers[R] = Mapping[type, ExprHandler[R]]
 
 
 def fold_expr(
     expr: Expr,
-    handlers: Mapping[type, ExprHandler[R]],
+    handlers: ExprHandlers[R],
     *,
     default: ExprHandler[R] | None = None,
 ) -> R:
@@ -568,7 +569,7 @@ class ExprDialect(Generic[R]):
         my_dialect = dialect.with_handler(MyCustomExpr, my_handler)
     """
 
-    handlers: Mapping[type, ExprHandler[R]]
+    handlers: ExprHandlers[R]
     default: ExprHandler[R] | None = None
 
     def fold(self, expr: Expr) -> R:

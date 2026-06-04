@@ -36,6 +36,10 @@ if TYPE_CHECKING:
     from emergent.wire.compile._lifetime import Tier
 
 
+type FieldsObj = Mapping[str, object]
+type FieldsAny = Mapping[str, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # TestingWrapContext
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -71,11 +75,11 @@ class TestRoute:
     """Compiled route for testing — call with a plain dict, get response."""
 
     trigger: object
-    _invoke: Callable[[Mapping[str, object], ScopeInjector | None], Awaitable[object]]
+    _invoke: Callable[[FieldsObj, ScopeInjector | None], Awaitable[object]]
 
     async def call(
         self,
-        fields: Mapping[str, Any] | None = None,
+        fields: FieldsAny | None = None,
         inject: ScopeInjector | None = None,
     ) -> Any:
         return await self._invoke(fields or {}, inject)
@@ -152,7 +156,7 @@ def immediate_from_codec_testing(
 
 async def _rrc_execute_testing(
     handler: Handler[RequestResponseCodec],
-    fields: Mapping[str, Any],
+    fields: FieldsAny,
     inject: ScopeInjector | None,
     axes: Axes,
 ) -> Any:
@@ -166,7 +170,7 @@ async def _rrc_execute_testing(
 
 async def _delegate_execute_testing(
     handler: Handler[DelegateCodec],
-    fields: Mapping[str, Any],
+    fields: FieldsAny,
     inject: ScopeInjector | None,
     axes: Axes,
 ) -> Any:
@@ -179,7 +183,7 @@ async def _delegate_execute_testing(
 
 async def _immediate_execute_testing(
     handler: Handler[Any],
-    fields: Mapping[str, Any],
+    fields: FieldsAny,
     inject: ScopeInjector | None,
     axes: Axes,
 ) -> Any:
@@ -201,7 +205,7 @@ def assemble_testing_route(
     if execute_fn is None:
         raise ValueError("TestingWrapContext.execute must be set before assembly")
 
-    async def invoke(fields: Mapping[str, Any], inject: ScopeInjector | None) -> Any:
+    async def invoke(fields: FieldsAny, inject: ScopeInjector | None) -> Any:
         return await execute_fn(handler, fields, inject, axes)
 
     return TestRoute(trigger=ctx.trigger, _invoke=invoke)

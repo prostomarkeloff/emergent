@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 
 
 # Type alias for JSON Schema dict
-JsonSchemaDict = dict[str, Any]
+type JsonSchemaDict = dict[str, Any]
+type JsonTypeMap = Mapping[type, JsonSchemaDict]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -38,7 +39,7 @@ JsonSchemaDict = dict[str, Any]
 # to support custom types.
 
 
-DEFAULT_JSON_TYPE_MAP: Mapping[type, JsonSchemaDict] = {
+DEFAULT_JSON_TYPE_MAP: JsonTypeMap = {
     type(None): {"type": "null"},
     str: {"type": "string"},
     int: {"type": "integer"},
@@ -50,7 +51,7 @@ DEFAULT_JSON_TYPE_MAP: Mapping[type, JsonSchemaDict] = {
 
 def type_to_json_schema(
     py_type: type | Any,
-    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+    type_map: JsonTypeMap = DEFAULT_JSON_TYPE_MAP,
 ) -> JsonSchemaDict:
     """Map Python type to JSON Schema. Open-world via type_map parameter.
 
@@ -136,7 +137,7 @@ def type_to_json_schema(
 
 def _structured_type_to_json_schema(
     cls: type,
-    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+    type_map: JsonTypeMap = DEFAULT_JSON_TYPE_MAP,
 ) -> JsonSchemaDict:
     """Generate JSON Schema for a structured type (dataclass, Pydantic, etc.)."""
     from emergent.wire.axis.schema import inspect_type
@@ -162,7 +163,7 @@ def _structured_type_to_json_schema(
 
 
 def make_openapi_initial(
-    type_map: Mapping[type, JsonSchemaDict] = DEFAULT_JSON_TYPE_MAP,
+    type_map: JsonTypeMap = DEFAULT_JSON_TYPE_MAP,
 ) -> Callable[[str, type], "OpenAPIContext"]:
     """Factory for OpenAPI initial function with custom type map.
 
@@ -196,7 +197,7 @@ def assemble_openapi(
     cls: type,
     fields: EntityCompilation | Sequence[FieldCompilation],
     phase: CompilationPhase[Any] = OPENAPI_PHASE,
-) -> dict[str, Any]:
+) -> JsonSchemaDict:
     """Assemble OpenAPI schema from compiled fields.
 
     Accepts EntityCompilation or a sequence of FieldCompilation.
@@ -210,7 +211,7 @@ def assemble_openapi(
     from emergent.wire.axis.schema.dialects.compose import ComposeCapability
 
     field_seq = fields.fields if isinstance(fields, EntityCompilation) else fields
-    properties: dict[str, Any] = {}
+    properties: JsonSchemaDict = {}
     required: list[str] = []
 
     for fc in field_seq:
@@ -224,7 +225,7 @@ def assemble_openapi(
         if not fc.info.is_optional:
             required.append(fc.name)
 
-    result: dict[str, Any] = {
+    result: JsonSchemaDict = {
         "type": "object",
         "properties": properties,
     }
@@ -240,7 +241,7 @@ def to_openapi_schema(
     axes: Axes,
     *,
     ref_prefix: str = "#/components/schemas/",
-) -> dict[str, Any]:
+) -> JsonSchemaDict:
     """Generate OpenAPI 3.x schema from dataclass + capabilities.
 
     Thin assembler over SchemaCompiler + assemble_openapi.
@@ -283,7 +284,7 @@ def to_json_schema(
     axes: Axes,
     *,
     schema_id: str | None = None,
-) -> dict[str, Any]:
+) -> JsonSchemaDict:
     """Generate JSON Schema from dataclass + capabilities.
 
     Args:
@@ -312,7 +313,7 @@ def to_json_schema(
     openapi_schema = to_openapi_schema(cls, axes)
 
     # Convert to JSON Schema format
-    result: dict[str, Any] = {
+    result: JsonSchemaDict = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         **openapi_schema,
     }
@@ -326,7 +327,7 @@ def to_json_schema(
     return result
 
 
-def _convert_openapi_to_json_schema(schema: dict[str, Any]) -> None:
+def _convert_openapi_to_json_schema(schema: JsonSchemaDict) -> None:
     """Convert OpenAPI-specific fields to JSON Schema in-place."""
     # nullable → type array with null
     if schema.get("nullable"):

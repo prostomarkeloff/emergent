@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, replace
-from typing import Any, TYPE_CHECKING, TypeGuard
+from typing import Any, Protocol, TYPE_CHECKING, TypeGuard, runtime_checkable
 
 from emergent.wire.axis._capability import (
     Capability as RootCapability,
@@ -38,6 +38,16 @@ from emergent.wire.axis._capability import (
 
 # Type for enum values (JSON-compatible primitives)
 EnumValue = str | int | float | bool | None
+
+type StrAnyMap = dict[str, Any]
+type StrTypeMap = dict[str, type]
+
+
+@runtime_checkable
+class _HasTableName(Protocol):
+    """A class carrying a SQLAlchemy-style ``__tablename__`` attribute."""
+
+    __tablename__: str
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -259,9 +269,10 @@ class Ref(UniversalCapability):
         """Resolve target to 'table.column' string for SA ForeignKey."""
         if isinstance(self.target, str):
             return self.target
-        table = getattr(
-            self.target, "__tablename__",
-            self.target.__name__.lower(),
+        table = (
+            self.target.__tablename__
+            if isinstance(self.target, _HasTableName)
+            else self.target.__name__.lower()
         )
         return f"{table}.id"
 
@@ -555,7 +566,10 @@ class Doc(UniversalCapability):
     text: str
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        return pydantic_field(ctx, lambda fi: setattr(fi, "description", self.text))
+        def mutate(fi: "FieldInfo") -> None:
+            fi.description = self.text
+
+        return pydantic_field(ctx, mutate)
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, description=self.text)
@@ -571,7 +585,10 @@ class Deprecated(UniversalCapability):
     reason: str | None = None
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        return pydantic_field(ctx, lambda fi: setattr(fi, "deprecated", self.reason or True))
+        def mutate(fi: "FieldInfo") -> None:
+            fi.deprecated = self.reason or True
+
+        return pydantic_field(ctx, mutate)
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, deprecated=True)
@@ -749,7 +766,10 @@ class Alias(UniversalCapability):
     name: str
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        return pydantic_field(ctx, lambda fi: setattr(fi, "alias", self.name))
+        def mutate(fi: "FieldInfo") -> None:
+            fi.alias = self.name
+
+        return pydantic_field(ctx, mutate)
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
         return openapi_schema(ctx, **{"x-alias": self.name})
@@ -841,7 +861,7 @@ def _is_frozenset(v: Any) -> TypeGuard[frozenset[Any]]:
     return isinstance(v, frozenset)
 
 
-def _is_dict(v: Any) -> TypeGuard[dict[str, Any]]:
+def _is_dict(v: Any) -> TypeGuard[StrAnyMap]:
     """TypeGuard: narrow object to dict[str, object] without Unknown propagation.
 
     json.loads always produces dict[str, ...] so str keys are guaranteed.
@@ -1018,7 +1038,7 @@ class Coerce(UniversalCapability):
         from kungfu import Sum
         if origin is Sum:
             sum_args: tuple[type, ...] = getattr(source, "__args__", ())
-            type_lookup: dict[str, type] = {t.__name__: t for t in sum_args}
+            type_lookup: StrTypeMap = {t.__name__: t for t in sum_args}
             sum_source = source
 
             def _sum_from_typed(v: object) -> object:

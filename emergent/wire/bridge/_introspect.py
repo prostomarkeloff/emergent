@@ -43,6 +43,10 @@ from enum import Enum
 from functools import partial
 from typing import Any, Callable, Iterator, Protocol, cast, get_type_hints, runtime_checkable
 
+type ParameterShapeMap = dict[str, ParameterShape]
+type PartialKeywords = dict[str, Any]
+type PartialKeywordsObj = dict[str, object]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Parameter Kind
@@ -312,7 +316,7 @@ def no_default() -> Any:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_init_params() -> dict[str, ParameterShape]:
+def _empty_init_params() -> ParameterShapeMap:
     return {}
 
 
@@ -335,7 +339,7 @@ class InstanceInfo:
 
     instance: object
     cls: type
-    init_parameters: dict[str, ParameterShape] = field(
+    init_parameters: ParameterShapeMap = field(
         default_factory=_empty_init_params
     )
 
@@ -345,7 +349,7 @@ class InstanceInfo:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_params() -> dict[str, ParameterShape]:
+def _empty_params() -> ParameterShapeMap:
     return {}
 
 
@@ -353,7 +357,7 @@ def _empty_decorators() -> tuple[DecoratorInfo, ...]:
     return ()
 
 
-def _empty_partial_keywords() -> dict[str, Any]:
+def _empty_partial_keywords() -> PartialKeywords:
     return {}
 
 
@@ -365,7 +369,7 @@ class HandlerShape:
     name: str
     is_async: bool
     is_generator: bool
-    parameters: dict[str, ParameterShape] = field(default_factory=_empty_params)
+    parameters: ParameterShapeMap = field(default_factory=_empty_params)
     return_type: type | None = None
     decorators: tuple[DecoratorInfo, ...] = field(default_factory=_empty_decorators)
     original: object = None
@@ -375,7 +379,7 @@ class HandlerShape:
     instance_info: InstanceInfo | None = None
     # For functools.partial
     partial_func: Callable[..., object] | None = None
-    partial_keywords: dict[str, object] = field(default_factory=_empty_partial_keywords)
+    partial_keywords: PartialKeywordsObj = field(default_factory=_empty_partial_keywords)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -447,7 +451,7 @@ def analyze_handler(
 
     # Handle functools.partial
     partial_func: Callable[..., Any] | None = None
-    partial_keywords: dict[str, Any] = {}
+    partial_keywords: PartialKeywords = {}
     to_unwrap: Any = obj
 
     if isinstance(obj, partial):
@@ -490,7 +494,7 @@ def analyze_handler(
             except Exception:
                 pass
 
-            init_params: dict[str, ParameterShape] = {}
+            init_params: ParameterShapeMap = {}
             for pname, param in init_sig.parameters.items():
                 if pname in skip_params:
                     continue
@@ -520,7 +524,7 @@ def analyze_handler(
         hints = {}
 
     # Parameters
-    parameters: dict[str, ParameterShape] = {}
+    parameters: ParameterShapeMap = {}
     if sig is not None:
         for name, param in sig.parameters.items():
             if name in skip_params:

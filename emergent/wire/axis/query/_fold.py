@@ -54,12 +54,13 @@ from emergent.wire.axis.query._relational import (
 
 
 type OpHandler[Ctx] = Callable[[Any, Ctx], Ctx]
+type HandlerMap[Ctx] = Mapping[type, OpHandler[Ctx]]
 
 
 def fold_query[Ctx](
     ops: Sequence[Any],
     initial: Ctx,
-    handlers: Mapping[type, OpHandler[Ctx]],
+    handlers: HandlerMap[Ctx],
 ) -> Ctx:
     """Universal query-level op fold — THE query primitive.
 
@@ -108,7 +109,7 @@ class QueryDialect[Ctx]:
     """
 
     context_type: type[Ctx]
-    handlers: Mapping[type, OpHandler[Ctx]]
+    handlers: HandlerMap[Ctx]
 
     def fold(self, ops: Sequence[Any], initial: Ctx) -> Ctx:
         """Run fold_query with this dialect's handlers."""
@@ -192,7 +193,7 @@ def _unsupported(name: str) -> OpHandler[list[Any]]:
     return handler
 
 
-MEMORY_HANDLERS: Mapping[type, OpHandler[list[Any]]] = {
+MEMORY_HANDLERS: HandlerMap[list[Any]] = {
     Filter: _handle_filter,
     OrderBy: _handle_order_by,
     Offset: _handle_offset,

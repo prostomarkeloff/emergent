@@ -34,13 +34,16 @@ from emergent.wire.derive._protocols import (
 )
 
 
+type _SeenSpecs = dict[tuple[str, str, type], str]
+
+
 def _validate_specs[EntityT](ctx: DeriveCtx[EntityT]) -> None:
     """Check for duplicate spec names after a generate phase.
 
     Same op name with different triggers is valid (multi-target: HTTP + Telegram).
     Only reject true duplicates: same name + same trigger type + same source.
     """
-    seen: dict[tuple[str, str, type], str] = {}
+    seen: _SeenSpecs = {}
     for spec in ctx.specs:
         key = (spec.entity_name, spec.name, type(spec.trigger))
         if key in seen and seen[key] == spec.source:

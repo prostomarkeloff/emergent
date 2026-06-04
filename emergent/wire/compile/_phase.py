@@ -73,6 +73,19 @@ from emergent.wire.axis._capability import (
 from emergent.wire.axis.schema import FieldInfo
 from emergent.wire.compile._core import Axes, CapabilityHandler, fold_field, fold_schema, traced_fold
 
+# Capability-type → handler, keyed by phase context type Ctx.
+type HandlerMap[Ctx] = Mapping[type[Capability], CapabilityHandler[Ctx]]
+# Mutable accumulator while merging handler maps.
+type HandlerDict[Ctx] = dict[type[Capability], CapabilityHandler[Ctx]]
+# Heterogeneous context store keyed by context type (values erased to object).
+type ContextStore = dict[type, object]
+# Same store while accumulating folds (values not yet narrowed).
+type ContextAcc = dict[type, Any]
+# Storage row: field name → (possibly coerced) value.
+type StorageRow = dict[str, Any]
+# Field name → value coercion function for query rewriting.
+type CoercionMap = dict[str, Callable[[Any], Any]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EntityFold — entity-level fold descriptor (companion to CompilationPhase)
@@ -137,7 +150,7 @@ class CompilationPhase[Ctx]:
     context_type: type[Ctx]
     protocol: type
     initial: Callable[[str, type], Ctx]
-    handlers: Mapping[type[Capability], CapabilityHandler[Ctx]] | None = None
+    handlers: HandlerMap[Ctx] | None = None
     # Any — heterogeneous entity fold (EntityFold[PydanticModelContext],
     # EntityFold[OpenAPISchemaContext], etc.). Python has no existential types;
     # Any is the correct erasure for heterogeneous generic storage.
@@ -157,12 +170,12 @@ class CompilationPhase[Ctx]:
 
     def with_handlers(
         self,
-        handlers: Mapping[type[Capability], CapabilityHandler[Ctx]] | None,
+        handlers: HandlerMap[Ctx] | None,
     ) -> CompilationPhase[Ctx]:
         """Return new phase with handlers merged. Immutable."""
         if handlers is None:
             return self
-        merged: dict[type[Capability], CapabilityHandler[Ctx]] = {
+        merged: HandlerDict[Ctx] = {
             **(self.handlers or {}),
             **handlers,
         }
@@ -211,7 +224,7 @@ class FieldCompilation:
 
     name: str
     info: FieldInfo
-    _contexts: dict[type, object]
+    _contexts: ContextStore
 
     def __getitem__[Ctx](self, phase: CompilationPhase[Ctx]) -> Ctx:
         result = self._contexts[phase.context_type]
@@ -247,7 +260,7 @@ class EntityCompilation:
     """
 
     fields: tuple[FieldCompilation, ...]
-    _entity_contexts: dict[type, object]
+    _entity_contexts: ContextStore
 
     def __getitem__[EntityCtx](self, fold: EntityFold[EntityCtx]) -> EntityCtx:
         """Get typed entity-level context by EntityFold key."""
@@ -319,7 +332,7 @@ def compile_fields(
     field_traces: list[Any] = [] if trace is not None else []
 
     for name, info in fields.items():
-        contexts: dict[type, Any] = {}
+        contexts: ContextAcc = {}
         phase_traces: list[Any] = [] if trace is not None else []
 
         for phase in phases:
@@ -399,7 +412,7 @@ def compile_entity(
     field_compilations = compile_fields(cls, axes, phases)
 
     # 2. Entity-level folds (new)
-    entity_contexts: dict[type, Any] = {}
+    entity_contexts: ContextAcc = {}
     trace = axes.trace
 
     for phase in phases:
@@ -702,7 +715,7 @@ STORAGE_SCHEMA = SchemaCompiler(phases=(STORAGE_FIELD_PHASE,))
 def to_storage_dict(
     entity: Any,
     fields: tuple[FieldCompilation, ...],
-) -> dict[str, Any]:
+) -> StorageRow:
     """Entity → storage dict. Applies to_storage coercion from STORAGE_FIELD_PHASE.
 
     Universal — SA, Mongo, Pandas, Redis all use this.
@@ -711,7 +724,7 @@ def to_storage_dict(
         # SA:    model_cls(**data)
         # Mongo: collection.insert_one(data)
     """
-    data: dict[str, Any] = {}
+    data: StorageRow = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getattr(entity, fc.name)
@@ -737,7 +750,7 @@ def from_storage[T](
     """
     from enum import Enum as _Enum
 
-    data: dict[str, Any] = {}
+    data: StorageRow = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getter(fc.name)
@@ -766,7 +779,7 @@ def coerce_expr(
     """
     from emergent.wire.axis.query._coerce import ExprCoercer
 
-    coercion: dict[str, Callable[[Any], Any]] = {}
+    coercion: CoercionMap = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         if meta.to_storage is not None:

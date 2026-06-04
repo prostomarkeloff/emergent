@@ -64,6 +64,10 @@ if TYPE_CHECKING:
 # so we define a narrow union covering the two cases that actually appear here.
 TypeForm = type | types.GenericAlias
 
+type ParamSpecMap = dict[str, tuple[TypeForm, type]]
+type ParamSpecMapping = Mapping[str, tuple[TypeForm, type]]
+type ComposedParams = dict[str, Any]
+
 # ─── Wrapper Handling ────────────────────────────────────────────────────────
 
 
@@ -117,7 +121,7 @@ def wrap(typ: TypeForm, success: bool, value: Any) -> Any:
 # ─── Transition Params ───────────────────────────────────────────────────────
 
 
-def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[TypeForm, type]]:
+def get_method_params(method: Callable[..., Any]) -> ParamSpecMap:
     """Parse method signature → {name: (original_type, compose_type)}.
 
     Example:
@@ -136,7 +140,7 @@ def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[TypeForm, t
         # }
     """
     hints = get_type_hints(method)
-    params: dict[str, tuple[TypeForm, type]] = {}
+    params: ParamSpecMap = {}
 
     for name, typ in hints.items():
         if name in ("self", "return"):
@@ -147,7 +151,7 @@ def get_method_params(method: Callable[..., Any]) -> dict[str, tuple[TypeForm, t
     return params
 
 
-def get_transition_params(flow: type) -> dict[str, tuple[TypeForm, type]]:
+def get_transition_params(flow: type) -> ParamSpecMap:
     """Parse __transition__ signature → {name: (original_type, compose_type)}.
 
     Backwards-compatible wrapper around get_method_params.
@@ -183,10 +187,10 @@ def _is_nodnod_node(typ: TypeForm) -> bool:
 
 
 async def compose_params(
-    params: Mapping[str, tuple[TypeForm, type]],
+    params: ParamSpecMapping,
     scope: Scope,
     agent_cls: type[Agent],
-) -> dict[str, Any]:
+) -> ComposedParams:
     """Compose all __transition__ params through nodnod.
 
     Args:
@@ -210,7 +214,7 @@ async def compose_params(
     from emergent.graph._compose import Composer
 
     composer = Composer.create(scope, agent_cls)
-    composed: dict[str, Any] = {}
+    composed: ComposedParams = {}
 
     for name, (original_type, compose_type) in params.items():
         # First check if already injected (e.g., Pydantic models from body)
@@ -246,10 +250,10 @@ async def compose_params(
 
 
 async def try_compose_params(
-    params: Mapping[str, tuple[TypeForm, type]],
+    params: ParamSpecMapping,
     scope: Scope,
     agent_cls: type[Agent],
-) -> Option[dict[str, Any]]:
+) -> Option[ComposedParams]:
     """Try to compose params; return Some if all required params succeed.
 
     Like compose_params but returns Nothing if any required (non-Option, non-Result)
@@ -262,7 +266,7 @@ async def try_compose_params(
     from emergent.graph._compose import Composer
 
     composer = Composer.create(scope, agent_cls)
-    composed: dict[str, Any] = {}
+    composed: ComposedParams = {}
 
     for name, (original_type, compose_type) in params.items():
         origin = get_origin(original_type)
@@ -304,7 +308,7 @@ async def resolve_transition(
     transitions: list[Callable[..., Any]],
     scope: Scope,
     agent_cls: type[Agent],
-) -> Option[tuple[Callable[..., Any], dict[str, Any]]]:
+) -> Option[tuple[Callable[..., Any], ComposedParams]]:
     """Resolve first transition whose deps are satisfiable.
 
     Tries each transition in order (like SequentialEither).

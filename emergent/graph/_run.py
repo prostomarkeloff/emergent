@@ -13,6 +13,8 @@ from nodnod import Scope, Value
 
 from emergent.graph._compose import Composer
 
+type InjectedMap = dict[type[Any], Any]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TypedScope
@@ -26,7 +28,7 @@ class TypedScope:
 
     def __init__(self, scope: Scope | None = None, detail: str = "scope") -> None:
         self._scope = scope if scope is not None else Scope(detail=detail)
-        self._injected: dict[type[Any], Any] = {}
+        self._injected: InjectedMap = {}
 
     @property
     def inner(self) -> Scope:
@@ -37,7 +39,7 @@ class TypedScope:
         self._injected[typ] = value
         return self
 
-    def all_injected(self) -> dict[type[Any], Any]:
+    def all_injected(self) -> InjectedMap:
         """Return all injected values."""
         return self._injected
 

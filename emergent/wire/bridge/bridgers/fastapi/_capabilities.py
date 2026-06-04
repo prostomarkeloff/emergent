@@ -40,6 +40,13 @@ from emergent.wire.bridge._capabilities import (
 from emergent.wire.bridge.bridgers.fastapi._utils import find_depends_param
 
 
+type DependsMapAny = dict[Callable[..., Any], Callable[[], Any]]
+type ScopeMapAny = dict[Callable[..., Any], type]
+type DependsMap = dict[Callable[..., object], Callable[[], object]]
+type ScopeMap = dict[Callable[..., object], type]
+type GroupedParams = dict[str, list["ParsedParam"]]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI Type System Parsing (reuses schema inspection)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -86,8 +93,8 @@ def _is_special_fastapi_type(t: type | None) -> bool:
     """Check if type is a FastAPI/Starlette special type."""
     if t is None:
         return False
-    name = getattr(t, "__name__", "")
-    module = getattr(t, "__module__", "")
+    name = t.__name__
+    module = t.__module__
 
     if name in _SPECIAL_TYPE_NAMES:
         return True
@@ -302,11 +309,11 @@ DEFAULT_INFERENCE: tuple[BridgeCapability, ...] = (InferFromFastAPI(),)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_depends_map() -> dict[Callable[..., Any], Callable[[], Any]]:
+def _empty_depends_map() -> DependsMapAny:
     return {}
 
 
-def _empty_scope_map() -> dict[Callable[..., Any], type]:
+def _empty_scope_map() -> ScopeMapAny:
     return {}
 
 
@@ -336,10 +343,10 @@ class MapDepends(BridgeCapability):
     MapDepends is for cross-compilation to non-FastAPI targets.
     """
 
-    depends_map: dict[Callable[..., object], Callable[[], object]] = field(
+    depends_map: DependsMap = field(
         default_factory=_empty_depends_map
     )
-    scope_map: dict[Callable[..., object], type] = field(
+    scope_map: ScopeMap = field(
         default_factory=_empty_scope_map
     )
 
@@ -372,7 +379,7 @@ class MapDepends(BridgeCapability):
 
 def parse_fastapi_handler(
     handler: Callable[..., Any],
-) -> dict[str, list[ParsedParam]]:
+) -> GroupedParams:
     """Parse FastAPI handler and group parameters by source.
 
     Returns dict with keys: "body", "query", "path", "header", "depends", "special", "unknown"
@@ -389,7 +396,7 @@ def parse_fastapi_handler(
         depends_params = params.get("depends", [])
     """
     all_params = _parse_handler_params(handler)
-    grouped: dict[str, list[ParsedParam]] = {
+    grouped: GroupedParams = {
         "body": [],
         "query": [],
         "path": [],

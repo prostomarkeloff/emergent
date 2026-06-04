@@ -16,6 +16,8 @@ from datetime import datetime
 
 from emergent.wire.axis.storage._memory import BaseTTLStorage
 
+type DataMap[K, V] = dict[K, tuple[V, datetime | None]]
+
 
 class FileStorage[K, V](BaseTTLStorage[K, V]):
     """File-based storage with pickle persistence.
@@ -27,7 +29,7 @@ class FileStorage[K, V](BaseTTLStorage[K, V]):
 
     def __init__(self, path: str) -> None:
         self._path = path
-        self._data: dict[K, tuple[V, datetime | None]] = {}
+        self._data: DataMap[K, V] = {}
         self._load()
 
     def _load(self) -> None:

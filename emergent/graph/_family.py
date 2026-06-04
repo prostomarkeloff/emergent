@@ -31,6 +31,16 @@ from types import MappingProxyType
 
 from nodnod import Scope
 
+# type→tier bindings (read-only view).
+type Bindings[K] = Mapping[type, K]
+# Inverted tier→types view.
+type Groups[K] = Mapping[K, frozenset[type]]
+# Working accumulator for inversion (mutated in to_groups).
+type GroupsAcc[K] = dict[K, set[type]]
+# tier→Scope input and type→Scope output of materialize.
+type ScopeByKey[K] = Mapping[K, Scope]
+type ScopeByType = Mapping[type, Scope]
+
 
 @dataclass(frozen=True, slots=True)
 class ScopeFamily[K]:
@@ -43,7 +53,7 @@ class ScopeFamily[K]:
     Interpretation via .materialize() → dict[type, Scope].
     """
 
-    bindings: Mapping[type, K] = field(default_factory=lambda: MappingProxyType({}))
+    bindings: Bindings[K] = field(default_factory=lambda: MappingProxyType({}))
 
     def bind(self, key: K, *types: type) -> ScopeFamily[K]:
         """Bind types to a tier key.
@@ -74,16 +84,16 @@ class ScopeFamily[K]:
         """Which tier a type is bound to (None if unbound)."""
         return self.bindings.get(typ)
 
-    def to_groups(self) -> Mapping[K, frozenset[type]]:
+    def to_groups(self) -> Groups[K]:
         """Invert: tier→types mapping."""
-        result: dict[K, set[type]] = {}
+        result: GroupsAcc[K] = {}
         for typ, key in self.bindings.items():
             result.setdefault(key, set()).add(typ)
         return {k: frozenset(s) for k, s in result.items()}
 
     # --- Interpretation ---
 
-    def materialize(self, scopes: Mapping[K, Scope]) -> Mapping[type, Scope]:
+    def materialize(self, scopes: ScopeByKey[K]) -> ScopeByType:
         """Interpret family into mapped_scopes for nodnod agent.run().
 
         Takes a mapping of tier keys to actual Scope objects (user-created).

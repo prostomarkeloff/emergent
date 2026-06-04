@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, cast
 
 import fastapi
 from kungfu import Some, Nothing
@@ -75,6 +75,10 @@ from emergent.wire.compile.targets.pure import (
 )
 
 
+type JsonDict = dict[str, Any]
+type JsonDictList = list[JsonDict]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI Extractors
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -83,7 +87,7 @@ from emergent.wire.compile.targets.pure import (
 class FastAPIExtractor(Protocol):
     """Extract raw dict from FastAPI request."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, Any]: ...
+    async def extract(self, request: fastapi.Request) -> JsonDict: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,21 +96,20 @@ class FastAPIJsonExtractor:
 
     include_path_params: bool = True
 
-    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         content_type = request.headers.get("content-type", "")
         if (
             "application/x-www-form-urlencoded" in content_type
             or "multipart/form-data" in content_type
         ):
-            body: dict[str, Any] = dict(await request.form())
+            body: JsonDict = dict(await request.form())
         else:
             try:
                 raw_json: Any = await request.json()
             except ValueError:
                 raw_json = {}
-            from typing import cast as _cast
             # request.json() returns Any; isinstance narrows to dict[Unknown, Unknown]
-            body: dict[str, Any] = _cast(dict[str, Any], raw_json) if isinstance(raw_json, dict) else {}
+            body: JsonDict = cast(JsonDict, raw_json) if isinstance(raw_json, dict) else {}
         if self.include_path_params:
             return {**body, **dict(request.path_params)}
         return body
@@ -116,7 +119,7 @@ class FastAPIJsonExtractor:
 class FastAPIQueryExtractor:
     """Extract from query params + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         return {**dict(request.query_params), **dict(request.path_params)}
 
 
@@ -124,7 +127,7 @@ class FastAPIQueryExtractor:
 class FastAPIFormExtractor:
     """Extract from form data + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         return {**dict(await request.form()), **dict(request.path_params)}
 
 
@@ -274,7 +277,7 @@ class FastAPIRoute:
 
     endpoint: Any
     response_model: type | types.UnionType | None = None
-    openapi_extra: dict[str, Any] | None = None
+    openapi_extra: JsonDict | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -427,7 +430,7 @@ def _default_coercion() -> CoercionSpec:
     from emergent.wire.compile._phase import SchemaCompiler, PYDANTIC_PHASE, EntityCompilation
     from emergent.wire.compile._generate import assemble_pydantic
 
-    def _pydantic_validate(model: type, raw: dict[str, Any]) -> dict[str, Any]:
+    def _pydantic_validate(model: type, raw: JsonDict) -> JsonDict:
         instance = model(**raw)
         return instance.model_dump()
 
@@ -534,7 +537,7 @@ def assemble_fastapi_route(
         endpoint = _simple_route
 
     # OpenAPI extra for RRC
-    openapi_extra: dict[str, Any] | None = None
+    openapi_extra: JsonDict | None = None
     if ctx.request_type is not None and ctx.trigger is not None:
         openapi_extra = build_rrc_openapi_extra(handler.codec, ctx.trigger, axes)
 
@@ -554,7 +557,7 @@ def build_rrc_openapi_extra(
     codec: RequestResponseCodec,
     trigger: HTTPRouteTrigger,
     axes: Axes,
-) -> dict[str, Any] | None:
+) -> JsonDict | None:
     """Build openapi_extra for RRC codec using schema axis."""
     import re
     from emergent.wire.compile._schema import to_openapi_schema
@@ -563,7 +566,7 @@ def build_rrc_openapi_extra(
     request_schema = to_openapi_schema(req_cls, axes)
     path_param_names = set(re.findall(r"\{(\w+)\}", trigger.path))
 
-    path_parameters: list[dict[str, Any]] = []
+    path_parameters: JsonDictList = []
     if path_param_names and "properties" in request_schema:
         for name in path_param_names:
             if name in request_schema["properties"]:
@@ -575,7 +578,7 @@ def build_rrc_openapi_extra(
                     "schema": prop,
                 })
 
-    result: dict[str, Any] = {}
+    result: JsonDict = {}
 
     if path_parameters:
         result["parameters"] = path_parameters
@@ -604,7 +607,7 @@ def build_rrc_openapi_extra(
                 },
             }
     else:
-        query_parameters: list[dict[str, Any]] = []
+        query_parameters: JsonDictList = []
         if "properties" in request_schema:
             required_fields = set(request_schema.get("required", []))
             for name, prop in request_schema["properties"].items():
@@ -691,7 +694,7 @@ def register_handler(
                 else:
                     openapi_extra[key] = value
 
-    kwargs: dict[str, Any] = {
+    kwargs: JsonDict = {
         "tags": list(route_ctx.tags) if route_ctx.tags else None,
         "summary": route_ctx.summary,
         "description": route_ctx.description,
@@ -826,8 +829,7 @@ def fastapi_compile(
     )
 
     @asynccontextmanager
-    async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
-        del fastapi_app
+    async def lifespan(_fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
         app_types = list(_family.types_for(App)) if _family else []
         if app_scope is not None:
             async with app_scope_lifespan(app_scope, app_types):

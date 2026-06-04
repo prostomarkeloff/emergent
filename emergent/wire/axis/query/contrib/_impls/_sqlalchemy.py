@@ -77,6 +77,13 @@ from emergent.wire.compile.targets.sqlalchemy import (
 
 T = TypeVar("T")
 
+type StrAnyMap = dict[str, Any]
+type TypeAnyMap = dict[type, Any]
+type WindowHandlerMap = dict[type, Callable[[WindowSpec], Any]]
+type WindowHandlerMapping = Mapping[type, Callable[[WindowSpec], Any]]
+type AggHandlerMap = dict[type, Callable[[AggregateSpec, Any], Any]]
+type AggHandlerMapping = Mapping[type, Callable[[AggregateSpec, Any], Any]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # NextId strategies for SQL databases
@@ -171,7 +178,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         result = await self._session.execute(stmt)
         return result.first() is not None
 
-    async def aggregate(self, query: RelationalQuerySet[T]) -> dict[str, Any]:
+    async def aggregate(self, query: RelationalQuerySet[T]) -> StrAnyMap:
         agg_specs = query.aggregates
 
         if not agg_specs:
@@ -387,7 +394,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         sa_func = self._compile_window_func(spec)
 
         # Build over() kwargs
-        over_kw: dict[str, Any] = {}
+        over_kw: StrAnyMap = {}
         if spec.partition_by:
             over_kw["partition_by"] = [
                 getattr(self._compiled.model, f) for f in spec.partition_by
@@ -401,7 +408,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
         return sa_func.over(**over_kw).label(spec.alias)
 
-    def _compile_window_func(self, spec: WindowSpec, handlers: Mapping[type, Callable[[WindowSpec], Any]] | None = None) -> Any:
+    def _compile_window_func(self, spec: WindowSpec, handlers: WindowHandlerMapping | None = None) -> Any:
         """Compile WindowSpec function to SA func expression.
 
         Args:
@@ -415,7 +422,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             return handler(spec)
         raise TypeError(f"Unsupported window function: {type(spec.func).__name__}")
 
-    def _make_window_func_handlers(self) -> dict[type, Callable[[WindowSpec], Any]]:
+    def _make_window_func_handlers(self) -> WindowHandlerMap:
         """Build handler map for window function compilation. Closures capture model."""
         model = self._compiled.model
 
@@ -438,7 +445,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             if spec.field is None:
                 raise TypeError(f"{type(spec.func).__name__} window requires a field")
             col = getattr(model, spec.field)
-            fn_map: dict[type, Any] = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
+            fn_map: TypeAnyMap = {Sum: func.sum, Avg: func.avg, Min: func.min, Max: func.max}
             sa_fn = fn_map.get(type(spec.func))
             if sa_fn is None:
                 raise TypeError(f"Unsupported numeric window: {type(spec.func).__name__}")
@@ -466,7 +473,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             return source.c[spec.field]
         return getattr(self._compiled.model, spec.field)
 
-    def _compile_aggregate_func(self, spec: AggregateSpec, source: Any = None, handlers: Mapping[type, Callable[[AggregateSpec, Any], Any]] | None = None) -> Any:
+    def _compile_aggregate_func(self, spec: AggregateSpec, source: Any = None, handlers: AggHandlerMapping | None = None) -> Any:
         """Compile AggregateSpec to SA func().label().
 
         Args:
@@ -483,7 +490,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         raise TypeError(f"Unsupported aggregate: {type(spec.func).__name__}")
 
 
-def _make_sa_agg_handlers() -> dict[type, Callable[[AggregateSpec, Any], Any]]:
+def _make_sa_agg_handlers() -> AggHandlerMap:
     """Build handler map for SA aggregate function compilation.
 
     Each handler takes (spec, resolved_col) and returns a SA func expression

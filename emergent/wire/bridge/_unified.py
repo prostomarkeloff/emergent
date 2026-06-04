@@ -48,7 +48,11 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, Any]:
+type MetadataAny = dict[str, Any]
+type MetadataObj = dict[str, object]
+
+
+def _empty_metadata() -> MetadataAny:
     return {}
 
 
@@ -72,7 +76,7 @@ class ExtractedWithShape[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: dict[str, object] = field(default_factory=_empty_metadata)
+    metadata: MetadataObj = field(default_factory=_empty_metadata)
 
     # Extended
     shape: HandlerShape | None = None
@@ -120,7 +124,7 @@ def build_extracted[R: RouteData](
     name: str | None = None,
     description: str | None = None,
     deprecated: bool = False,
-    metadata: dict[str, Any] | None = None,
+    metadata: MetadataAny | None = None,
     # Bridger-provided detectors
     body_detectors: Sequence[BodyDetector] = (),
     di_detectors: Sequence[DIDetector] = (),

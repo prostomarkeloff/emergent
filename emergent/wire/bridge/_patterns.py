@@ -23,6 +23,9 @@ from emergent.wire.bridge._capabilities import (
 )
 
 
+type DependsMap = dict[Any, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Skip Patterns
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -82,7 +85,7 @@ def fastapi_default() -> tuple[BridgeCapability, ...]:
 
 
 def fastapi_with_depends(
-    depends_map: dict[Any, Any],
+    depends_map: DependsMap,
 ) -> tuple[BridgeCapability, ...]:
     """FastAPI with Depends() mapping."""
     from emergent.wire.bridge.bridgers.fastapi import InferFromFastAPI, MapDepends

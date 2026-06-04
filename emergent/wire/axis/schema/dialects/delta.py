@@ -43,6 +43,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 E = TypeVar("E")
 
+type FieldChanges = dict[str, Any]
+
 
 # ============================================================================
 # Delta Field Capability
@@ -309,7 +311,7 @@ def apply_delta(entity: E, delta: Any) -> E:
     Returns:
         New entity instance with delta applied.
     """
-    changes: dict[str, Any] = {}
+    changes: FieldChanges = {}
 
     for delta_field in dc_fields(delta):
         field_delta = getattr(delta, delta_field.name)
@@ -349,7 +351,7 @@ def compose_deltas(*deltas: Any) -> Any:
     # Cast needed: type() returns concrete class at runtime, but pyright
     # cannot infer the type from *deltas varargs
     delta_type_cls = cast(type[Any], type(deltas[0]))
-    composed: dict[str, Any] = {}
+    composed: FieldChanges = {}
 
     for delta in deltas:
         for delta_field in dc_fields(delta):
@@ -396,17 +398,14 @@ def _compose_field_deltas(d1: AnyDelta, d2: AnyDelta) -> AnyDelta:
             set=d2.set if d2.set is not None else d1.set,
         )
 
-    # Check CollectionDelta using attribute check to avoid generic type issues
-    if hasattr(d1, "push") and hasattr(d2, "push"):
-        d1_coll = cast(CollectionDelta[Any], d1)
-        d2_coll = cast(CollectionDelta[Any], d2)
+    if isinstance(d1, CollectionDelta) and isinstance(d2, CollectionDelta):
         # Combine pushes/removes, sum pops, last set/insert wins
         return CollectionDelta(
-            push=(*d1_coll.push, *d2_coll.push),
-            pop=d1_coll.pop + d2_coll.pop,
-            remove=(*d1_coll.remove, *d2_coll.remove),
-            insert=d2_coll.insert if d2_coll.insert is not None else d1_coll.insert,
-            set=d2_coll.set if d2_coll.set is not None else d1_coll.set,
+            push=(*d1.push, *d2.push),
+            pop=d1.pop + d2.pop,
+            remove=(*d1.remove, *d2.remove),
+            insert=d2.insert if d2.insert is not None else d1.insert,
+            set=d2.set if d2.set is not None else d1.set,
         )
 
     # Different types - last wins
@@ -476,8 +475,7 @@ def _delta_kind(delta: AnyDelta) -> str:
         return "numeric"
     if isinstance(delta, StringDelta):
         return "string"
-    # Use hasattr for CollectionDelta to avoid generic type issues with isinstance
-    if hasattr(delta, "push"):
+    if isinstance(delta, CollectionDelta):
         return "collection"
     return "unknown"
 

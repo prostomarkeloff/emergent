@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Generic, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Callable, Generic, Literal, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -82,6 +82,21 @@ ArgparseKwargValue = (
     | Sequence[str] | Sequence[int] | Sequence[str | int | float | bool | None]
 )
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type ArgparseKwargs = dict[str, ArgparseKwargValue]
+type ArgparseKwargMap = Mapping[str, ArgparseKwargValue]
+type ColumnKwargValue = str | int | bool | None
+type ColumnKwargs = dict[str, ColumnKwargValue]
+type ColumnKwargMap = Mapping[str, ColumnKwargValue]
+type TypeMap = Mapping[type, type]
+type SecurityRequirement = dict[str, list[str]]
+type SecuritySpec = tuple[SecurityRequirement, ...]
+type OpenAPIExtra = dict[str, Any]
+type JsonSchemaExtra = dict[str, JsonSchemaValue]
+type MiddlewareSpec = tuple[tuple[type, Mapping[str, Any]], ...]
+type MiddlewareSpecObj = tuple[tuple[type, Mapping[str, object]], ...]
+type ValidateFn = Callable[[type, dict[str, object]], dict[str, object]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Schema Axis Contexts (field-level)
@@ -92,11 +107,11 @@ def _empty_schema() -> JsonSchemaDict:
     return {}
 
 
-def _empty_argparse_kwargs() -> dict[str, ArgparseKwargValue]:
+def _empty_argparse_kwargs() -> ArgparseKwargs:
     return {}
 
 
-def _empty_column_kwargs() -> dict[str, str | int | bool | None]:
+def _empty_column_kwargs() -> ColumnKwargs:
     return {}
 
 
@@ -121,7 +136,7 @@ class ArgparseContext:
     """Argparse compilation context — holds add_argument kwargs."""
     field_name: str
     field_type: type
-    kwargs: Mapping[str, ArgparseKwargValue] = field(default_factory=_empty_argparse_kwargs)
+    kwargs: ArgparseKwargMap = field(default_factory=_empty_argparse_kwargs)
     is_positional: bool = False
     arg_names: tuple[str, ...] | None = None
 
@@ -132,8 +147,8 @@ class SQLAlchemyContext:
     field_name: str
     field_type: type
     column_type: type | None = None
-    column_kwargs: Mapping[str, str | int | bool | None] = field(default_factory=_empty_column_kwargs)
-    type_map: Mapping[type, type] = field(default_factory=lambda: dict[type, type]())
+    column_kwargs: ColumnKwargMap = field(default_factory=_empty_column_kwargs)
+    type_map: TypeMap = field(default_factory=lambda: dict[type, type]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -146,7 +161,7 @@ class DeltaContext:
     """Delta dialect compilation context — accumulates delta field metadata."""
     field_name: str
     field_type: type
-    delta_kind: str | None = None  # "numeric" | "string" | "collection"
+    delta_kind: Literal["numeric", "string", "collection"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,8 +307,8 @@ class FastAPIRouteContext:
     description: str | None = None
     deprecated: bool = False
     operation_id: str | None = None
-    security: tuple[dict[str, list[str]], ...] = ()
-    openapi_extra: dict[str, Any] | None = None
+    security: SecuritySpec = ()
+    openapi_extra: OpenAPIExtra | None = None
     status_code: int | None = None
 
 
@@ -403,13 +418,13 @@ def argparse_arg(
     **kwargs: ArgparseKwargValue,
 ) -> ArgparseContext:
     """Add argparse kwargs — direct dict merge."""
-    merged: dict[str, ArgparseKwargValue] = {**ctx.kwargs, **kwargs}
+    merged: ArgparseKwargs = {**ctx.kwargs, **kwargs}
     return replace(ctx, kwargs=merged)
 
 
 def sqlalchemy_column(ctx: SQLAlchemyContext, **kwargs: str | int | bool | None) -> SQLAlchemyContext:
     """Add Column kwargs — direct dict merge."""
-    merged: dict[str, str | int | bool | None] = {**ctx.column_kwargs, **kwargs}
+    merged: ColumnKwargs = {**ctx.column_kwargs, **kwargs}
     return replace(ctx, column_kwargs=merged)
 
 
@@ -424,7 +439,7 @@ def pydantic_extra(ctx: PydanticContext, **extra: JsonSchemaValue) -> PydanticCo
     """Merge into Pydantic FieldInfo.json_schema_extra — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
     current = fi.json_schema_extra
-    existing: dict[str, JsonSchemaValue] = {}
+    existing: JsonSchemaExtra = {}
     if isinstance(current, dict):
         # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref
         # that pyright cannot fully resolve, producing dict[str | Unknown, ...].
@@ -504,9 +519,9 @@ def fastapi_route(
     description: str | None = None,
     deprecated: bool | None = None,
     operation_id: str | None = None,
-    security: tuple[dict[str, list[str]], ...] | None = None,
+    security: SecuritySpec | None = None,
     status_code: int | None = None,
-    openapi_extra: dict[str, Any] | None = None,
+    openapi_extra: OpenAPIExtra | None = None,
 ) -> FastAPIRouteContext:
     """Modify FastAPI route configuration."""
     merged_extra = ctx.openapi_extra
@@ -749,7 +764,7 @@ class TelegrinderRenderCompilable(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_middleware() -> tuple[tuple[type, Mapping[str, Any]], ...]:
+def _empty_middleware() -> MiddlewareSpec:
     return ()
 
 
@@ -775,7 +790,7 @@ class FastAPIAppContext:
                 )
     """
 
-    middleware: tuple[tuple[type, Mapping[str, object]], ...] = field(
+    middleware: MiddlewareSpecObj = field(
         default_factory=_empty_middleware
     )
     # FastAPI APIRouter objects stored as ``object`` to avoid fastapi import
@@ -929,7 +944,7 @@ class CoercionSpec:
     # Build the validation model from compiled fields: (type, EntityCompilation) → model class
     assemble: Callable[[type, object], type]
     # Validate raw dict against model: (model_class, raw_dict) → typed_dict
-    validate: Callable[[type, dict[str, object]], dict[str, object]]
+    validate: ValidateFn
 
 
 __all__ = (

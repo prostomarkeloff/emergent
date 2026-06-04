@@ -38,6 +38,12 @@ if TYPE_CHECKING:
     from emergent.wire.derive._project import ResponseConverter
 
 
+type RequestFieldMap = dict[str, type]
+type ResponseFieldMap = dict[str, type | tuple[type, int | str | float | bool | None]]
+
+
+
+
 @dataclass(frozen=True, slots=True)
 class ExposureBuilder[T, E]:
     """Declarative builder for Exposure (Trigger x Codec x Capabilities).
@@ -54,8 +60,8 @@ class ExposureBuilder[T, E]:
 
     _name: str
     _entity: type
-    _request_fields: dict[str, type]
-    _response_fields: dict[str, type | tuple[type, int | str | float | bool | None]]
+    _request_fields: RequestFieldMap
+    _response_fields: ResponseFieldMap
     _handler: OperationHandler[T, E] | None
     _trigger: Trigger | None
     _capabilities: tuple[SurfaceCapability, ...]

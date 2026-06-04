@@ -12,6 +12,7 @@ Target compilation via WrapPhase — same pattern as schema compilation.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -33,6 +34,10 @@ from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
 from emergent.wire.compile.targets.pure import app_scope_lifespan
 
 from emergent.graph._family import ScopeFamily
+
+
+type EventRouteMap = Mapping[type, tuple["EventRoute", ...]]
+type EventRouteGroups = dict[type, list["EventRoute"]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -226,9 +231,10 @@ EVENT_COMPILER: TargetCompiler[EventTrigger[object]] = TargetCompiler(
 class EventDispatcher:
     """Compiled event dispatcher — routes events to handlers by type."""
 
-    routes: Mapping[type, tuple[EventRoute, ...]]
+    routes: EventRouteMap
     _app_scope: Scope | None = field(default=None, repr=False)
     _app_compose: frozenset[type] = field(default_factory=lambda: frozenset[type](), repr=False)
+    _lifespan_cm: AbstractAsyncContextManager[Scope] | None = field(default=None, repr=False)
 
     async def dispatch(
         self,
@@ -253,7 +259,7 @@ class EventDispatcher:
         exc_val: BaseException | None,
         exc_tb: object,
     ) -> None:
-        cm = getattr(self, "_lifespan_cm", None)
+        cm = self._lifespan_cm
         if cm is not None:
             await cm.__aexit__(exc_type, exc_val, exc_tb)
 
@@ -287,11 +293,11 @@ def event_compile(
         )
         request_axes = base_axes.with_scope_layer(layer)
 
-    grouped: dict[type, list[EventRoute]] = {}
+    grouped: EventRouteGroups = {}
     for _trigger, _handler, route in _compiler.scan_and_wrap(app, request_axes):
         grouped.setdefault(route.event_type, []).append(route)
 
-    routes: Mapping[type, tuple[EventRoute, ...]] = {
+    routes: EventRouteMap = {
         ev_type: tuple(route_list) for ev_type, route_list in grouped.items()
     }
 

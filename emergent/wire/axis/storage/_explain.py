@@ -34,7 +34,9 @@ from emergent.wire.axis.storage._compose import PrefixKV, TieredKV, FallbackKV, 
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+type ExplainDict = dict[str, Any]
 type StorageExplainHandler = Callable[[Any, _ExplainCtx], dict[str, Any]]
+type HandlerMap = Mapping[type, StorageExplainHandler]
 
 
 class _ExplainCtx:
@@ -42,10 +44,10 @@ class _ExplainCtx:
 
     __slots__ = ("handlers",)
 
-    def __init__(self, handlers: Mapping[type, StorageExplainHandler]) -> None:
+    def __init__(self, handlers: HandlerMap) -> None:
         self.handlers = handlers
 
-    def explain(self, store: Any) -> dict[str, Any]:
+    def explain(self, store: Any) -> ExplainDict:
         """Recursively explain a store."""
         handler = self.handlers.get(type(store))
         if handler is not None:
@@ -68,9 +70,9 @@ def _backend_name(backend: Any) -> str:
     return type(backend).__name__
 
 
-def _unknown_dict(obj: Any) -> dict[str, Any]:
+def _unknown_dict(obj: Any) -> ExplainDict:
     """Fallback for unknown types."""
-    d: dict[str, Any] = {"type": type(obj).__name__}
+    d: ExplainDict = {"type": type(obj).__name__}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         for f in dataclasses.fields(obj):
             val = getattr(obj, f.name)
@@ -88,7 +90,7 @@ def _unknown_dict(obj: Any) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_kv(store: KV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_kv(store: KV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "KV",
         "codec": _codec_name(store.codec),
@@ -96,7 +98,7 @@ def _explain_kv(store: KV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
     }
 
 
-def _explain_kvnx(store: KVNX[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_kvnx(store: KVNX[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "KVNX",
         "codec": _codec_name(store.codec),
@@ -104,7 +106,7 @@ def _explain_kvnx(store: KVNX[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
     }
 
 
-def _explain_queue(store: Queue[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_queue(store: Queue[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "Queue",
         "codec": _codec_name(store.codec),
@@ -112,7 +114,7 @@ def _explain_queue(store: Queue[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
     }
 
 
-def _explain_queue_full(store: QueueFull[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_queue_full(store: QueueFull[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "QueueFull",
         "codec": _codec_name(store.codec),
@@ -120,7 +122,7 @@ def _explain_queue_full(store: QueueFull[Any, Any], ctx: _ExplainCtx) -> dict[st
     }
 
 
-def _explain_pubsub(store: PubSub[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_pubsub(store: PubSub[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "PubSub",
         "codec": _codec_name(store.codec),
@@ -128,28 +130,28 @@ def _explain_pubsub(store: PubSub[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]
     }
 
 
-def _explain_lock(store: Lock[Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_lock(store: Lock[Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "Lock",
         "backend": _backend_name(store.backend),
     }
 
 
-def _explain_lock_extend(store: LockExtend[Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_lock_extend(store: LockExtend[Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "LockExtend",
         "backend": _backend_name(store.backend),
     }
 
 
-def _explain_counter(store: Counter[Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_counter(store: Counter[Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "Counter",
         "backend": _backend_name(store.backend),
     }
 
 
-def _explain_counter_full(store: CounterFull[Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_counter_full(store: CounterFull[Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "CounterFull",
         "backend": _backend_name(store.backend),
@@ -161,7 +163,7 @@ def _explain_counter_full(store: CounterFull[Any], ctx: _ExplainCtx) -> dict[str
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_prefix_kv(store: PrefixKV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_prefix_kv(store: PrefixKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "PrefixKV",
         "prefix": store.prefix,
@@ -169,8 +171,8 @@ def _explain_prefix_kv(store: PrefixKV[Any, Any], ctx: _ExplainCtx) -> dict[str,
     }
 
 
-def _explain_tiered_kv(store: TieredKV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
-    d: dict[str, Any] = {
+def _explain_tiered_kv(store: TieredKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
+    d: ExplainDict = {
         "type": "TieredKV",
         "l1": ctx.explain(store.l1),
         "l2": ctx.explain(store.l2),
@@ -180,7 +182,7 @@ def _explain_tiered_kv(store: TieredKV[Any, Any], ctx: _ExplainCtx) -> dict[str,
     return d
 
 
-def _explain_fallback_kv(store: FallbackKV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_fallback_kv(store: FallbackKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "FallbackKV",
         "primary": ctx.explain(store.primary),
@@ -188,7 +190,7 @@ def _explain_fallback_kv(store: FallbackKV[Any, Any], ctx: _ExplainCtx) -> dict[
     }
 
 
-def _explain_readonly_kv(store: ReadonlyKV[Any, Any], ctx: _ExplainCtx) -> dict[str, Any]:
+def _explain_readonly_kv(store: ReadonlyKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
     return {
         "type": "ReadonlyKV",
         "inner": ctx.explain(store.inner),
@@ -200,7 +202,7 @@ def _explain_readonly_kv(store: ReadonlyKV[Any, Any], ctx: _ExplainCtx) -> dict[
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-STORAGE_EXPLAIN: Mapping[type, StorageExplainHandler] = {
+STORAGE_EXPLAIN: HandlerMap = {
     # Patterns
     KV: _explain_kv,
     KVNX: _explain_kvnx,
@@ -226,8 +228,8 @@ STORAGE_EXPLAIN: Mapping[type, StorageExplainHandler] = {
 
 def storage_dict(
     store: Any,
-    handlers: Mapping[type, StorageExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: HandlerMap | None = None,
+) -> ExplainDict:
     """Storage pattern/wrapper as structured dict.
 
     Args:
@@ -256,7 +258,7 @@ def storage_dict(
 
 def explain_storage(
     store: Any,
-    handlers: Mapping[type, StorageExplainHandler] | None = None,
+    handlers: HandlerMap | None = None,
 ) -> str:
     """Human-readable explanation of a storage pattern. Formats from storage_dict().
 
@@ -277,7 +279,7 @@ def explain_storage(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _format_storage(data: dict[str, Any], indent: int) -> str:
+def _format_storage(data: ExplainDict, indent: int) -> str:
     """Recursively format a storage dict as human-readable string."""
     prefix = "  " * indent
     type_name = data.get("type", "?")

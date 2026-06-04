@@ -43,7 +43,7 @@ def _make_annotated(base_type: type, capabilities: tuple[Capability, ...]) -> ty
     import typing
 
     args: tuple[type | Capability, ...] = (base_type, *capabilities)
-    getitem: Callable[[tuple[type | Capability, ...]], type] = getattr(typing, "Annotated").__getitem__
+    getitem: Callable[[tuple[type | Capability, ...]], type] = typing.Annotated.__getitem__
     return getitem(args)
 
 
@@ -59,6 +59,10 @@ if TYPE_CHECKING:
 type OperationHandler[T, E] = Callable[..., Awaitable[Result[T, E]]]
 type Operation[T, E] = tuple[type, OperationHandler[T, E], Exposure]
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type FieldMap = dict[str, FieldInfo]
+type FieldTypeMap = dict[str, type]
+
 
 @dataclass(frozen=True, slots=True)
 class DeriveCtx[EntityT]:
@@ -71,10 +75,10 @@ class DeriveCtx[EntityT]:
     """
 
     entity: type[EntityT]
-    fields: dict[str, FieldInfo] = dataclass_field(
+    fields: FieldMap = dataclass_field(
         default_factory=lambda: dict[str, FieldInfo]()
     )
-    identity_fields: dict[str, FieldInfo] = dataclass_field(
+    identity_fields: FieldMap = dataclass_field(
         default_factory=lambda: dict[str, FieldInfo]()
     )
     # Query axis
@@ -130,7 +134,7 @@ class DeriveCtx[EntityT]:
         """All identity field names."""
         return tuple(self.identity_fields.keys())
 
-    def non_identity_fields(self) -> dict[str, FieldInfo]:
+    def non_identity_fields(self) -> FieldMap:
         """Get fields excluding all identity fields."""
         return {
             name: info
@@ -138,7 +142,7 @@ class DeriveCtx[EntityT]:
             if name not in self.identity_fields
         }
 
-    def field_types(self, exclude: tuple[str, ...] = ()) -> dict[str, type]:
+    def field_types(self, exclude: tuple[str, ...] = ()) -> FieldTypeMap:
         """Get {name: base_type} dict, optionally excluding fields."""
         return {
             name: info.base_type
@@ -148,13 +152,13 @@ class DeriveCtx[EntityT]:
 
     def annotated_field_types(
         self, exclude: tuple[str, ...] = (), only: set[str] | None = None,
-    ) -> dict[str, type]:
+    ) -> FieldTypeMap:
         """Get {name: Annotated[base_type, *caps]} dict — preserves schema capabilities.
 
         Use for Request/Response types that go through the wire compiler.
         The compiler reads capabilities for Pydantic validation, OpenAPI docs, CLI help.
         """
-        result: dict[str, type] = {}
+        result: FieldTypeMap = {}
         for name, info in self.fields.items():
             if name in exclude:
                 continue

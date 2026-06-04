@@ -116,7 +116,9 @@ class IssueToken[V]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-LOGIN_ROUTES: dict[str, RouteSpec] = {"Login": ("POST", False)}
+type RouteSpecMap = dict[str, RouteSpec]
+
+LOGIN_ROUTES: RouteSpecMap = {"Login": ("POST", False)}
 
 
 @dataclass(frozen=True, slots=True)

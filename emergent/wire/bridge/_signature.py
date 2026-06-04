@@ -29,6 +29,9 @@ from emergent.wire.axis.schema import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+type ParameterMap = dict[str, HandlerParameter]
+
+
 def _empty_caps() -> tuple[SchemaAxisCapability, ...]:
     return ()
 
@@ -53,7 +56,7 @@ class HandlerParameter:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_params() -> dict[str, HandlerParameter]:
+def _empty_params() -> ParameterMap:
     return {}
 
 
@@ -65,7 +68,7 @@ class HandlerSignature:
     Uses schema axis utilities for type unwrapping.
     """
 
-    parameters: dict[str, HandlerParameter] = field(default_factory=_empty_params)
+    parameters: ParameterMap = field(default_factory=_empty_params)
     return_type: type | None = None
     return_capabilities: Sequence[SchemaAxisCapability] = field(default_factory=_empty_caps)
     is_async: bool = False
@@ -80,7 +83,7 @@ class HandlerSignature:
                 return param.base_type
         return None
 
-    def required_parameters(self) -> dict[str, HandlerParameter]:
+    def required_parameters(self) -> ParameterMap:
         """Get parameters without defaults."""
         return {
             name: param
@@ -88,7 +91,7 @@ class HandlerSignature:
             if not param.has_default()
         }
 
-    def optional_parameters(self) -> dict[str, HandlerParameter]:
+    def optional_parameters(self) -> ParameterMap:
         """Get parameters with defaults."""
         return {
             name: param for name, param in self.parameters.items() if param.has_default()
@@ -145,7 +148,7 @@ def analyze_signature(handler: Callable[..., Any]) -> HandlerSignature:
         return HandlerSignature()
 
     # Parse parameters
-    parameters: dict[str, HandlerParameter] = {}
+    parameters: ParameterMap = {}
     for name, param in sig.parameters.items():
         annotation = hints.get(name)
         parameters[name] = _parse_parameter(name, annotation, param.default)

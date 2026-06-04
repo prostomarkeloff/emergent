@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from emergent.wire.derive._handler import HasProvider
 
 
+type SerializedPayload = dict[str, str | int | float | bool]
+
+
 def filter_by_identity[T](
     query: RelationalQuerySet[T], op: HasProvider[T], id_names: tuple[str, ...]
 ) -> RelationalQuerySet[T]:
@@ -89,7 +92,7 @@ async def fetch_by_identity[T](
 
 def serialize_op_fields(op: Any, field_names: tuple[str, ...] | list[str]) -> str:
     """JSON-serialize op fields for audit/event/webhook payloads."""
-    payload: dict[str, str | int | float | bool] = {}
+    payload: SerializedPayload = {}
     for name in field_names:
         val = getattr(op, name, None)
         if val is not None:
@@ -108,7 +111,7 @@ def provider_field(node_type: type) -> type:
     from emergent.wire.axis.query import MutatingRelationalProvider as _MRP_rt
     from emergent.wire.axis.schema.dialects.compose import Node as ComposeNode
 
-    annotated_getitem: Callable[..., type] = getattr(typing, "Annotated").__getitem__
+    annotated_getitem: Callable[..., type] = typing.Annotated.__getitem__
     return annotated_getitem((_MRP_rt, ComposeNode(node_type)))
 
 

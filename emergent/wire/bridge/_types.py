@@ -26,12 +26,16 @@ from dataclasses import dataclass, field
 type RouteData = object
 
 
+type MetadataFactoryResult = dict[str, Any]
+type MetadataMap = dict[str, object]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Extracted — like Handler in surface
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, Any]:
+def _empty_metadata() -> MetadataFactoryResult:
     return {}
 
 
@@ -58,7 +62,7 @@ class Extracted[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: dict[str, object] = field(default_factory=_empty_metadata)
+    metadata: MetadataMap = field(default_factory=_empty_metadata)
 
 
 __all__ = (

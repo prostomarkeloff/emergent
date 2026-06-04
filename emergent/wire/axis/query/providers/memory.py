@@ -62,6 +62,10 @@ from emergent.wire.axis.query._provider import NextId
 
 T = TypeVar("T")
 
+type MemoryAggHandlers = dict[type, AggHandler[list[Any]]]
+type AggResult = dict[str, Any]
+type MemoryAPIHandlers = dict[type, ItemHandler[MemoryAPIContext]]
+
 
 # ─── Memory Relational Provider ───────────────────────────────────────────────
 
@@ -240,8 +244,8 @@ class MemoryRelationalProvider(Generic[T]):
     async def aggregate(
         self,
         query: RelationalQuerySet[T],
-        handlers: dict[type, AggHandler[list[Any]]] | None = None,
-    ) -> dict[str, Any]:
+        handlers: MemoryAggHandlers | None = None,
+    ) -> AggResult:
         """Execute aggregate query.
 
         Args:
@@ -272,7 +276,7 @@ class MemoryRelationalProvider(Generic[T]):
         agg_specs = query.aggregates
         h = handlers if handlers is not None else _make_memory_agg_handlers()
 
-        result: dict[str, Any] = {}
+        result: AggResult = {}
         for spec in agg_specs:
             result[spec.alias] = fold_aggregate(spec, data, h)
         return result
@@ -283,7 +287,7 @@ def _get_non_null_values(data: list[Any], field: str) -> list[Any]:
     return [getattr(item, field) for item in data if getattr(item, field, None) is not None]
 
 
-def _make_memory_agg_handlers() -> dict[type, AggHandler[list[Any]]]:
+def _make_memory_agg_handlers() -> MemoryAggHandlers:
     """Build handler map for in-memory aggregate computation."""
     def handle_count(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
@@ -345,6 +349,8 @@ def _make_memory_agg_handlers() -> dict[type, AggHandler[list[Any]]]:
 K = TypeVar("K")
 V = TypeVar("V")
 
+type KVData[Kk, Vv] = dict[Kk, Vv]
+
 
 class MemoryKVProvider(Generic[K, V]):
     """In-memory KV provider.
@@ -361,11 +367,11 @@ class MemoryKVProvider(Generic[K, V]):
 
     __slots__ = ("_data",)
 
-    def __init__(self, data: dict[K, V] | None = None) -> None:
-        self._data: dict[K, V] = dict(data) if data else {}
+    def __init__(self, data: KVData[K, V] | None = None) -> None:
+        self._data: KVData[K, V] = dict(data) if data else {}
 
     @property
-    def data(self) -> dict[K, V]:
+    def data(self) -> KVData[K, V]:
         """Access raw data."""
         return self._data
 
@@ -453,7 +459,7 @@ def _include_mod_memory_raise(
     )
 
 
-_MEMORY_API_INCLUDE_HANDLER: dict[type, ItemHandler[MemoryAPIContext]] = {
+_MEMORY_API_INCLUDE_HANDLER: MemoryAPIHandlers = {
     IncludeMod: _include_mod_memory_raise,
 }
 

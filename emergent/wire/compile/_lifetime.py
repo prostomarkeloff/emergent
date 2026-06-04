@@ -36,6 +36,7 @@ App = Tier()
 Request = Tier(parent=App)
 
 type ScopeTiers = Mapping[Tier, Sequence[type]]
+type TierScopes = Mapping[Tier, Scope]
 
 _EMPTY_SCOPES: MappingProxyType[Tier, Scope] = MappingProxyType({})
 
@@ -53,7 +54,7 @@ class ScopeLayer:
         compose: family.types_for(leaf)
     """
 
-    scopes: Mapping[Tier, Scope]
+    scopes: TierScopes
     family: ScopeFamily[Tier]
     leaf: Tier
 

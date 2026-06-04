@@ -64,20 +64,29 @@ from emergent.wire.axis.query._expr import (
     fold_expr,
 )
 
+type DictNode = dict[str, Any]
+type SerializeHandlers = dict[type, ExprHandler[DictNode]]
+type SerializeHandlerMap = Mapping[type, ExprHandler[DictNode]]
+type DeserializeFn = Callable[[DictNode, Callable[[DictNode], Expr]], Expr]
+type DeserializeRegistry = dict[str, DeserializeFn]
+type DeserializeRegistryMap = Mapping[str, DeserializeFn]
+type ReprHandlers = dict[type, ExprHandler[str]]
+type ReprHandlerMap = Mapping[type, ExprHandler[str]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Expression → Dict
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _binary_dict(op_name: str) -> ExprHandler[dict[str, Any]]:
+def _binary_dict(op_name: str) -> ExprHandler[DictNode]:
     """Handler factory for binary ops (left/right)."""
-    def handler(node: Expr, recurse: Callable[[Expr], dict[str, Any]]) -> dict[str, Any]:
+    def handler(node: Expr, recurse: Callable[[Expr], DictNode]) -> DictNode:
         return {"op": op_name, "left": recurse(node.left), "right": recurse(node.right)}
     return handler
 
 
-def _make_serialize_handlers() -> dict[type, ExprHandler[dict[str, Any]]]:
+def _make_serialize_handlers() -> SerializeHandlers:
     """Build handler map for Expr → dict serialization."""
     return {
         # Leaf
@@ -130,8 +139,8 @@ def _make_serialize_handlers() -> dict[type, ExprHandler[dict[str, Any]]]:
 
 def expr_to_dict(
     expr: Expr,
-    handlers: Mapping[type, ExprHandler[dict[str, Any]]] | None = None,
-) -> dict[str, Any]:
+    handlers: SerializeHandlerMap | None = None,
+) -> DictNode:
     """Serialize expression to JSON-compatible dict.
 
     Args:
@@ -159,9 +168,9 @@ def expr_to_dict(
 # so it uses a dict-keyed registry rather than fold_expr.
 
 
-def _make_deserialize_registry() -> dict[str, Callable[[dict[str, Any], Callable[[dict[str, Any]], Expr]], Expr]]:
+def _make_deserialize_registry() -> DeserializeRegistry:
     """Build registry for dict → Expr deserialization."""
-    registry: dict[str, Callable[[dict[str, Any], Callable[[dict[str, Any]], Expr]], Expr]] = {}
+    registry: DeserializeRegistry = {}
 
     # Leaf
     registry["field"] = lambda d, _r: Field(d["name"])
@@ -209,8 +218,8 @@ def _make_deserialize_registry() -> dict[str, Callable[[dict[str, Any], Callable
 
 
 def expr_from_dict(
-    data: dict[str, Any],
-    registry: Mapping[str, Callable[[dict[str, Any], Callable[[dict[str, Any]], Expr]], Expr]] | None = None,
+    data: DictNode,
+    registry: DeserializeRegistryMap | None = None,
 ) -> Expr:
     """Deserialize expression from dict.
 
@@ -230,7 +239,7 @@ def expr_from_dict(
     """
     reg = registry if registry is not None else _make_deserialize_registry()
 
-    def recurse(d: dict[str, Any]) -> Expr:
+    def recurse(d: DictNode) -> Expr:
         op = d.get("op")
         factory = reg.get(op)
         if factory is not None:
@@ -313,7 +322,7 @@ def _binary_repr(op_symbol: str) -> ExprHandler[str]:
     return handler
 
 
-def _make_repr_handlers() -> dict[type, ExprHandler[str]]:
+def _make_repr_handlers() -> ReprHandlers:
     """Build handler map for Expr → human-readable string."""
     return {
         # Leaf
@@ -366,7 +375,7 @@ def _make_repr_handlers() -> dict[type, ExprHandler[str]]:
 
 def expr_repr(
     expr: Expr,
-    handlers: Mapping[type, ExprHandler[str]] | None = None,
+    handlers: ReprHandlerMap | None = None,
 ) -> str:
     """Human-readable expression string.
 

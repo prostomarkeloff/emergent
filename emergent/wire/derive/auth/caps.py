@@ -28,6 +28,10 @@ from .validate import TokenValidate
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx
     from emergent.wire.derive._opspec import OpSpec
+    from emergent.wire.derive._codegen import AnnotationValue
+
+type RoleMap = dict[str, str]
+type RequestFieldMap = dict[str, AnnotationValue]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -159,7 +163,7 @@ class AuthorizeOps(SchemaCapability):
     """
 
     identity_type: type
-    role_map: dict[str, str]
+    role_map: RoleMap
     role_getter: Callable[..., set[str]]
     strict: bool = True
 
@@ -236,9 +240,9 @@ class OwnerScoped(SchemaCapability):
         owner_value_type = ctx.fields.get(owner_field, None)
         base_owner_type = owner_value_type.base_type if owner_value_type is not None else str | int
         # Build Annotated type at runtime — Annotated is a special form that pyright
-        # doesn't model as type/UnionType/GenericAlias, so we construct it via getattr.
+        # doesn't model as type/UnionType/GenericAlias.
         import typing as _typing
-        _annotated_getitem: Callable[..., AnnotationValue] = getattr(_typing, "Annotated").__getitem__
+        _annotated_getitem: Callable[..., AnnotationValue] = _typing.Annotated.__getitem__
         owner_request_type: AnnotationValue = _annotated_getitem((base_owner_type, Retrieve(OwnerContext)))
 
         new_specs: list[OpSpec] = []
@@ -252,7 +256,7 @@ class OwnerScoped(SchemaCapability):
             )
 
             input_fields = dict(s.input_fields)
-            request_fields: dict[str, AnnotationValue] = dict(s.request_fields)
+            request_fields: RequestFieldMap = dict(s.request_fields)
             if has_effect(s.effects, Creates):
                 input_fields.pop(owner_field, None)
                 request_fields.pop(owner_field, None)

@@ -48,8 +48,12 @@ if TYPE_CHECKING:
     from nodnod.agent.base import Agent
     from emergent.wire.compile._lifetime import ScopeLayer
 
+type FamilyScopes = Mapping[type, Scope]
+type TransitionResult = tuple[Any, dict[str, Any]] | None
+type ResolveTransition = Callable[..., Awaitable[TransitionResult]]
 
-def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> Mapping[type, Scope]:
+
+def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> FamilyScopes:
     """Compute mapped_scopes from layer's family.
 
     Returns empty dict when no family is configured.
@@ -161,7 +165,7 @@ async def execute_rrc_unified(
 async def execute_stateful_unified(
     handler: Handler[StatefulCodec],
     store_key: str,
-    resolve_transition: Callable[..., Awaitable[tuple[Any, dict[str, Any]] | None]],
+    resolve_transition: ResolveTransition,
     inject_scope: ScopeInjector,
     format_response: ResponseFormatter | None = None,
     axes: Axes | None = None,

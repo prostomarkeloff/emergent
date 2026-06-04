@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Callable, Protocol, TYPE_CHECKING, runtime_checkable
 
 from nodnod import Scope
 
@@ -31,6 +31,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("emergent.compile.pipeline")
 
 
+type StrAnyMap = dict[str, Any]
+type TypeScopeMap = dict[type, Scope]
+
+
+@runtime_checkable
+class _HasErrors(Protocol):
+    """An exception exposing a pydantic-style ``errors()`` accessor."""
+
+    def errors(self) -> Any: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Extractor Protocol — extract raw dict from framework request
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -39,7 +50,7 @@ logger = logging.getLogger("emergent.compile.pipeline")
 class Extractor(Protocol):
     """Extract raw dict from framework request object."""
 
-    async def extract(self, request: Any) -> dict[str, Any]: ...
+    async def extract(self, request: Any) -> StrAnyMap: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,7 +132,7 @@ def _make_scope(layer: ScopeLayer | None, detail: str = "handler") -> Scope:
     return Scope()
 
 
-def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> dict[type, Scope]:
+def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> TypeScopeMap:
     """Compute mapped_scopes from layer's family."""
     if layer is None:
         return {}
@@ -183,8 +194,12 @@ async def execute_with_pipeline(
                         coerced = compiled.coercion.validate(compiled.coerce_model, raw)
                     except Exception as e:
                         if compiled.error_type is not None:
-                            errors_fn = getattr(e, "errors", lambda: [{"msg": str(e)}])
-                            raise compiled.error_type(errors_fn()) from e
+                            details = (
+                                e.errors()
+                                if isinstance(e, _HasErrors)
+                                else [{"msg": str(e)}]
+                            )
+                            raise compiled.error_type(details) from e
                         raise
                 else:
                     coerced = raw

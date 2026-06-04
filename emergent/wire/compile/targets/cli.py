@@ -21,6 +21,8 @@ import types
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
+type StrAnyMap = dict[str, Any]
+
 
 def _ns_get(ns: argparse.Namespace | None, name: str) -> Any:
     """Read an argparse.Namespace attribute by name, returning None if absent.
@@ -148,7 +150,7 @@ async def _stateful_execute_cli(
         inner_scope = scope.create_child("cli-stateful")
         async with inner_scope:
             inner_scope.inject(argparse.Namespace, ns)
-            composed: dict[str, Any] = {}
+            composed: StrAnyMap = {}
             for name, (orig, comp) in params.items():
                 composed[name] = await _compose_cli_param(
                     name, orig, comp, cli_args, inner_scope, EventLoopAgent
@@ -229,7 +231,7 @@ async def _compose_cli_param(
     name: str,
     original_type: TypeForm,
     compose_type: type,
-    cli_args: dict[str, Any],
+    cli_args: StrAnyMap,
     scope: Scope,
     agent_cls: type[Agent],
 ) -> Any:
@@ -296,7 +298,7 @@ def _get_delegate_arg_specs(handler: Any, axes: Axes) -> list[ArgSpec]:
             specs.extend(to_argparse_args(param_type, axes))
         except TypeError:
             cli_name = f"--{name.replace('_', '-')}"
-            kwargs: dict[str, Any] = {}
+            kwargs: StrAnyMap = {}
 
             if param_type in (str, int, float):
                 kwargs["type"] = param_type
@@ -315,11 +317,11 @@ def _get_delegate_arg_specs(handler: Any, axes: Axes) -> list[ArgSpec]:
     return specs
 
 
-def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> dict[str, Any]:
+def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> StrAnyMap:
     """Build handler arguments from parsed namespace."""
     from emergent.wire.axis.schema._inspect import inspect_dataclass
 
-    result: dict[str, Any] = {}
+    result: StrAnyMap = {}
     params = _inspect_handler_params(handler)
 
     for name, param_type, _has_default in params:

@@ -22,6 +22,9 @@ if TYPE_CHECKING:
     from emergent.wire.axis._capability import SQLAlchemyContext, SQLAlchemyTableContext
 
 
+type ColumnKwargs = dict[str, str | int | bool | None]
+
+
 class SQLCapability(SchemaAxisCapability):
     """Base for SQL-specific capabilities."""
 
@@ -45,7 +48,7 @@ class Index(SQLCapability):
     unique: bool = False
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
-        kwargs: dict[str, str | int | bool | None] = {**ctx.column_kwargs, "index": True}
+        kwargs: ColumnKwargs = {**ctx.column_kwargs, "index": True}
         if self.unique:
             kwargs["unique"] = True
         return replace(ctx, column_kwargs=kwargs)
