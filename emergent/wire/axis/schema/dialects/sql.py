@@ -19,10 +19,18 @@ from typing import TYPE_CHECKING
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
-    from emergent.wire.axis._capability import SQLAlchemyContext, SQLAlchemyTableContext
+    from sqlalchemy.sql.elements import ClauseElement
+
+    from emergent.wire.axis._capability import (
+        IndexDialectKwargs,
+        IndexElement,
+        SQLAlchemyContext,
+        SQLAlchemyTableContext,
+    )
 
 
 type ColumnKwargs = dict[str, str | int | bool | None]
+type _PgIndexKwargs = dict[str, str | list[str] | ClauseElement]
 
 
 class SQLCapability(SchemaAxisCapability):
@@ -234,32 +242,30 @@ class CompositeUnique(SQLCapability):
 
 @dataclass(frozen=True, slots=True)
 class CompositeIndex(SQLCapability):
-    """Index across multiple fields.
+    """Index across columns and/or SQL expressions — plain SQL.
 
     Example:
         @schema_meta(CompositeIndex("status", "created_at", name="idx_status_date"))
-        @dataclass
-        class Order: ...
+        @schema_meta(CompositeIndex("user_id", text("created_at DESC"), name="ix_user_recent"))
 
-    SQL: CREATE INDEX
+    `fields` may mix column names and `text(...)`/`col.desc()` expressions (functional
+    index). Dialect-specific extras (access method, partial WHERE, covering INCLUDE) are
+    NOT here — they are their own capability (e.g. `PostgresIndex`), composed by
+    inheritance. SQL: CREATE [UNIQUE] INDEX.
     """
 
-    fields: tuple[str, ...]
+    fields: tuple[IndexElement, ...]
     name: str | None = None
     unique: bool = False
-    using: str | None = None
 
-    def __init__(
-        self,
-        *fields: str,
-        name: str | None = None,
-        unique: bool = False,
-        using: str | None = None,
-    ) -> None:
+    def __init__(self, *fields: IndexElement, name: str | None = None, unique: bool = False) -> None:
         object.__setattr__(self, "fields", fields)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "unique", unique)
-        object.__setattr__(self, "using", using)
+
+    def _dialect_kwargs(self) -> "IndexDialectKwargs":
+        """Literal `Index(...)` dialect kwargs — none for plain SQL; subclasses override."""
+        return {}
 
     def compile_sqlalchemy_table(
         self, ctx: "SQLAlchemyTableContext"
@@ -269,9 +275,61 @@ class CompositeIndex(SQLCapability):
         return sqlalchemy_table(
             ctx,
             add_index=TableIndexSpec(
-                fields=self.fields, name=self.name, unique=self.unique, using=self.using
+                fields=self.fields,
+                name=self.name,
+                unique=self.unique,
+                dialect_kwargs=self._dialect_kwargs(),
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresIndex(CompositeIndex):
+    """Postgres index: a CompositeIndex that gains its OWN identity — access method,
+    partial predicate, covering columns.
+
+    It does not generalise `using`/`where`/`include` into the base (those are not ANSI
+    and mean different things per backend); it is a distinct semantic atom that emits
+    ONLY `postgresql_*` Index kwargs.
+
+    Example:
+        @schema_meta(PostgresIndex("payload", name="ix_payload_gin", using="gin"))
+        @schema_meta(PostgresIndex(
+            "user_id", text("created_at DESC"),
+            name="ix_active_recent", where="deleted_at IS NULL",
+        ))
+        @schema_meta(PostgresIndex("user_id", "kind", name="ix_cover", include=("created_at",)))
+    """
+
+    using: str | None = None
+    where: str | None = None
+    include: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        *fields: IndexElement,
+        name: str | None = None,
+        unique: bool = False,
+        using: str | None = None,
+        where: str | None = None,
+        include: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(*fields, name=name, unique=unique)
+        object.__setattr__(self, "using", using)
+        object.__setattr__(self, "where", where)
+        object.__setattr__(self, "include", include)
+
+    def _dialect_kwargs(self) -> "IndexDialectKwargs":
+        from sqlalchemy import text
+
+        kwargs: _PgIndexKwargs = {}
+        if self.using is not None:
+            kwargs["postgresql_using"] = self.using
+        if self.where is not None:
+            kwargs["postgresql_where"] = text(self.where)
+        if self.include:
+            kwargs["postgresql_include"] = list(self.include)
+        return kwargs
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -333,5 +391,6 @@ __all__ = (
     # Table-Level
     "TableName",
     "CompositeIndex",
+    "PostgresIndex",
     "CompositeUnique",
 )

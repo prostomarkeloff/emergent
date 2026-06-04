@@ -577,6 +577,10 @@ class Doc(UniversalCapability):
     def compile_argparse(self, ctx: "ArgparseContext") -> "ArgparseContext":
         return argparse_arg(ctx, help=self.text)
 
+    def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
+        # one Doc → field description everywhere AND the SQL column comment
+        return sqlalchemy_column(ctx, comment=self.text)
+
 
 @dataclass(frozen=True, slots=True)
 class Deprecated(UniversalCapability):

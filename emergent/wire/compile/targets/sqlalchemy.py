@@ -84,7 +84,6 @@ from emergent.wire.axis.query._expr import (
 
 type SATypeMap = Mapping[type, type]
 type TableSchemaDict = dict[str, str]
-type IndexUsingKwargs = dict[str, str]
 type TableArgItem = Index | UniqueConstraint | TableSchemaDict
 type TableArgs = tuple[TableArgItem, ...] | TableSchemaDict | None
 type ModelAttrs = dict[str, Column[Any] | str | TableSchemaDict | Table | tuple[TableArgItem, ...]]
@@ -160,19 +159,6 @@ class _GeneratedBase(DeclarativeBase):
     pass
 
 
-def _index_dialect_kwargs(using: str | None) -> IndexUsingKwargs:
-    """Render the dialect-neutral index access method as SQLAlchemy kwargs.
-
-    `using` ("btree"/"gin"/"gist"/"hash"/"hnsw"/…) is plain data on the spec.
-    SQLAlchemy exposes an access method per dialect as a `<dialect>_using` Index
-    kwarg; we emit it for the dialects that have one (the active dialect uses its
-    own, others ignore theirs). Not locked to any single dialect.
-    """
-    if using is None:
-        return {}
-    return {"postgresql_using": using, "mysql_using": using}
-
-
 def _build_table_args(
     table_indexes: tuple[TableIndexSpec, ...],
     table_constraints: tuple[TableConstraintSpec, ...],
@@ -188,7 +174,7 @@ def _build_table_args(
         UniqueConstraint(*spec.fields, name=spec.name) for spec in table_constraints
     ]
     items.extend(
-        Index(spec.name, *spec.fields, unique=spec.unique, **_index_dialect_kwargs(spec.using))
+        Index(spec.name, *spec.fields, unique=spec.unique, **spec.dialect_kwargs)
         for spec in table_indexes
     )
     if not items:

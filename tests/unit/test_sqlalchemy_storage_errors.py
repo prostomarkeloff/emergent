@@ -20,7 +20,7 @@ from sqlalchemy.orm import DeclarativeBase
 from kungfu import Error
 
 from emergent.wire.axis.schema._universal import Identity, MaxLen, Unique, schema_meta
-from emergent.wire.axis.schema.dialects.sql import CompositeIndex, CompositeUnique, PrimaryKey
+from emergent.wire.axis.schema.dialects.sql import CompositeIndex, CompositeUnique, PostgresIndex, PrimaryKey
 from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     BoundSQLAlchemyStore,
     SQLAlchemyStorage,
@@ -458,7 +458,7 @@ class TestCompileModelTableLevelIndexesConstraints:
     def test_named_unique_index_and_constraint_materialize(self) -> None:
         @schema_meta(
             CompositeUnique("email", "tenant_id", name="uq_email_tenant"),
-            CompositeIndex("status", "created_at", name="ix_status_created", unique=True, using="btree"),
+            PostgresIndex("status", "created_at", name="ix_status_created", unique=True, using="btree"),
         )
         @dataclass
         class Account:

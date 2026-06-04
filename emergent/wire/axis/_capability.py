@@ -281,22 +281,33 @@ class OpenAPISchemaContext:
     schema: JsonSchemaDict = field(default_factory=_empty_schema)
 
 
+# An index element is either a column name (str) or a SQL expression
+# (`text("lower(x)")`, `col.desc()`, …) — functional indexes need the latter.
+type IndexElement = str | ClauseElement
+
+# Literal SQLAlchemy `Index(...)` dialect kwargs, chosen by a dialect-specific
+# capability (e.g. `{"postgresql_using": "gin"}`). The assembler passes them
+# through verbatim — it does NOT invent or fan out across dialects.
+type IndexDialectKwargs = Mapping[str, str | list[str] | ClauseElement]
+
+
 @dataclass(frozen=True, slots=True)
 class TableIndexSpec:
-    """A table-level index: columns + optional name + uniqueness + access method.
+    """A table-level index: elements + name + uniqueness (+ opaque dialect kwargs).
 
-    `name` and `unique` are plain ANSI SQL. `using` is the optional index access
-    method (``"btree"`` / ``"gin"`` / ``"gist"`` / ``"hash"`` / ``"hnsw"`` / …) —
-    dialect-neutral data here; the SQLAlchemy assembler applies it through
-    whatever dialect kwargs support an access method. Carrying name/method through
-    compilation lets the assembler emit a *named*, correctly-typed ``Index(...)``;
-    column-level ``index=True`` can do neither, so a dropped name/method silently
-    diverges from a hand-written schema.
+    - `fields` may mix column names and SQL expressions (functional indexes).
+    - `name`/`unique` are plain ANSI SQL — the generic capability sets these.
+    - `dialect_kwargs` are literal `Index(...)` kwargs a *dialect-specific*
+      capability chose (access method / partial WHERE / covering INCLUDE). Kept
+      opaque so dialect knowledge lives in the capability, not the assembler.
+
+    Carrying this through compilation lets the assembler emit a faithful
+    ``Index(...)``; column-level ``index=True`` can express none of it.
     """
-    fields: tuple[str, ...]
+    fields: tuple[IndexElement, ...]
     name: str | None = None
     unique: bool = False
-    using: str | None = None
+    dialect_kwargs: IndexDialectKwargs = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
