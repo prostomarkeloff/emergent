@@ -549,13 +549,26 @@ class Compilation[T, Model]:
     fields: tuple[FieldCompilation, ...]
 
     @property
+    def identity_fields(self) -> tuple[str, ...]:
+        """All identity (primary-key) field names, in declaration order.
+
+        A composite primary key (e.g. an association table) declares more than
+        one Identity field; this returns every one. Stores use it to handle
+        composite keys correctly (placeholder stripping, lookup, deletion).
+        """
+        return tuple(
+            fc.name for fc in self.fields if fc[STORAGE_FIELD_PHASE].is_identity
+        )
+
+    @property
     def identity_field(self) -> str | None:
-        """Find the identity field name from compiled fields."""
-        for fc in self.fields:
-            meta = fc[STORAGE_FIELD_PHASE]
-            if meta.is_identity:
-                return fc.name
-        return None
+        """First identity field name, or None.
+
+        Single-key convenience over identity_fields. For composite keys this is
+        only the first column — callers needing the whole key use identity_fields.
+        """
+        fields = self.identity_fields
+        return fields[0] if fields else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

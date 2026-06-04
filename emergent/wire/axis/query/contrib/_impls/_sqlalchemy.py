@@ -31,9 +31,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.sql import ColumnElement, Subquery
 
 from emergent.wire.axis.query._relational import (
     RelationalQuerySet,
@@ -203,11 +204,13 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             raise TypeError(f"insert() requires a dataclass entity, got {type(entity).__name__}")
         data = to_storage_dict(entity, self._compiled.fields)
 
-        # If identity field has autoincrement placeholder (0 or None),
-        # exclude it so the database assigns the real ID.
-        identity = self._compiled.identity_field
-        if identity and data.get(identity) in (0, None):
-            data.pop(identity, None)
+        # Exclude any identity column still holding the autoincrement
+        # placeholder (0 or None) so the database assigns the real value.
+        # Composite keys (association tables) carry several identity columns;
+        # only the placeholders are dropped, real key values are kept.
+        for identity in self._compiled.identity_fields:
+            if data.get(identity) in (0, None):
+                data.pop(identity, None)
 
         model_instance = self._compiled.model(**data)
         self._session.add(model_instance)
@@ -222,9 +225,12 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         return model_to_entity(merged, self._compiled)
 
     async def delete(self, entity: T) -> None:
-        identity = self._compiled.identity_field
-        if identity:
-            key = getattr(entity, identity)
+        identity_fields = self._compiled.identity_fields
+        if identity_fields:
+            # session.get takes a scalar for a single key, a tuple (in PK
+            # column order) for a composite key.
+            values = tuple(getattr(entity, name) for name in identity_fields)
+            key = values[0] if len(values) == 1 else values
             existing = await self._session.get(self._compiled.model, key)
             if existing is not None:
                 await self._session.delete(existing)
@@ -235,20 +241,36 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             await self._session.delete(merged)
             await self._session.flush()
 
+    def _pk_match(
+        self, query: RelationalQuerySet[T]
+    ) -> "tuple[ColumnElement[Any], Subquery]":
+        """Build the primary-key match expression for a bulk delete.
+
+        Returns (key, subquery) where `key.in_(select(subquery))` selects the
+        rows the query identifies. For a single key the match is on one column;
+        for a composite key it is on the column tuple (in PK order), so only
+        rows matching the whole key are affected.
+
+        Any: SQLAlchemy's ColumnElement is generic over the column's Python
+        type, and a composite key mixes heterogeneous column types — there is
+        no single concrete parameter that covers them.
+        """
+        pk_cols = [
+            getattr(self._compiled.model, name)
+            for name in self._compiled.identity_fields
+        ]
+        subq = self._compile_query(query).with_only_columns(*pk_cols).subquery()
+        key = pk_cols[0] if len(pk_cols) == 1 else tuple_(*pk_cols)
+        return key, subq
+
     async def delete_where(self, query: RelationalQuerySet[T]) -> int:
-        identity = self._compiled.identity_field
-        if identity is None:
+        if not self._compiled.identity_fields:
             raise TypeError(
                 "delete_where() requires an identity field on the entity "
                 "(annotate a field with Identity)"
             )
-        pk = getattr(self._compiled.model, identity)
-        subq = (
-            self._compile_query(query)
-            .with_only_columns(pk)
-            .subquery()
-        )
-        stmt = delete(self._compiled.model).where(pk.in_(select(subq)))
+        key, subq = self._pk_match(query)
+        stmt = delete(self._compiled.model).where(key.in_(select(subq)))
         result = await self._session.execute(stmt)
         await self._session.flush()
         return result.rowcount
@@ -265,21 +287,15 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                     .returning()
             )
         """
-        identity = self._compiled.identity_field
-        if identity is None:
+        if not self._compiled.identity_fields:
             raise TypeError(
                 "delete_returning() requires an identity field on the entity "
                 "(annotate a field with Identity)"
             )
 
-        # Build WHERE clause from query filters
-        pk = getattr(self._compiled.model, identity)
-        subq = (
-            self._compile_query(query)
-            .with_only_columns(pk)
-            .subquery()
-        )
-        stmt = delete(self._compiled.model).where(pk.in_(select(subq)))
+        # Build WHERE clause matching the (possibly composite) primary key.
+        key, subq = self._pk_match(query)
+        stmt = delete(self._compiled.model).where(key.in_(select(subq)))
 
         # Add RETURNING columns
         returning_fields = self._extract_returning_fields(query)
