@@ -330,6 +330,77 @@ class HTTPKVCompilable(Protocol):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Explain Context — self-description phase (open-world, symmetric with verify)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+type ExplainValue = str | int | float | bool | None | tuple[str, ...] | list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainEntry:
+    """One self-described step: op name + ordered (name, value) pairs.
+
+    Values are scalar-or-simple-sequence — typed, JSON-serializable.
+    Kept as a closed union to avoid Any while covering every explain
+    payload actually produced by query ops.
+    """
+
+    op: str
+    fields: tuple[tuple[str, ExplainValue], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExplainContext:
+    """Accumulates ExplainEntry during a fold pass."""
+
+    entries: tuple[ExplainEntry, ...] = ()
+
+    def add(self, entry: ExplainEntry) -> ExplainContext:
+        return replace(self, entries=(*self.entries, entry))
+
+
+@runtime_checkable
+class ExplainCompilable(Protocol):
+    """Protocol — op self-describes into an ExplainContext.
+
+    Every op (Filter, OrderBy, Limit, ...) that wants to appear in
+    explain output implements this. Open-world: unknown ops silently
+    skipped by fold. No external registry, no dispatch table.
+    """
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext: ...
+
+
+class AutoPrintable:
+    """Mixin — default compile_explain via dataclass field reflection.
+
+    Inherit for free per-field stringification:
+
+        @dataclass(frozen=True, slots=True)
+        class Limit(AutoPrintable):
+            count: int
+
+        # compile_explain auto-produces ExplainEntry("Limit", (("count", "10"),))
+
+    Override compile_explain for custom format (Filter expr rendering,
+    aggregate spec formatting, etc.).
+    """
+
+    __slots__ = ()
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        import dataclasses as _dc
+        if not _dc.is_dataclass(self) or isinstance(self, type):
+            return ctx.add(ExplainEntry(op=type(self).__name__))
+        pairs = tuple(
+            (f.name, str(getattr(self, f.name)))
+            for f in _dc.fields(self)
+        )
+        return ctx.add(ExplainEntry(op=type(self).__name__, fields=pairs))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # QueryPhase — reified fold spec (analogous to CompilationPhase)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -353,7 +424,7 @@ class QueryPhase[Ctx]:
     method: str
     handlers: Mapping[type, ItemHandler[Ctx]] | None = None
 
-    def fold(self, ops: Iterable[object], initial: Ctx) -> Ctx:
+    def fold(self, ops: Iterable[Any], initial: Ctx) -> Ctx:
         """Run fold() with this phase's protocol and handlers."""
         return _core_fold(ops, initial, self.protocol, self.method, self.handlers)
 
@@ -408,6 +479,12 @@ HTTP_KV: QueryPhase[HTTPKVContext] = QueryPhase(
 )
 
 
+EXPLAIN_QUERY: QueryPhase[ExplainContext] = QueryPhase(
+    protocol=ExplainCompilable,
+    method="compile_explain",
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # QueryCompilation — multi-phase query compilation result
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -430,11 +507,11 @@ class QueryCompilation:
         ctx = self._contexts.get(phase.protocol)
         if ctx is None:
             raise KeyError(f"No context for protocol {phase.protocol.__name__}")
-        return ctx  # type: ignore[return-value]
+        return ctx
 
     def get[Ctx](self, phase: QueryPhase[Ctx]) -> Ctx | None:
         """Get context for phase, or None if not compiled."""
-        return self._contexts.get(phase.protocol)  # type: ignore[return-value]
+        return self._contexts.get(phase.protocol)
 
     def __contains__(self, phase: QueryPhase[Any]) -> bool:
         return phase.protocol in self._contexts
@@ -477,8 +554,8 @@ class QueryCompiler:
 
     def compile(
         self,
-        ops: Iterable[object],
-        initials: Mapping[type, object],
+        ops: Iterable[Any],
+        initials: Mapping[type, Any],
     ) -> QueryCompilation:
         """Compile ops through ALL phases. Each phase folds independently.
 
@@ -486,7 +563,7 @@ class QueryCompiler:
         Ops are materialized once (as tuple) and reused across phases.
         """
         ops_tuple = tuple(ops)
-        contexts: dict[type, object] = {}
+        contexts: dict[type, Any] = {}
         for phase in self.phases:
             ctx = initials[phase.protocol]
             contexts[phase.protocol] = phase.fold(ops_tuple, ctx)

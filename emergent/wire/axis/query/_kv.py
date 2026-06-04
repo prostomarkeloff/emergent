@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import MemoryKVContext, HTTPKVContext
 
+from emergent.wire.axis.query._contexts import ExplainContext, ExplainEntry
+
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -44,6 +46,9 @@ class KVGet(Generic[K]):
         ctx.path = ctx.encode_key(self.key)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainEntry(op="Get", fields=(("key", repr(self.key)),)))
+
 
 @dataclass(frozen=True, slots=True)
 class KVSet(Generic[K, T]):
@@ -62,6 +67,13 @@ class KVSet(Generic[K, T]):
         ctx.body = ctx.encode_value(self.value, self.ttl)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        from emergent.wire.axis.query._contexts import ExplainValue
+        fields: list[tuple[str, ExplainValue]] = [("key", repr(self.key))]
+        if self.ttl is not None:
+            fields.append(("ttl", self.ttl))
+        return ctx.add(ExplainEntry(op="Set", fields=tuple(fields)))
+
 
 @dataclass(frozen=True, slots=True)
 class KVDelete(Generic[K]):
@@ -78,6 +90,9 @@ class KVDelete(Generic[K]):
         ctx.path = ctx.encode_key(self.key)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainEntry(op="Delete", fields=(("key", repr(self.key)),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Exists(Generic[K]):
@@ -92,6 +107,9 @@ class Exists(Generic[K]):
         ctx.method = "HEAD"
         ctx.path = ctx.encode_key(self.key)
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainEntry(op="Exists", fields=(("key", repr(self.key)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +126,9 @@ class Scan:
         ctx.params = ctx.encode_pattern(self.pattern)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainEntry(op="Scan", fields=(("pattern", self.pattern),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Keys:
@@ -122,6 +143,9 @@ class Keys:
         ctx.method = "GET"
         ctx.params = ctx.encode_pattern(self.pattern)
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainEntry(op="Keys", fields=(("pattern", self.pattern),)))
 
 
 # Union type

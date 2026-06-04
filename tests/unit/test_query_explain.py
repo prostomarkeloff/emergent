@@ -357,10 +357,18 @@ class TestExplainDialect:
         assert CustomOp in extended.handlers
 
     def test_without_handler(self):
-        trimmed = RELATIONAL_EXPLAIN_DIALECT.without_handler(Limit)
-        # Limit now falls back to open-world
-        result = trimmed.explain([Limit(10)])
-        assert result[0] == {"op": "Limit"}  # no count — generic fallback
+        # Post-self-compilation: ops self-describe via compile_explain.
+        # without_handler removes a dialect override (if any); the op's own
+        # description remains. To verify the override-removal path, add then
+        # remove a stub handler.
+        def _stub(_op: Limit) -> dict:
+            return {"op": "Limit"}
+
+        overridden = RELATIONAL_EXPLAIN_DIALECT.with_handler(Limit, _stub)
+        assert overridden.explain([Limit(10)])[0] == {"op": "Limit"}
+        reverted = overridden.without_handler(Limit)
+        # Self-description returns: Limit knows how to describe itself.
+        assert reverted.explain([Limit(10)])[0]["count"] == 10
 
     def test_api_dialect(self):
         result = API_EXPLAIN_DIALECT.explain([ListOp(), PageMod(1, 20)])
