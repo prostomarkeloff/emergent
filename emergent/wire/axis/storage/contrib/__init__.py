@@ -36,11 +36,18 @@ def _available(name: str) -> bool:
         return False
 
 
-__all__ = [name for name in _BACKENDS if _available(name)]
+def __getattr__(name: str) -> ModuleType | list[str]:
+    """Resolve backends (and ``__all__``) lazily and *dynamically*.
 
-
-def __getattr__(name: str) -> ModuleType:
-    """Import an available backend submodule lazily, after full init."""
-    if name in __all__:
+    Both ``__all__`` and each backend are recomputed from ``_available`` on
+    access rather than frozen at import time. A frozen snapshot is fragile: a
+    fallback test that hides a dependency and reloads this module (to exercise
+    the optional-backend path) would leave a stale ``__all__`` behind, polluting
+    sibling tests in the same process. Recomputing means there is no snapshot to
+    corrupt — availability always reflects reality at the moment of access.
+    """
+    if name == "__all__":
+        return [backend for backend in _BACKENDS if _available(backend)]
+    if name in _BACKENDS and _available(name):
         return importlib.import_module(f"{__name__}.{name}")
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
