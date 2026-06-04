@@ -27,6 +27,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     LargeBinary,
+    Table,
     Text,
 )
 from sqlalchemy.orm import DeclarativeBase
@@ -78,18 +79,11 @@ from emergent.wire.axis.query._expr import (
     fold_expr,
 )
 
-from typing import Protocol, runtime_checkable
-
 type SATypeMap = Mapping[type, type]
-type ModelAttrs = dict[str, Column[Any] | str | dict[str, str]]
+type ModelAttrs = dict[str, Column[Any] | str | dict[str, str] | Table]
 type ColumnKwargs = dict[str, str | int | bool | None]
 type SAExprHandlers = dict[type, ExprHandler[Any]]
 type SAExprHandlersRO = Mapping[type, ExprHandler[Any]]
-
-
-@runtime_checkable
-class _HasTablename(Protocol):
-    __tablename__: str
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -171,13 +165,24 @@ def _assemble_model[T](
     Creates the ORM model class. No private attrs — metadata lives in Compilation.
     """
     model_base = base or _GeneratedBase
+    model_name = f"{entity.__name__}Model"
 
-    # Reuse existing model if table already compiled
+    # Reuse existing model if table already compiled (idempotent compilation).
+    # Match on the mapper's local table name — robust for classes declared via
+    # `__tablename__` AND via `__table__` (a `__table__`-mapped class carries no
+    # `__tablename__` attribute, so an attribute check would miss it).
     if tablename in model_base.metadata.tables:
         for mapper in model_base.registry.mappers:
-            mapped = mapper.class_
-            if isinstance(mapped, _HasTablename) and mapped.__tablename__ == tablename:
+            local = mapper.local_table
+            if local is not None and local.name == tablename:
                 return mapper.class_
+        # The Table object is registered on this MetaData but no mapped class
+        # carries it (SQLAlchemy's process-global mapper state can be polluted
+        # across compilations — e.g. a same-named model replaced on a shared
+        # base). Map the new class onto the *existing* Table instead of letting
+        # `type(...)` redefine it, which would raise "Table already defined".
+        reuse_attrs: ModelAttrs = {"__table__": model_base.metadata.tables[tablename]}
+        return type(model_name, (model_base,), reuse_attrs)
 
     attrs: ModelAttrs = {
         "__tablename__": tablename,
@@ -211,7 +216,6 @@ def _assemble_model[T](
         else:
             attrs[fc.name] = Column(col_type, **col_kwargs)
 
-    model_name = f"{entity.__name__}Model"
     return type(model_name, (model_base,), attrs)
 
 
