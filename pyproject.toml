@@ -41,8 +41,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
-    "slow: marks tests as slow (skipped in light mode)",
+    "slow: heavy/slow tests — opt-in",
+    "fuzz: schemathesis generative fuzzing — opt-in via EMERGENT_FUZZ=1",
 ]
 asyncio_mode = "strict"
 
@@ -61,6 +63,9 @@ allow-direct-references = true
 [tool.uv.workspace]
 members = []
 
+[tool.uv.sources]
+pytest-fast = { git = "https://github.com/prostomarkeloff/pytest-fast" }
+
 [dependency-groups]
 dev = [
     "emergent[all]",
@@ -75,4 +80,7 @@ dev = [
     "pyright>=1.1.408",
     "ruff>=0.14.11",
     "schemathesis>=4.0",
+    "ast-grep-cli>=0.42.1",
+    "pytest-fast",
+    "pyinstrument>=5.1.2",
 ]
