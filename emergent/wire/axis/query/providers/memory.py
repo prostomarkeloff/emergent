@@ -23,6 +23,8 @@ from emergent.wire.axis.query._contexts import (
     MemoryQueryCompilable,
     MemoryAPIContext,
     MemoryAPICompilable,
+    MemoryKVContext,
+    MEMORY_KV,
 )
 from emergent.wire.compile._core import fold, ItemHandler
 from emergent.wire.axis.query._aggregate import (
@@ -37,8 +39,6 @@ from emergent.wire.axis.query._aggregate import (
     StringAgg,
     fold_aggregate,
 )
-from fnmatch import fnmatch
-
 from emergent.wire.axis.query._kv import (
     KVQuerySet,
     KVGet,
@@ -379,19 +379,25 @@ class MemoryKVProvider(Generic[K, V]):
         """Clear all data."""
         self._data.clear()
 
+    # Each method asserts its expected op (typed precondition + pinned error), then
+    # delegates the actual interpretation to the op's own compile_memory_kv via
+    # MEMORY_KV.fold — symmetric with MemoryRelationalProvider.execute. The data
+    # logic lives only in the ops (axis/query/_kv.py), not duplicated here.
+
     async def get(self, query: KVQuerySet[K, V]) -> Result[V | None, Never]:
         """Get by key."""
         match query.op:
-            case KVGet(key=key):
-                return Ok(self._data.get(key))
+            case KVGet():
+                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+                return Ok(ctx.result)
             case _:
                 raise TypeError(f"get() requires KVGet op, got {type(query.op)}")
 
     async def set(self, query: KVQuerySet[K, V]) -> Result[None, Never]:
         """Set value."""
         match query.op:
-            case KVSet(key=key, value=value):
-                self._data[key] = value
+            case KVSet():
+                MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
                 return Ok(None)
             case _:
                 raise TypeError(f"set() requires KVSet op, got {type(query.op)}")
@@ -399,36 +405,36 @@ class MemoryKVProvider(Generic[K, V]):
     async def delete(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Delete by key."""
         match query.op:
-            case KVDelete(key=key):
-                existed = key in self._data
-                self._data.pop(key, None)
-                return Ok(existed)
+            case KVDelete():
+                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+                return Ok(ctx.result)
             case _:
                 raise TypeError(f"delete() requires KVDelete op, got {type(query.op)}")
 
     async def exists(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Check existence."""
         match query.op:
-            case Exists(key=key):
-                return Ok(key in self._data)
+            case Exists():
+                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+                return Ok(ctx.result)
             case _:
                 raise TypeError(f"exists() requires Exists op, got {type(query.op)}")
 
     async def scan(self, query: KVQuerySet[K, V]) -> Result[list[V], Never]:
         """Scan by pattern."""
         match query.op:
-            case Scan(pattern=pattern):
-                result = [v for k, v in self._data.items() if fnmatch(str(k), pattern)]
-                return Ok(result)
+            case Scan():
+                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+                return Ok(ctx.result)
             case _:
                 raise TypeError(f"scan() requires Scan op, got {type(query.op)}")
 
     async def keys(self, query: KVQuerySet[K, V]) -> Result[list[K], Never]:
         """Get keys by pattern."""
         match query.op:
-            case Keys(pattern=pattern):
-                result = [k for k in self._data if fnmatch(str(k), pattern)]
-                return Ok(result)
+            case Keys():
+                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+                return Ok(ctx.result)
             case _:
                 raise TypeError(f"keys() requires Keys op, got {type(query.op)}")
 
