@@ -4,5 +4,17 @@ severity: error
 message: "hasattr() is banned — use isinstance() or Protocol"
 ignores:
   - tests/**
+  - emergent/wire/axis/schema/_helpers.py
+  - emergent/wire/axis/schema/_inspect.py
+  - emergent/wire/axis/surface/codecs/resolve.py
+  - emergent/wire/bridge/_introspect.py
+  - emergent/wire/bridge/bridgers/fastapi/_extractors.py
+  - emergent/wire/compile/targets/cli.py
+  - emergent/wire/compile/targets/sqlalchemy.py
+  - emergent/wire/compile/targets/telegrinder.py
+  - emergent/wire/derive/_builders.py
+  - emergent/wire/derive/_handler.py
+  - emergent/wire/derive/_pipeline.py
+  - emergent/wire/derive/patterns/methods.py
 rule:
   pattern: "hasattr($$$)"

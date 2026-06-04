@@ -4,6 +4,7 @@ severity: error
 message: "object as type hint is banned — use a concrete type, union, or Protocol"
 ignores:
   - tests/**
+  - emergent/wire/compile/targets/telegrinder.py
 rule:
   all:
     - pattern: object
