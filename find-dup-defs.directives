@@ -1,0 +1,62 @@
+# find-dup-defs noise filters — reviewed & committed. Genuine cross-module
+# copy-paste is consolidated in code (capability helpers, type-guards, empty
+# factories, _wrap_for_stack). These directives cover patterns that are
+# intentional by architecture, not copy-paste.
+
+# ── Module-local TypeVars & sentinels: a naming convention, never copy-paste ──
+suppress:<constants>T=module-local TypeVar
+suppress:<constants>K=module-local TypeVar
+suppress:<constants>V=module-local TypeVar
+suppress:<constants>R=module-local TypeVar
+suppress:<constants>AK=module-local TypeVar
+suppress:<constants>_UNSET=per-module sentinel
+
+# ── 1-line domain type aliases live next to their use (house convention) ──
+de-escalate:<type-aliases>*=1-line alias, conventionally per-module
+
+# ── Open-world self-compilation: every capability/op/auth implements its own
+#    compile_* / enrich protocol method. The identical shape IS the architecture
+#    (fold dispatches structurally); merging would collapse distinct ops. ──
+de-escalate:<methods>*.compile_*=open-world self-compilation, intentional per-op
+de-escalate:<methods>*.enrich=enricher protocol impl, one per enricher
+de-escalate:<methods>*.__post_init__=phase/fold descriptor scan, same pattern by design
+de-escalate:<methods>*.op_defaults=per-handler op defaults
+de-escalate:<methods>*.build=per-handler op builder
+de-escalate:<methods>*RecordNode.__init__=record-node ctor symmetry
+
+# ── Sibling storage capability variants share a parallel API by design:
+#    KV/KVNX, Counter/CounterFull, Queue/QueueFull, Lock/LockExtend ──
+de-escalate:<methods>KVNX.*=sibling storage variant (parallel API to KV)
+de-escalate:<methods>CounterFull.*=sibling storage variant (parallel API to Counter)
+de-escalate:<methods>QueueFull.*=sibling storage variant (parallel API to Queue)
+de-escalate:<methods>LockExtend.*=sibling storage variant (parallel API to Lock)
+
+# ── Querysets/providers expose the same surface across API & relational kinds ──
+de-escalate:<methods>BoundRelationalQuerySet.*=parallel queryset API (API vs relational)
+de-escalate:<methods>RelationalStore.where=parallel queryset API
+de-escalate:<methods>MemoryRelationalProvider.*=parallel in-memory provider API
+de-escalate:<methods>_WorkStealingAgent.*=parallel agent impl (vs CallbackAgent)
+
+# ── Cross-name sibling functions: structurally alike but semantically distinct
+#    (opposite predicates / different domains) — not mergeable copy-paste ──
+de-escalate:<functions>_is_true=boolean sibling of _is_false (opposite predicate)
+de-escalate:<functions>_is_false=boolean sibling of _is_true (opposite predicate)
+de-escalate:<functions>effect_dict=sibling of capability_dict (distinct domain object)
+de-escalate:<functions>_result_node_coroutine=sibling of _compose_coroutine (distinct node path)
+de-escalate:<functions>_wait_node_completed=sibling of _signal_node_completed (distinct op)
+de-escalate:<functions>wrap_rrc_cli_typed=typed variant of wrap_rrc_cli
+de-escalate:<functions>resolve_worker_count=sibling worker resolver
+de-escalate:<functions>_is_list_of_objects=sibling of _is_list (distinct guard)
+de-escalate:<functions>_is_dict=intentional non-narrowing vs narrowing variant
+
+# ── Duplicate Protocol/marker classes restated near their axis (low value) ──
+de-escalate:<classes>FastAPICompilable=protocol restated per axis boundary
+de-escalate:<classes>Filterable=marker protocol restated per dialect
+de-escalate:<classes>_HasValue=tiny structural protocol restated locally
+
+# ── Verified-distinct same-name functions across modules (inspected): same
+#    shape, different types/behaviour — not mergeable copy-paste ──
+de-escalate:<functions>store=distinct factories: query RelationalStore(next_id) vs storage Store(schema), different return types
+de-escalate:<functions>_family_mapped=distinct: _pipeline defensive dict-copy vs _execute raw Mapping
+de-escalate:<functions>_format_value=distinct: query explain str()-fallback vs surface explain repr()-fallback
+de-escalate:<functions>_empty_params=distinct typed factories: ParameterShapeMap vs ParameterMap
