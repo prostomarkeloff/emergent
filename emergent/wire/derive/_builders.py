@@ -39,8 +39,9 @@ if TYPE_CHECKING:
     from emergent.wire.derive._project import ResponseConverter
 
 
-type RequestFieldMap = dict[str, type]
-type ResponseFieldMap = dict[str, type | tuple[type, int | str | float | bool | None]]
+type FieldDefault = int | str | float | bool | None
+type RequestFieldMap = dict[str, type | tuple[type, FieldDefault]]
+type ResponseFieldMap = dict[str, type | tuple[type, FieldDefault]]
 
 
 
@@ -69,7 +70,11 @@ class ExposureBuilder[T, E]:
     _response_converter: ResponseConverter | None
     _collection: bool = False
 
-    def request(self, **fields: type) -> ExposureBuilder[T, E]:
+    def request(self, **fields: type | tuple[type, FieldDefault]) -> ExposureBuilder[T, E]:
+        """Declare request fields. A field may be a bare type, a ``(type, default)``
+        tuple for an optional param, or ``provider_field(Node)`` for scope injection.
+        Non-default fields must be declared before defaulted ones (dataclass ordering).
+        """
         return replace(self, _request_fields=fields)
 
     def response(
@@ -115,15 +120,22 @@ class ExposureBuilder[T, E]:
         if self._handler is None:
             raise ValueError(f"Handler not set for operation '{self._name}'")
 
+        request_field_specs: list[FieldSpec] = []
+        for req_name, req_spec in self._request_fields.items():
+            if isinstance(req_spec, tuple):
+                request_field_specs.append((req_name, req_spec[0], req_spec[1]))
+            else:
+                request_field_specs.append((req_name, req_spec))
+
         op_type = create_dataclass(
             f"{self._entity.__name__}{self._name.title()}Op",
-            list(self._request_fields.items()),
+            request_field_specs,
             frozen=True,
         )
 
         request_type = create_request_type(
             f"{self._name.title()}Request",
-            list(self._request_fields.items()),
+            request_field_specs,
             op_type,
         )
 

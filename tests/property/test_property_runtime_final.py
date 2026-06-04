@@ -1704,6 +1704,35 @@ class TestExposureBuilder:
         assert isinstance(body, list)
         assert body == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
 
+    def test_request_field_default_optional_param(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from emergent.wire.axis.surface import application
+        from emergent.wire.compile.targets.fastapi import fastapi_compile
+        from emergent.wire.derive._builders import endpoint_builder, exposure
+        from emergent.wire.derive._project import dict_converter
+
+        async def handler(op: Any) -> Result[dict[str, Any], str]:
+            return Ok({"page": op.page})
+
+        operation = (
+            exposure("paged", Widget)
+            .request(page=(int, 7))  # optional query param with default
+            .response(page=int)
+            .handler(handler)
+            .response_converter(dict_converter)
+            .trigger(HTTPRouteTrigger("GET", "/paged"))
+            .build()
+        )
+        client = TestClient(fastapi_compile(application().mount(endpoint_builder().build([operation]))))
+        # Omit ?page= entirely → handler receives the declared default.
+        resp = client.get("/paged")
+        assert resp.status_code == 200
+        assert resp.json() == {"page": 7}
+        # Provide it → coerced and used.
+        resp = client.get("/paged", params={"page": 3})
+        assert resp.json() == {"page": 3}
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 18. derive/auth/login.py — LoginOp, token_converter
