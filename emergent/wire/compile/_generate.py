@@ -11,10 +11,13 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
+import operator
 import types
 from dataclasses import dataclass, fields as dc_fields, Field as DCField, MISSING, is_dataclass
-from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING, runtime_checkable
+from functools import lru_cache
+from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING, Union, get_args, get_origin, runtime_checkable
 
 from collections.abc import Sequence
 
@@ -80,6 +83,34 @@ class _HasValue(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pydantic
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+@lru_cache(maxsize=None)
+def _nested_pydantic_model(dc: type) -> type:
+    """Convert a nested dataclass to its emergent pydantic model (cached, dedup by class)."""
+    from emergent.wire.axis.schema._inspect import inspect_dataclass
+
+    return to_pydantic(dc, Axes(schema=inspect_dataclass))
+
+
+def _pydanticize_type(tp: Any) -> Any:
+    """Recursively replace nested dataclass types with their emergent pydantic models.
+
+    A field typed as a plain dataclass (or `list[DC]`, `DC | None`, …) would otherwise
+    be handed to pydantic raw — and pydantic does not surface a stdlib dataclass's
+    docstring as the nested schema `description`. Converting nested dataclasses through
+    `to_pydantic` keeps nested schemas consistent with top-level (docstrings, optionality).
+    TypedDicts/aliases are not dataclasses, so they pass through untouched.
+    """
+    if isinstance(tp, type) and is_dataclass(tp):
+        return _nested_pydantic_model(tp)
+    origin = get_origin(tp)
+    if origin is None:
+        return tp
+    args = tuple(_pydanticize_type(a) for a in get_args(tp))
+    if origin is types.UnionType or origin is Union:
+        return functools.reduce(operator.or_, args)
+    return origin[args[0]] if len(args) == 1 else origin[args]
 
 
 def _authored_docstring(cls: type) -> str | None:
@@ -201,10 +232,13 @@ def _assemble_pydantic(
         if schema_field_info.has(ComposeCapability):
             continue
 
-        # Determine base type
-        base_type: type | types.UnionType = ctx.field_type
+        # Determine base type. Recursively convert nested dataclass types to their
+        # emergent pydantic models so nested schemas carry docstrings/optionality
+        # consistently (pydantic would otherwise treat a raw nested dataclass).
+        field_type: Any = _pydanticize_type(ctx.field_type)
+        base_type: Any = field_type
         if schema_field_info.is_optional:
-            base_type = ctx.field_type | None
+            base_type = field_type | None
 
         # Collect annotated_types markers (Ge, Le, MinLen, MaxLen, etc.)
         # These MUST go directly in Annotated[], NOT in Field(metadata=...)
