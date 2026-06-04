@@ -17,6 +17,7 @@ from dataclasses import dataclass, field as dataclass_field, replace
 from typing import Any, TYPE_CHECKING, Never
 
 from emergent.wire.axis._capability import Capability
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.query import RelationalQuerySet
 from emergent.wire.axis.schema import FieldInfo, fields_with_capability, inspect_type
 from emergent.wire.axis.surface import Exposure
@@ -92,6 +93,17 @@ class DeriveCtx[EntityT]:
     specs: tuple[OpSpec, ...] = ()
     operations: tuple[Operation[object, DomainError], ...] = ()
     capabilities: tuple[SurfaceCapability, ...] = ()
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        """Self-describe via the shared `Explainable` protocol.
+
+        Derive's dict projection is bespoke (semantic trigger labels,
+        scalar-only effect/capability reflection), so it is carried verbatim
+        as `raw` rather than restructured into shared node fields/children.
+        """
+        from emergent.wire.derive._explain import derive_dict
+
+        return ctx.add(ExplainNode(type(self).__name__, raw=derive_dict(self)))
 
     # ─── Backward-compat properties (query axis) ─────────────────
 

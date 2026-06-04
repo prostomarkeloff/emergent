@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
+
 
 @dataclass(frozen=True, slots=True)
 class CLITrigger:
@@ -27,3 +29,9 @@ class CLITrigger:
 
     command: str
     description: str = ""
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        fields: tuple[tuple[str, str], ...] = (("command", self.command),)
+        if self.description:
+            fields = (*fields, ("description", self.description))
+        return ctx.add(ExplainNode("CLITrigger", fields))

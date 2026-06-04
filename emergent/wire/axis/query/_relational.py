@@ -29,7 +29,7 @@ from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import OrderSpec
 from emergent.wire.axis.query._aggregate import AggregateSpec
 from emergent.wire.axis.query._base_qs import RelationalMixin
-from emergent.wire.axis.query._contexts import AutoPrintable, ExplainContext, ExplainEntry
+from emergent.wire.axis._explain import AutoExplain, ExplainContext, ExplainNode
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import (
@@ -75,7 +75,7 @@ class Filter:
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
         from emergent.wire.axis.query._serialize import expr_fields
-        return ctx.add(ExplainEntry(op="Filter", fields=(
+        return ctx.add(ExplainNode(kind="Filter", fields=(
             ("expr", str(self.expr)),
             ("fields", sorted(expr_fields(self.expr))),
         )))
@@ -124,7 +124,7 @@ class OrderBy:
         specs = [
             f"{s.field} {'ASC' if s.ascending else 'DESC'}" for s in self.specs
         ]
-        return ctx.add(ExplainEntry(op="OrderBy", fields=(("specs", specs),)))
+        return ctx.add(ExplainNode(kind="OrderBy", fields=(("specs", specs),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,7 +154,7 @@ class Limit:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Limit", fields=(("count", self.count),)))
+        return ctx.add(ExplainNode(kind="Limit", fields=(("count", self.count),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +173,7 @@ class Offset:
         return replace(ctx, stmt=ctx.stmt.offset(self.count))
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Offset", fields=(("count", self.count),)))
+        return ctx.add(ExplainNode(kind="Offset", fields=(("count", self.count),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +207,7 @@ class Select:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Select", fields=(
+        return ctx.add(ExplainNode(kind="Select", fields=(
             ("fields", list(self.fields)),
         )))
 
@@ -228,7 +228,7 @@ class Join:
         return replace(ctx, stmt=new_stmt)
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Join", fields=(
+        return ctx.add(ExplainNode(kind="Join", fields=(
             ("target", self.target.__name__),
             ("kind", self.kind),
             ("on", str(self.on)),
@@ -236,7 +236,7 @@ class Join:
 
 
 @dataclass(frozen=True, slots=True)
-class GroupBy(AutoPrintable):
+class GroupBy(AutoExplain):
     """GROUP BY clause."""
     fields: tuple[str, ...]
 
@@ -245,7 +245,7 @@ class GroupBy(AutoPrintable):
         return replace(ctx, stmt=ctx.stmt.group_by(*cols))
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="GroupBy", fields=(
+        return ctx.add(ExplainNode(kind="GroupBy", fields=(
             ("fields", list(self.fields)),
         )))
 
@@ -260,7 +260,7 @@ class Having:
         return replace(ctx, stmt=ctx.stmt.having(clause))
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Having", fields=(("expr", str(self.expr)),)))
+        return ctx.add(ExplainNode(kind="Having", fields=(("expr", str(self.expr)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +271,7 @@ class Distinct:
     """
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Distinct"))
+        return ctx.add(ExplainNode(kind="Distinct"))
 
     def _deduplicate(self, data: list[Any]) -> list[Any]:
         seen: set[Hashable] = set()
@@ -322,7 +322,7 @@ class Aggregate:
             f"{s.alias}={type(s.func).__name__}({s.field or '*'})"
             for s in self.specs
         ]
-        return ctx.add(ExplainEntry(op="Aggregate", fields=(("specs", specs),)))
+        return ctx.add(ExplainNode(kind="Aggregate", fields=(("specs", specs),)))
 
 
 # Union type for all relational ops

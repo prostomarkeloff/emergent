@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import MemoryAPIContext, HTTPAPIContext
 
-from emergent.wire.axis.query._contexts import ExplainContext, ExplainEntry
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import (
     FieldProxy,
@@ -63,7 +63,7 @@ class ListOp:
     pass
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="List"))
+        return ctx.add(ExplainNode(kind="List"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +72,7 @@ class GetOp(Generic[K]):
     id: K
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Get", fields=(("id", repr(self.id)),)))
+        return ctx.add(ExplainNode(kind="Get", fields=(("id", repr(self.id)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +81,7 @@ class CreateOp(Generic[T]):
     entity: T
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Create", fields=(
+        return ctx.add(ExplainNode(kind="Create", fields=(
             ("entity_type", type(self.entity).__name__),
         )))
 
@@ -95,7 +95,7 @@ class UpdateOp(Generic[K, T]):
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
         method = "Patch" if self.partial else "Update"
-        return ctx.add(ExplainEntry(op=method, fields=(("id", repr(self.id)),)))
+        return ctx.add(ExplainNode(kind=method, fields=(("id", repr(self.id)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +104,7 @@ class DeleteOp(Generic[K]):
     id: K
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Delete", fields=(("id", repr(self.id)),)))
+        return ctx.add(ExplainNode(kind="Delete", fields=(("id", repr(self.id)),)))
 
 
 # ─── API-only Modifiers (self-compiling) ──────────────────────────────────────
@@ -129,7 +129,7 @@ class PageMod:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Page", fields=(
+        return ctx.add(ExplainNode(kind="Page", fields=(
             ("page", self.page), ("per_page", self.per_page),
         )))
 
@@ -155,7 +155,7 @@ class CursorMod:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Cursor", fields=(
+        return ctx.add(ExplainNode(kind="Cursor", fields=(
             ("cursor", self.cursor), ("limit", self.limit),
         )))
 
@@ -177,7 +177,7 @@ class OffsetMod:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Offset", fields=(
+        return ctx.add(ExplainNode(kind="Offset", fields=(
             ("offset", self.offset), ("limit", self.limit),
         )))
 
@@ -204,7 +204,7 @@ class SearchMod:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Search", fields=(("query", self.query),)))
+        return ctx.add(ExplainNode(kind="Search", fields=(("query", self.query),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +223,7 @@ class IncludeMod:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Include", fields=(
+        return ctx.add(ExplainNode(kind="Include", fields=(
             ("relations", list(self.relations)),
         )))
 

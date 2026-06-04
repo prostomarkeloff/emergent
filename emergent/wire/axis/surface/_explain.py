@@ -19,8 +19,14 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Protocol, TypeGuard, runtime_checkable
+from typing import Any, TypeGuard
 
+from emergent.wire.axis._explain import (
+    ExplainContext,
+    Explainable,
+    callable_name,
+    to_dict,
+)
 from emergent.wire.axis.surface._app import Application
 from emergent.wire.axis.surface._endpoint import Endpoint
 from emergent.wire.axis.surface._types import Exposure
@@ -44,18 +50,6 @@ type SurfaceExplainHandler = Callable[[Any], JsonDict]
 type ExplainHandlers = Mapping[type, SurfaceExplainHandler]
 
 
-@runtime_checkable
-class _Named(Protocol):
-    __name__: str
-
-
-def _callable_name(fn: Callable[..., Any]) -> str:
-    """Name of a callable, falling back to repr when it has no __name__."""
-    if isinstance(fn, _Named):
-        return fn.__name__
-    return repr(fn)
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -77,7 +71,13 @@ def _unknown_dict(obj: Any) -> JsonDict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Trigger Handlers
+# Trigger / Codec handler shims
+#
+# Triggers and codecs self-describe via `compile_explain` (the shared `Explainable`
+# protocol) — that is the path `_explain_obj` takes for real objects. These
+# module-level functions are kept (tests import them and call them directly, often
+# with duck-typed mocks) with their original field-reading bodies, so they remain
+# byte-identical and do not depend on a real `compile_explain` being present.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
@@ -107,11 +107,6 @@ def _explain_event_trigger(t: EventTrigger[Any]) -> JsonDict:
     return {"type": "EventTrigger", "event_type": t.event_type.__name__}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Codec Handlers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
 def _explain_rrc(c: RequestResponseCodec) -> JsonDict:
     return {
         "type": "RequestResponseCodec",
@@ -134,7 +129,7 @@ def _explain_stateful(c: StatefulCodec) -> JsonDict:
 def _explain_delegate(c: DelegateCodec) -> JsonDict:
     d: JsonDict = {
         "type": "DelegateCodec",
-        "handler": _callable_name(c.handler),
+        "handler": callable_name(c.handler),
     }
     return d
 
@@ -149,28 +144,32 @@ def _explain_immediate(c: ImmediateCodec) -> JsonDict:
 def _explain_immediate_factory(c: ImmediateFactoryCodec) -> JsonDict:
     return {
         "type": "ImmediateFactoryCodec",
-        "factory": _callable_name(c.factory),
+        "factory": callable_name(c.factory),
     }
 
 
+# Back-compat: these single-object shims are no longer the dispatch path (that is
+# the Explainable protocol via `_explain_obj`); they are kept only for direct import
+# by tests/tooling. This tuple keeps the references live without re-registering them.
+_LEGACY_SHIMS: tuple[Callable[[Any], JsonDict], ...] = (
+    _explain_http_trigger,
+    _explain_cli_trigger,
+    _explain_telegrinder_trigger,
+    _explain_event_trigger,
+    _explain_rrc,
+    _explain_stateful,
+    _explain_delegate,
+    _explain_immediate,
+    _explain_immediate_factory,
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pre-built handler mapping
+# Handler mapping — empty (triggers/codecs self-describe); override channel
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-SURFACE_EXPLAIN: ExplainHandlers = {
-    # Triggers
-    HTTPRouteTrigger: _explain_http_trigger,
-    CLITrigger: _explain_cli_trigger,
-    TelegrinderTrigger: _explain_telegrinder_trigger,
-    EventTrigger: _explain_event_trigger,
-    # Codecs
-    RequestResponseCodec: _explain_rrc,
-    StatefulCodec: _explain_stateful,
-    DelegateCodec: _explain_delegate,
-    ImmediateCodec: _explain_immediate,
-    ImmediateFactoryCodec: _explain_immediate_factory,
-}
+SURFACE_EXPLAIN: ExplainHandlers = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -182,11 +181,14 @@ def _explain_obj(
     obj: Any,
     handlers: ExplainHandlers | None,
 ) -> JsonDict:
-    """Explain any object using handler dispatch with fallback."""
+    """Explain any object: override handler → `Explainable` protocol → fallback."""
     effective = handlers if handlers is not None else SURFACE_EXPLAIN
     handler = effective.get(type(obj))
     if handler is not None:
         return handler(obj)
+    if isinstance(obj, Explainable):
+        ctx = obj.compile_explain(ExplainContext())
+        return to_dict(ctx.nodes[-1], type_key="type")
     return _unknown_dict(obj)
 
 

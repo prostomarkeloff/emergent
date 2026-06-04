@@ -338,74 +338,10 @@ class HTTPKVCompilable(Protocol):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Explain Context — self-description phase (open-world, symmetric with verify)
+# Explain — unified in emergent.wire.axis._explain. Query ops implement the shared
+# Explainable.compile_explain (ctx -> ctx); ExplainContext / ExplainNode /
+# AutoExplain live there. No query-local explain context any more.
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-type ExplainValue = str | int | float | bool | None | tuple[str, ...] | list[str]
-
-
-@dataclass(frozen=True, slots=True)
-class ExplainEntry:
-    """One self-described step: op name + ordered (name, value) pairs.
-
-    Values are scalar-or-simple-sequence — typed, JSON-serializable.
-    Kept as a closed union to avoid Any while covering every explain
-    payload actually produced by query ops.
-    """
-
-    op: str
-    fields: tuple[tuple[str, ExplainValue], ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class ExplainContext:
-    """Accumulates ExplainEntry during a fold pass."""
-
-    entries: tuple[ExplainEntry, ...] = ()
-
-    def add(self, entry: ExplainEntry) -> ExplainContext:
-        return replace(self, entries=(*self.entries, entry))
-
-
-@runtime_checkable
-class ExplainCompilable(Protocol):
-    """Protocol — op self-describes into an ExplainContext.
-
-    Every op (Filter, OrderBy, Limit, ...) that wants to appear in
-    explain output implements this. Open-world: unknown ops silently
-    skipped by fold. No external registry, no dispatch table.
-    """
-
-    def compile_explain(self, ctx: ExplainContext) -> ExplainContext: ...
-
-
-class AutoPrintable:
-    """Mixin — default compile_explain via dataclass field reflection.
-
-    Inherit for free per-field stringification:
-
-        @dataclass(frozen=True, slots=True)
-        class Limit(AutoPrintable):
-            count: int
-
-        # compile_explain auto-produces ExplainEntry("Limit", (("count", "10"),))
-
-    Override compile_explain for custom format (Filter expr rendering,
-    aggregate spec formatting, etc.).
-    """
-
-    __slots__ = ()
-
-    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        import dataclasses as _dc
-        if not _dc.is_dataclass(self) or isinstance(self, type):
-            return ctx.add(ExplainEntry(op=type(self).__name__))
-        pairs = tuple(
-            (f.name, str(getattr(self, f.name)))
-            for f in _dc.fields(self)
-        )
-        return ctx.add(ExplainEntry(op=type(self).__name__, fields=pairs))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -484,12 +420,6 @@ MEMORY_KV: QueryPhase[MemoryKVContext] = QueryPhase(
 HTTP_KV: QueryPhase[HTTPKVContext] = QueryPhase(
     protocol=HTTPKVCompilable,
     method="compile_http_kv",
-)
-
-
-EXPLAIN_QUERY: QueryPhase[ExplainContext] = QueryPhase(
-    protocol=ExplainCompilable,
-    method="compile_explain",
 )
 
 

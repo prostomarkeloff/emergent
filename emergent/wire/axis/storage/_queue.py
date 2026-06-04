@@ -12,6 +12,7 @@ from typing import Protocol
 
 from kungfu import Result, Option
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage._codec import Codec
 from emergent.wire.axis.storage._result import map_option
 from emergent.wire.axis.storage._capabilities import (
@@ -71,6 +72,17 @@ class Queue[T, E]:
     backend: QueueBackend[E]
     codec: Codec[T]
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "Queue",
+                (
+                    ("codec", type(self.codec).__name__),
+                    ("backend", type(self.backend).__name__),
+                ),
+            )
+        )
+
     async def push(self, value: T) -> Result[None, E]:
         """Push typed value to queue."""
         return await self.backend.push(self.codec.encode(value))
@@ -89,6 +101,17 @@ class QueueFull[T, E]:
 
     backend: QueueBackendFull[E]
     codec: Codec[T]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "QueueFull",
+                (
+                    ("codec", type(self.codec).__name__),
+                    ("backend", type(self.backend).__name__),
+                ),
+            )
+        )
 
     async def push(self, value: T) -> Result[None, E]:
         """Push typed value to queue."""

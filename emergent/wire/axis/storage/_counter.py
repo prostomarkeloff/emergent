@@ -19,6 +19,7 @@ from typing import Protocol
 from kungfu import Result
 
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage._capabilities import (
     Incr as IncrCap,
     Decr as DecrCap,
@@ -76,6 +77,11 @@ class Counter[E]:
 
     backend: CounterBackend[E]
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("Counter", (("backend", type(self.backend).__name__),))
+        )
+
     async def incr(self, key: str) -> Result[int, E]:
         """Atomic increment by 1. Returns new value."""
         return await self.backend.incr(key)
@@ -93,6 +99,11 @@ class CounterFull[E]:
     """
 
     backend: CounterBackendFull[E]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("CounterFull", (("backend", type(self.backend).__name__),))
+        )
 
     async def incr(self, key: str) -> Result[int, E]:
         """Atomic increment by 1. Returns new value."""

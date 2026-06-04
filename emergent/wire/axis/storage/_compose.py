@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 
 from kungfu import Result, Ok, Error, Option, Some, Nothing
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
+
 if TYPE_CHECKING:
     from emergent.wire.axis.storage._kv import KV
 
@@ -41,6 +43,15 @@ class PrefixKV[T, E]:
 
     inner: KV[T, E]
     prefix: str
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "PrefixKV",
+                (("prefix", self.prefix),),
+                (("inner", ctx.explain(self.inner)),),
+            )
+        )
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get with prefixed key."""
@@ -90,6 +101,20 @@ class TieredKV[T, E]:
     l1: KV[T, E]  # Fast tier (memory)
     l2: KV[T, E]  # Slow tier (disk/network)
     l1_ttl: timedelta | None = None  # TTL for L1 cache
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        fields = (
+            (("l1_ttl", self.l1_ttl.total_seconds()),)
+            if self.l1_ttl is not None
+            else ()
+        )
+        return ctx.add(
+            ExplainNode(
+                "TieredKV",
+                fields,
+                (("l1", ctx.explain(self.l1)), ("l2", ctx.explain(self.l2))),
+            )
+        )
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get with cache-aside: L1 → L2 → populate L1."""
@@ -167,6 +192,18 @@ class FallbackKV[T, E]:
     primary: KV[T, E]
     secondary: KV[T, E]
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "FallbackKV",
+                (),
+                (
+                    ("primary", ctx.explain(self.primary)),
+                    ("secondary", ctx.explain(self.secondary)),
+                ),
+            )
+        )
+
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get from primary, fallback to secondary on error."""
         match await self.primary.get(key):
@@ -223,6 +260,11 @@ class ReadonlyKV[T, E]:
     """
 
     inner: KV[T, E]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("ReadonlyKV", (), (("inner", ctx.explain(self.inner)),))
+        )
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get is allowed."""

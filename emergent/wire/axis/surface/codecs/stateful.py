@@ -132,6 +132,7 @@ from typing import (
 
 from kungfu import Option, Some, Nothing
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage import Get, Set, Delete, MemoryStorage
 
 if TYPE_CHECKING:
@@ -317,6 +318,22 @@ class StatefulCodec:
     store: StateStore[Any]
     key_node: type  # Node-like for store key
     agent_cls: type  # nodnod Agent class
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        resp = self.response
+        return ctx.add(
+            ExplainNode(
+                "StatefulCodec",
+                (
+                    ("flow", self.flow.__name__),
+                    (
+                        "response",
+                        resp.__name__ if isinstance(resp, type) else str(resp),
+                    ),
+                    ("key_node", self.key_node.__name__),
+                ),
+            )
+        )
 
 
 # ─── Builder ────────────────────────────────────────────────────────────────

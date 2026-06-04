@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import MemoryKVContext, HTTPKVContext
 
-from emergent.wire.axis.query._contexts import ExplainContext, ExplainEntry
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 
 
 K = TypeVar("K")
@@ -47,7 +47,7 @@ class KVGet(Generic[K]):
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Get", fields=(("key", repr(self.key)),)))
+        return ctx.add(ExplainNode(kind="Get", fields=(("key", repr(self.key)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +68,11 @@ class KVSet(Generic[K, T]):
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        from emergent.wire.axis.query._contexts import ExplainValue
+        from emergent.wire.axis._explain import ExplainValue
         fields: list[tuple[str, ExplainValue]] = [("key", repr(self.key))]
         if self.ttl is not None:
             fields.append(("ttl", self.ttl))
-        return ctx.add(ExplainEntry(op="Set", fields=tuple(fields)))
+        return ctx.add(ExplainNode(kind="Set", fields=tuple(fields)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +91,7 @@ class KVDelete(Generic[K]):
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Delete", fields=(("key", repr(self.key)),)))
+        return ctx.add(ExplainNode(kind="Delete", fields=(("key", repr(self.key)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,7 +109,7 @@ class Exists(Generic[K]):
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Exists", fields=(("key", repr(self.key)),)))
+        return ctx.add(ExplainNode(kind="Exists", fields=(("key", repr(self.key)),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +127,7 @@ class Scan:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Scan", fields=(("pattern", self.pattern),)))
+        return ctx.add(ExplainNode(kind="Scan", fields=(("pattern", self.pattern),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +145,7 @@ class Keys:
         return ctx
 
     def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
-        return ctx.add(ExplainEntry(op="Keys", fields=(("pattern", self.pattern),)))
+        return ctx.add(ExplainNode(kind="Keys", fields=(("pattern", self.pattern),)))
 
 
 # Union type

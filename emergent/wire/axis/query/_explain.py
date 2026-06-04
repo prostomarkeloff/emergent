@@ -26,12 +26,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
-from emergent.wire.axis.query._contexts import (
-    EXPLAIN_QUERY,
+from emergent.wire.axis._explain import (
     ExplainContext,
-    ExplainEntry,
+    ExplainNode,
+    Explainable,
+    explain_nodes,
+    to_dict,
 )
 
 
@@ -39,52 +41,45 @@ type ExplainDict = dict[str, Any]
 type ExplainDictList = list[dict[str, Any]]
 
 
-@runtime_checkable
-class _ExplainCompilable(Protocol):
-    def compile_explain(self, ctx: ExplainContext) -> ExplainContext: ...
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
-# Primary API — typed self-compilation via fold
+# Primary API — typed self-compilation via fold (shared Explainable protocol)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def explain(ops: Sequence[Any]) -> tuple[ExplainEntry, ...]:
-    """Fold ops through ExplainCompilable — typed entries.
+def explain(ops: Sequence[Any]) -> tuple[ExplainNode, ...]:
+    """Fold ops through Explainable — typed nodes.
 
     Open-world: ops that do not implement compile_explain are silently
     skipped (emergent's standard fold semantics).
 
-        entries = explain(query.ops)
-        for e in entries:
-            print(e.op, dict(e.fields))
+        nodes = explain(query.ops)
+        for n in nodes:
+            print(n.kind, dict(n.fields))
     """
-    ctx = EXPLAIN_QUERY.fold(ops, ExplainContext())
-    return ctx.entries
+    return explain_nodes(ops)
 
 
 def format_query(ops: Sequence[Any]) -> str:
-    """Human-readable query explanation — formats from typed ExplainEntry.
+    """Human-readable query explanation — formats from typed ExplainNode.
 
         print(format_query(q.ops))
         #   1. Filter: expr=balance > 100, fields=balance
         #   2. OrderBy: specs=name ASC
         #   3. Limit: count=10
     """
-    entries = explain(ops)
-    return _format_entries(entries)
+    return _format_entries(explain(ops))
 
 
-def _format_entries(entries: Sequence[ExplainEntry]) -> str:
-    if not entries:
+def _format_entries(nodes: Sequence[ExplainNode]) -> str:
+    if not nodes:
         return "(empty)"
     lines: list[str] = []
-    for i, e in enumerate(entries, 1):
-        if e.fields:
-            parts = ", ".join(f"{k}={v}" for k, v in e.fields)
-            lines.append(f"  {i}. {e.op}: {parts}")
+    for i, n in enumerate(nodes, 1):
+        if n.fields:
+            parts = ", ".join(f"{k}={v}" for k, v in n.fields)
+            lines.append(f"  {i}. {n.kind}: {parts}")
         else:
-            lines.append(f"  {i}. {e.op}")
+            lines.append(f"  {i}. {n.kind}")
     return "\n".join(lines)
 
 
@@ -105,11 +100,8 @@ type ExplainHandler = Callable[[Any], dict[str, Any]]
 type HandlerMap = Mapping[type, ExplainHandler]
 
 
-def _entry_to_dict(entry: ExplainEntry) -> ExplainDict:
-    d: ExplainDict = {"op": entry.op}
-    for k, v in entry.fields:
-        d[k] = v
-    return d
+def _entry_to_dict(node: ExplainNode) -> ExplainDict:
+    return to_dict(node, type_key="op")
 
 
 def explain_ops(
@@ -120,7 +112,7 @@ def explain_ops(
 
     Per-op:
       - If a handler is registered for op's exact type, call it.
-      - Else if op implements compile_explain, fold-derive an ExplainEntry
+      - Else if op implements compile_explain, fold-derive an ExplainNode
         and convert to dict.
       - Else return minimal ``{"op": <type_name>}``.
     """
@@ -131,13 +123,12 @@ def explain_ops(
         if op_t in handlers:
             result.append(handlers[op_t](op))
             continue
-        ctx = ExplainContext()
-        if isinstance(op, _ExplainCompilable):
-            ctx = op.compile_explain(ctx)
-        if ctx.entries:
-            result.append(_entry_to_dict(ctx.entries[-1]))
-        else:
-            result.append({"op": op_t.__name__})
+        if isinstance(op, Explainable):
+            ctx = op.compile_explain(ExplainContext())
+            if ctx.nodes:
+                result.append(_entry_to_dict(ctx.nodes[-1]))
+                continue
+        result.append({"op": op_t.__name__})
     return result
 
 

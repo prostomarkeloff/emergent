@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.surface import Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.axis.surface.codecs import rrc
@@ -99,6 +100,18 @@ class OpSpec:
     extra_request_fields: tuple[FieldSpec, ...] = ()
     scope_fields: tuple[str, ...] = ()
     source: str = ""
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        """Self-describe via the shared `Explainable` protocol.
+
+        Derive's per-op dict projection is bespoke (semantic trigger labels,
+        scalar-only effect/capability reflection, scalar-or-dict handler), so it
+        is carried verbatim as `raw` rather than restructured into shared node
+        fields/children.
+        """
+        from emergent.wire.derive._explain import spec_dict
+
+        return ctx.add(ExplainNode(type(self).__name__, raw=spec_dict(self)))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

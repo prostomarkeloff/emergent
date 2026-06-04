@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
+
 Ev = TypeVar("Ev")
 
 
@@ -35,6 +37,11 @@ class EventTrigger(Generic[Ev]):
     """
 
     event_type: type[Ev]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("EventTrigger", (("event_type", self.event_type.__name__),))
+        )
 
 
 __all__ = ("EventTrigger",)

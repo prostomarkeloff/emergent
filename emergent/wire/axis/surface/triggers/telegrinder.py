@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from emergent.wire._telegrinder_compat import ABCRule
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,12 @@ class TelegrinderTrigger:
     def __init__(self, *rules: "ABCRule", view: str = "message") -> None:
         object.__setattr__(self, "rules", rules)
         object.__setattr__(self, "view", view)
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        fields: tuple[tuple[str, str | list[str]], ...] = (("view", self.view),)
+        if self.rules:
+            fields = (*fields, ("rules", [type(r).__name__ for r in self.rules]))
+        return ctx.add(ExplainNode("TelegrinderTrigger", fields))
 
 
 # Backward compatibility alias

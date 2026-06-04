@@ -24,6 +24,7 @@ from typing import Protocol, AsyncIterator
 from kungfu import Result
 
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage._capabilities import (
     Acquire as AcquireCap,
     Release as ReleaseCap,
@@ -86,6 +87,9 @@ class Lock[E]:
 
     backend: LockBackend[E]
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode("Lock", (("backend", type(self.backend).__name__),)))
+
     async def acquire(self, key: str, ttl: timedelta) -> Result[bool, E]:
         """Acquire lock. Returns True if acquired, False if already held."""
         return await self.backend.acquire(key, ttl)
@@ -137,6 +141,11 @@ class LockExtend[E]:
     """
 
     backend: LockBackendExtend[E]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("LockExtend", (("backend", type(self.backend).__name__),))
+        )
 
     async def acquire(self, key: str, ttl: timedelta) -> Result[bool, E]:
         """Acquire lock. Returns True if acquired."""

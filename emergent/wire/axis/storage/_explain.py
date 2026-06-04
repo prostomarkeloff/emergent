@@ -11,22 +11,26 @@ Two layers:
     data = storage_dict(my_kv)           # -> dict
     text = explain_storage(my_kv)        # -> str
 
-Open-world: unknown types get generic fallback.
-Recursive: composition wrappers (PrefixKV, TieredKV, etc.) expand their inner stores.
+Dispatch now goes through the shared `Explainable` protocol (each store carries a
+`compile_explain` method); the external `STORAGE_EXPLAIN` map is kept (empty) for
+API compatibility and as the per-type override channel. Open-world: unknown types
+get the generic `_unknown_dict` fallback. Recursive: composition wrappers (PrefixKV,
+TieredKV, ...) expand their inner stores via `ctx.child`.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
-from emergent.wire.axis.storage._kv import KV, KVNX
-from emergent.wire.axis.storage._queue import Queue, QueueFull
-from emergent.wire.axis.storage._pubsub import PubSub
-from emergent.wire.axis.storage._lock import Lock, LockExtend
-from emergent.wire.axis.storage._counter import Counter, CounterFull
-from emergent.wire.axis.storage._compose import PrefixKV, TieredKV, FallbackKV, ReadonlyKV
+from emergent.wire.axis._explain import (
+    ExplainContext,
+    ExplainNode,
+    Explainable,
+    to_dict,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -40,34 +44,35 @@ type HandlerMap = Mapping[type, StorageExplainHandler]
 
 
 class _ExplainCtx:
-    """Internal context for recursive explain calls."""
+    """Recursive explain driver — per-type override → protocol → fallback.
 
-    __slots__ = ("handlers",)
+    Kept (tests reference it as the custom-handler signature `(store, ctx)`). It
+    threads an `ExplainCtx` whose `child` re-enters this dispatch, so a custom
+    handler propagates to nested stores at any depth.
+    """
+
+    __slots__ = ("handlers", "_ctx")
 
     def __init__(self, handlers: HandlerMap) -> None:
         self.handlers = handlers
+        self._ctx = ExplainContext(resolve=self._resolve)
 
-    def explain(self, store: Any) -> ExplainDict:
-        """Recursively explain a store."""
+    def _resolve(self, store: Any, ctx: ExplainContext) -> ExplainNode:
         handler = self.handlers.get(type(store))
         if handler is not None:
-            return handler(store, self)
-        return _unknown_dict(store)
+            return ExplainNode(type(store).__name__, raw=handler(store, self))
+        if isinstance(store, Explainable):
+            return store.compile_explain(replace(ctx, nodes=())).nodes[-1]
+        return ExplainNode(type(store).__name__, raw=_unknown_dict(store))
+
+    def explain(self, store: Any) -> ExplainDict:
+        """Recursively explain a store into a dict."""
+        return to_dict(self._ctx.explain(store), type_key="type")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Helpers
+# Fallback for unknown types
 # ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _codec_name(codec: Any) -> str:
-    """Get human-readable codec name."""
-    return type(codec).__name__
-
-
-def _backend_name(backend: Any) -> str:
-    """Get human-readable backend name."""
-    return type(backend).__name__
 
 
 def _unknown_dict(obj: Any) -> ExplainDict:
@@ -86,139 +91,11 @@ def _unknown_dict(obj: Any) -> ExplainDict:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pattern Handlers
+# Handler map — empty (stores self-describe via Explainable); override channel
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_kv(store: KV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "KV",
-        "codec": _codec_name(store.codec),
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_kvnx(store: KVNX[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "KVNX",
-        "codec": _codec_name(store.codec),
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_queue(store: Queue[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "Queue",
-        "codec": _codec_name(store.codec),
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_queue_full(store: QueueFull[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "QueueFull",
-        "codec": _codec_name(store.codec),
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_pubsub(store: PubSub[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "PubSub",
-        "codec": _codec_name(store.codec),
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_lock(store: Lock[Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "Lock",
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_lock_extend(store: LockExtend[Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "LockExtend",
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_counter(store: Counter[Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "Counter",
-        "backend": _backend_name(store.backend),
-    }
-
-
-def _explain_counter_full(store: CounterFull[Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "CounterFull",
-        "backend": _backend_name(store.backend),
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Composition Handlers (recursive)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _explain_prefix_kv(store: PrefixKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "PrefixKV",
-        "prefix": store.prefix,
-        "inner": ctx.explain(store.inner),
-    }
-
-
-def _explain_tiered_kv(store: TieredKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    d: ExplainDict = {
-        "type": "TieredKV",
-        "l1": ctx.explain(store.l1),
-        "l2": ctx.explain(store.l2),
-    }
-    if store.l1_ttl is not None:
-        d["l1_ttl"] = store.l1_ttl.total_seconds()
-    return d
-
-
-def _explain_fallback_kv(store: FallbackKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "FallbackKV",
-        "primary": ctx.explain(store.primary),
-        "secondary": ctx.explain(store.secondary),
-    }
-
-
-def _explain_readonly_kv(store: ReadonlyKV[Any, Any], ctx: _ExplainCtx) -> ExplainDict:
-    return {
-        "type": "ReadonlyKV",
-        "inner": ctx.explain(store.inner),
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Pre-built handler mapping
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-STORAGE_EXPLAIN: HandlerMap = {
-    # Patterns
-    KV: _explain_kv,
-    KVNX: _explain_kvnx,
-    Queue: _explain_queue,
-    QueueFull: _explain_queue_full,
-    PubSub: _explain_pubsub,
-    Lock: _explain_lock,
-    LockExtend: _explain_lock_extend,
-    Counter: _explain_counter,
-    CounterFull: _explain_counter_full,
-    # Composition wrappers (recursive)
-    PrefixKV: _explain_prefix_kv,
-    TieredKV: _explain_tiered_kv,
-    FallbackKV: _explain_fallback_kv,
-    ReadonlyKV: _explain_readonly_kv,
-}
+STORAGE_EXPLAIN: HandlerMap = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -234,7 +111,8 @@ def storage_dict(
 
     Args:
         store: Storage instance (KV, Queue, PrefixKV, TieredKV, etc.)
-        handlers: Custom handlers (default: STORAGE_EXPLAIN)
+        handlers: Per-type override handlers (default: none — all stores
+            self-describe via their `compile_explain`)
 
     Returns:
         Dict describing the storage tree. Composition wrappers

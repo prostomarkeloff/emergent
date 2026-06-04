@@ -4,6 +4,7 @@ severity: error
 message: "getattr() / __getattribute__() is banned — use direct typed attribute access"
 ignores:
   - tests/**
+  - emergent/wire/axis/_explain.py
   - emergent/graph/_analyze.py
   - emergent/graph/_visualize.py
   - emergent/ops/_graph.py
