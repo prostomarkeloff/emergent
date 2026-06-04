@@ -269,14 +269,12 @@ def execute_immediate_unified(
     Returns:
         Formatted response
     """
-    from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
+    from emergent.wire.axis.surface.codecs.immediate import ImmediateProducible
 
     codec = handler.codec
 
-    if isinstance(codec, ImmediateCodec):
-        response = codec.response.produce()
-    elif isinstance(codec, ImmediateFactoryCodec):
-        response = codec.factory()
+    if isinstance(codec, ImmediateProducible):
+        response = codec.produce_response()
     else:
         raise TypeError(f"Expected ImmediateCodec or ImmediateFactoryCodec, got {type(codec)}")
 
