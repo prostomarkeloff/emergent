@@ -11,8 +11,9 @@
 
 from __future__ import annotations
 
+import inspect
 import types
-from dataclasses import dataclass, fields as dc_fields, Field as DCField, MISSING
+from dataclasses import dataclass, fields as dc_fields, Field as DCField, MISSING, is_dataclass
 from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 
 from collections.abc import Sequence
@@ -54,7 +55,7 @@ type AnnotationMap = dict[str, type]
 # Pydantic Field(...) keyword arguments (heterogeneous values).
 type FieldKwargs = dict[str, Any]
 # Namespace dict passed to type() when building the model.
-type ModelNamespace = dict[str, dict[str, type] | str]
+type ModelNamespace = dict[str, dict[str, type] | str | None]
 # Argparse argument keyword payload.
 type KwargMap = dict[str, ArgparseKwargValue]
 # Original dataclass fields keyed by name.
@@ -79,6 +80,27 @@ class _HasValue(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 # Pydantic
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _authored_docstring(cls: type) -> str | None:
+    """The class's real docstring, or None.
+
+    `@dataclass` synthesises a signature docstring (``"Cls(a: int, b: str)"``) when the
+    class has none; that is a Python artifact, not an authored description, so we filter
+    it out — otherwise it would leak into the generated model's schema `description`.
+    Detection mirrors CPython's exact dataclass formula, so it's precise, not a guess.
+    """
+    doc = cls.__doc__
+    if doc is None:
+        return None
+    if is_dataclass(cls):
+        try:
+            synthesized = cls.__name__ + str(inspect.signature(cls)).replace(" -> None", "")
+        except (TypeError, ValueError):
+            synthesized = cls.__name__
+        if doc == synthesized:
+            return None
+    return doc
 
 
 def assemble_pydantic(
@@ -229,10 +251,14 @@ def _assemble_pydantic(
         else:
             annotations[name] = base_type
 
-    # Build model via type() with Annotated annotations
+    # Build model via type() with Annotated annotations.
+    # Propagate the source class docstring — pydantic surfaces a model's __doc__ as the
+    # schema `description`, so this keeps one source (the dataclass) driving the description
+    # everywhere, matching a hand-written pydantic model.
     namespace: ModelNamespace = {
         "__annotations__": annotations,
         "__module__": cls.__module__,
+        "__doc__": _authored_docstring(cls),
     }
 
     return type(cls.__name__, (BaseModel,), namespace)
