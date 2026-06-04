@@ -109,3 +109,43 @@ def _cap_asyncio_sleep(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     monkeypatch.setattr(asyncio, "sleep", _capped)
     yield
+
+
+_CONTRIB_PREFIX = "emergent.wire.axis.storage.contrib"
+
+
+@pytest.fixture
+def isolate_sys_modules() -> Iterator[None]:
+    """Snapshot/restore the storage-contrib module subtree around a test.
+
+    Optional-import fallback tests reload ``…storage.contrib`` (and hide its
+    deps) to exercise the missing-backend path, surgically mutating
+    ``sys.modules``. Without restoration those mutations leak into sibling tests
+    in the same process — under serial pytest a later ``importlib.reload(...)``
+    finds ``sys.modules[name]`` and the parent package's attribute pointing at
+    different objects and raises. We scope strictly to the contrib subtree (the
+    only thing these tests perturb) — restoring *all* of ``sys.modules`` would
+    break object identity for unrelated modules sharing the worker. Opt in via
+    ``pytestmark = pytest.mark.usefixtures("isolate_sys_modules")``.
+    """
+
+    def _in_subtree(key: str) -> bool:
+        return key == _CONTRIB_PREFIX or key.startswith(_CONTRIB_PREFIX + ".")
+
+    before = {k: v for k, v in sys.modules.items() if _in_subtree(k)}
+    try:
+        yield
+    finally:
+        for key in list(sys.modules):
+            if _in_subtree(key) and key not in before:
+                del sys.modules[key]
+        # Restore originals and re-bind each as its parent's attribute, so
+        # `from pkg import child` and importlib.reload see a consistent view.
+        for key, module in before.items():
+            sys.modules[key] = module
+            if module is None:
+                continue
+            parent_name, _, child = key.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                parent.__dict__[child] = module

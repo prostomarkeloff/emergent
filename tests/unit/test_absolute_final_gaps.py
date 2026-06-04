@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from kungfu import Ok, Error, Some
 
+# Some tests here reload modules / mutate sys.modules — isolate per test so they
+# can't leak into siblings or other files in the same process.
+pytestmark = pytest.mark.usefixtures("isolate_sys_modules")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ops/_graph.py — lines 94-95, 305, 384
