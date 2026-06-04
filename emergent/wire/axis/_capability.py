@@ -282,13 +282,38 @@ class OpenAPISchemaContext:
 
 
 @dataclass(frozen=True, slots=True)
+class TableIndexSpec:
+    """A table-level index: columns + optional name + uniqueness + access method.
+
+    `name` and `unique` are plain ANSI SQL. `using` is the optional index access
+    method (``"btree"`` / ``"gin"`` / ``"gist"`` / ``"hash"`` / ``"hnsw"`` / …) —
+    dialect-neutral data here; the SQLAlchemy assembler applies it through
+    whatever dialect kwargs support an access method. Carrying name/method through
+    compilation lets the assembler emit a *named*, correctly-typed ``Index(...)``;
+    column-level ``index=True`` can do neither, so a dropped name/method silently
+    diverges from a hand-written schema.
+    """
+    fields: tuple[str, ...]
+    name: str | None = None
+    unique: bool = False
+    using: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TableConstraintSpec:
+    """A table-level unique constraint: columns + optional name."""
+    fields: tuple[str, ...]
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SQLAlchemyTableContext:
     """SQLAlchemy table-level compilation context."""
     class_name: str
     table_name: str | None = None
     is_abstract: bool = False
-    constraints: tuple[tuple[str, ...], ...] = ()
-    indexes: tuple[tuple[str, ...], ...] = ()
+    constraints: tuple[TableConstraintSpec, ...] = ()
+    indexes: tuple[TableIndexSpec, ...] = ()
     extra_columns: tuple[ExtraColumnSpec[Any], ...] = ()
 
 
@@ -491,8 +516,8 @@ def sqlalchemy_table(
     *,
     table_name: str | None = None,
     is_abstract: bool | None = None,
-    add_constraint: tuple[str, ...] | None = None,
-    add_index: tuple[str, ...] | None = None,
+    add_constraint: TableConstraintSpec | None = None,
+    add_index: TableIndexSpec | None = None,
     add_column: ExtraColumnSpec[Any] | None = None,
 ) -> SQLAlchemyTableContext:
     """Modify SQLAlchemy table context."""

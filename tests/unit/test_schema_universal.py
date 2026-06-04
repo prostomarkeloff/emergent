@@ -194,7 +194,7 @@ class TestCompositeUnique:
         ctx = SQLAlchemyTableContext(class_name="User")
         result = cu.compile_sqlalchemy_table(ctx)
         assert len(result.constraints) == 1
-        assert result.constraints[0] == ("email", "org_id")
+        assert result.constraints[0].fields == ("email", "org_id")
 
 
 class TestCompositeIndex:
@@ -212,7 +212,8 @@ class TestCompositeIndex:
         ctx = SQLAlchemyTableContext(class_name="Order")
         result = ci.compile_sqlalchemy_table(ctx)
         assert len(result.indexes) == 1
-        assert result.indexes[0] == ("status", "created_at")
+        assert result.indexes[0].fields == ("status", "created_at")
+        assert result.indexes[0].unique is False
 
 
 class TestDiscriminator:
@@ -782,7 +783,9 @@ class TestIntegrationSchemaMetaComposition:
         assert cu is not None
         cu_result = cu.compile_sqlalchemy_table(ctx)
         assert len(cu_result.constraints) == 1
-        assert cu_result.constraints[0] == ("user_id", "product_id")
+        assert cu_result.constraints[0].fields == ("user_id", "product_id")
+        # name now propagates through compilation (previously dropped)
+        assert cu_result.constraints[0].name == "uq_user_product"
 
         assert ci is not None
         ci_result = ci.compile_sqlalchemy_table(ctx)

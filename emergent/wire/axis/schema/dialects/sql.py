@@ -225,7 +225,11 @@ class CompositeUnique(SQLCapability):
     def compile_sqlalchemy_table(
         self, ctx: "SQLAlchemyTableContext"
     ) -> "SQLAlchemyTableContext":
-        return replace(ctx, constraints=(*ctx.constraints, self.fields))
+        from emergent.wire.axis._capability import TableConstraintSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx, add_constraint=TableConstraintSpec(fields=self.fields, name=self.name)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,18 +247,31 @@ class CompositeIndex(SQLCapability):
     fields: tuple[str, ...]
     name: str | None = None
     unique: bool = False
+    using: str | None = None
 
     def __init__(
-        self, *fields: str, name: str | None = None, unique: bool = False
+        self,
+        *fields: str,
+        name: str | None = None,
+        unique: bool = False,
+        using: str | None = None,
     ) -> None:
         object.__setattr__(self, "fields", fields)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "unique", unique)
+        object.__setattr__(self, "using", using)
 
     def compile_sqlalchemy_table(
         self, ctx: "SQLAlchemyTableContext"
     ) -> "SQLAlchemyTableContext":
-        return replace(ctx, indexes=(*ctx.indexes, self.fields))
+        from emergent.wire.axis._capability import TableIndexSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx,
+            add_index=TableIndexSpec(
+                fields=self.fields, name=self.name, unique=self.unique, using=self.using
+            ),
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
