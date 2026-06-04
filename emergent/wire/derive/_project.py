@@ -433,6 +433,43 @@ class CustomResponse:
         return list(self.field_specs), self.converter
 
 
+@dataclass(frozen=True, slots=True)
+class EnvelopeResponse:
+    """Response shape declared as a plain envelope dataclass — no hand-written specs.
+
+    `field_specs` are read from the envelope's dataclass fields; the `data_field`
+    (the list-of-entities slot) is retyped to ``list[ctx.entity]`` at compile time.
+    The converter is the generic dict/obj → dataclass mapper. Lets a caller write::
+
+        @dataclass
+        class ListEnvelope:
+            data: list          # retyped to list[entity]
+            total: int
+            next_cursor: str | None
+
+        response_spec = EnvelopeResponse(ListEnvelope)
+
+    instead of hand-writing a `resolve()` with field_specs + a bespoke converter.
+    """
+
+    envelope: type
+    data_field: str = "data"
+
+    def resolve[EntityT](self, ctx: DeriveCtx[EntityT]) -> ResolvedResponse:
+        from dataclasses import fields as dataclass_fields
+        from typing import get_type_hints
+
+        entity = ctx.entity
+        hints = get_type_hints(self.envelope)
+        specs: list[FieldSpec] = []
+        for f in dataclass_fields(self.envelope):
+            if f.name == self.data_field:
+                specs.append((f.name, list[entity]))
+            else:
+                specs.append((f.name, hints[f.name]))
+        return specs, dict_converter
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Convenience Constructors
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -498,6 +535,9 @@ def custom_response(
 ) -> CustomResponse:
     return CustomResponse(field_specs=field_specs, converter=converter)
 
+def envelope_response(envelope: type, data_field: str = "data") -> EnvelopeResponse:
+    return EnvelopeResponse(envelope=envelope, data_field=data_field)
+
 def composed_response(
     projection: ResponseProjection,
     converter: ResponseConverterProto,
@@ -516,7 +556,7 @@ __all__ = (
     "response_fields", "response_converter",
     "EntityResponse", "ListResponse", "OkResponse",
     "PaginatedResponse", "CountResponse", "BoolResponse",
-    "EmptyResponse", "CursorPaginatedResponse", "CustomResponse",
+    "EmptyResponse", "CursorPaginatedResponse", "CustomResponse", "EnvelopeResponse",
     "dict_converter",
     "all_fields", "id_only", "non_id", "required_non_id", "no_fields",
     "exclude_from", "fields", "exclude", "optional_non_id", "merge",

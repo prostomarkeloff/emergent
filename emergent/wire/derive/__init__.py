@@ -25,9 +25,13 @@ from emergent.wire.derive._materialize import materialize
 from emergent.wire.derive._metadata import DerivedMetadata
 from emergent.wire.derive._project import (
     ComposedResponseSpec,
+    CustomResponse,
+    EnvelopeResponse,
     ResponseConverterProto,
     ResponseProjection,
     composed_response,
+    custom_response,
+    envelope_response,
 )
 from emergent.wire.derive._protocols import (
     DeriveAugmentable,
@@ -202,7 +206,11 @@ __all__ = (
     "ResponseProjection",
     "ResponseConverterProto",
     "ComposedResponseSpec",
+    "CustomResponse",
+    "EnvelopeResponse",
     "composed_response",
+    "custom_response",
+    "envelope_response",
     # Pipeline
     "Pipeline",
     "PipelineStep",
