@@ -204,8 +204,8 @@ class TestRef:
         ctx = _sqlalchemy_ctx()
         result = cap.compile_sqlalchemy(ctx)
         assert result.column_kwargs["fk_target"] == "users.id"
-        assert result.column_kwargs["fk_ondelete"] == "CASCADE"
-        assert result.column_kwargs["fk_onupdate"] == "CASCADE"
+        assert result.column_kwargs["fk_ondelete"] is None
+        assert result.column_kwargs["fk_onupdate"] is None
 
     def test_compile_sqlalchemy_type_target_with_tablename(self) -> None:
         class UserModel:

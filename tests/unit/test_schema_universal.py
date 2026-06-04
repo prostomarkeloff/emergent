@@ -287,10 +287,11 @@ class TestUnique:
 
 
 class TestRef:
-    def test_default_cascade(self):
+    def test_default_no_action(self):
+        # default: no referential-action clause (bare FK == SQL NO ACTION)
         ref = Ref(target="Team")
-        assert ref.on_delete == "CASCADE"
-        assert ref.on_update == "CASCADE"
+        assert ref.on_delete is None
+        assert ref.on_update is None
 
     def test_custom_cascade(self):
         ref = Ref(target="Team", on_delete="SET NULL")

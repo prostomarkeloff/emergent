@@ -228,7 +228,8 @@ def _assemble_model[T](
         col_kwargs: ColumnKwargs = dict(sa.column_kwargs)
         col_kwargs.setdefault("nullable", fc.info.is_optional)
 
-        # Extract FK config
+        # Extract FK config. None ondelete/onupdate → no referential-action clause
+        # (bare FK == SQL default NO ACTION); we pass None through, never invent CASCADE.
         fk_target = col_kwargs.pop("fk_target", None)
         fk_ondelete = col_kwargs.pop("fk_ondelete", None)
         fk_onupdate = col_kwargs.pop("fk_onupdate", None)
@@ -237,8 +238,8 @@ def _assemble_model[T](
         if fk_target is not None:
             fk_instance = ForeignKey(
                 str(fk_target),
-                ondelete=str(fk_ondelete or "CASCADE"),
-                onupdate=str(fk_onupdate or "CASCADE"),
+                ondelete=fk_ondelete if isinstance(fk_ondelete, str) else None,
+                onupdate=fk_onupdate if isinstance(fk_onupdate, str) else None,
             )
 
         if fk_instance is not None:

@@ -763,7 +763,8 @@ class TestRef:
         ctx = ref.compile_sqlalchemy(_sqlalchemy_ctx())
         assert ctx.column_kwargs["fk_target"] == "users.id"
         assert ctx.column_kwargs["fk_ondelete"] == "SET NULL"
-        assert ctx.column_kwargs["fk_onupdate"] == "CASCADE"
+        # on_update unspecified → no clause (no longer defaults to CASCADE)
+        assert ctx.column_kwargs["fk_onupdate"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

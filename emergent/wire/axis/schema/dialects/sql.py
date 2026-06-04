@@ -167,12 +167,15 @@ class PrimaryKey(SQLCapability):
 class ForeignKey(SQLCapability):
     """Explicit foreign key reference.
 
-    Example:
+    `ondelete`/`onupdate` default to None — meaning no referential action clause is
+    emitted (a bare FK == SQL default NO ACTION), matching SQLAlchemy's own default.
+    Pass a value to opt in:
+
         team_id: Annotated[int, sql.ForeignKey("teams.id", ondelete="SET NULL")]
     """
     target: str  # "table.column"
-    ondelete: str = "CASCADE"
-    onupdate: str = "CASCADE"
+    ondelete: str | None = None
+    onupdate: str | None = None
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
         # Store FK config in kwargs - compiler builds sqlalchemy.ForeignKey from these

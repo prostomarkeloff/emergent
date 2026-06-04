@@ -259,11 +259,15 @@ class Unique(UniversalCapability):
 
 @dataclass(frozen=True, slots=True)
 class Ref(UniversalCapability):
-    """Reference to another entity → SQL FOREIGN KEY."""
+    """Reference to another entity → SQL FOREIGN KEY.
+
+    `on_delete`/`on_update` default to None — no referential-action clause emitted
+    (bare FK == SQL default NO ACTION), matching SQLAlchemy. Pass a value to opt in.
+    """
 
     target: type | str
-    on_delete: str = "CASCADE"
-    on_update: str = "CASCADE"
+    on_delete: str | None = None
+    on_update: str | None = None
 
     def _resolve_fk_target(self) -> str:
         """Resolve target to 'table.column' string for SA ForeignKey."""
