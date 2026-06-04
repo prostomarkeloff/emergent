@@ -22,12 +22,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface._handler import Handler
     from emergent.wire.axis.surface._app import Application
     from emergent.wire.compile._core import Axes
+
+
+_Trigger = TypeVar("_Trigger")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -339,6 +342,32 @@ class TargetCompiler[Trigger]:
                     ))
 
                 yield trigger, handler, wrapped
+
+
+def wrap_for_stack(
+    handler: Handler[Any],
+    trigger: _Trigger,
+    axes: Axes,
+    compiler: TargetCompiler[_Trigger],
+) -> Any:
+    """Find the right binding and wrap handler for stack compilation.
+
+    Shared across all targets — generic over the trigger type.
+    """
+    from emergent.wire.compile._core import fold
+
+    if compiler.assemble is None:
+        raise ValueError("Compiler has no assemble function")
+    for binding in compiler.bindings:
+        if isinstance(handler.codec, binding.codec_type):
+            ctx = binding.from_codec(handler.codec, trigger)
+            ctx = fold(
+                handler.capabilities, ctx,
+                compiler.pipeline_protocol, compiler.pipeline_method,
+                trace=axes.trace,
+            )
+            return compiler.assemble(ctx, handler, axes)
+    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 # Backward compat alias

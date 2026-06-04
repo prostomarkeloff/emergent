@@ -37,7 +37,8 @@ from emergent.wire.bridge._detect import (
     DetectionResult,
     run_detectors,
 )
-from emergent.wire.bridge._types import Extracted, RouteData
+from emergent.wire.bridge._types import Extracted, RouteData, _empty_metadata
+from emergent.wire.axis.surface.capabilities._base import empty_caps as _empty_caps
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
@@ -50,14 +51,6 @@ if TYPE_CHECKING:
 
 type MetadataAny = dict[str, Any]
 type MetadataObj = dict[str, object]
-
-
-def _empty_metadata() -> MetadataAny:
-    return {}
-
-
-def _empty_caps() -> tuple[SurfaceCapability, ...]:
-    return ()
 
 
 @dataclass(frozen=True, slots=True)

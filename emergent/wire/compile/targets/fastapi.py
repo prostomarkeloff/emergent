@@ -39,7 +39,11 @@ from emergent.wire.axis.surface.codecs.resolve import (
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
 from emergent.wire.compile._core import Axes, fold
-from emergent.wire.compile._target import CodecBinding, TargetCompiler
+from emergent.wire.compile._target import (
+    CodecBinding,
+    TargetCompiler,
+    wrap_for_stack as _wrap_for_stack,
+)
 from emergent.wire.compile._pipeline import (
     compile_pipeline,
     execute_with_pipeline,
@@ -896,27 +900,6 @@ def fastapi_compile(
         register_handler(fapi, trigger, handler, route, request_axes, mounted)
 
     return fapi
-
-
-def _wrap_for_stack(
-    handler: Handler[Any],
-    trigger: HTTPRouteTrigger,
-    axes: Axes,
-    compiler: TargetCompiler[HTTPRouteTrigger],
-) -> FastAPIRoute:
-    """Find the right binding and wrap handler for stack compilation."""
-    if compiler.assemble is None:
-        raise ValueError("Compiler has no assemble function")
-    for binding in compiler.bindings:
-        if isinstance(handler.codec, binding.codec_type):
-            ctx = binding.from_codec(handler.codec, trigger)
-            ctx = fold(
-                handler.capabilities, ctx,
-                compiler.pipeline_protocol, compiler.pipeline_method,
-                trace=axes.trace,
-            )
-            return compiler.assemble(ctx, handler, axes)
-    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 def fastapi_compile_stack(

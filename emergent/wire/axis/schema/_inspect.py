@@ -48,7 +48,6 @@ from typing import (
     Annotated,
     Any,
     Protocol,
-    TypeGuard,
     Union,
     get_args,
     get_origin,
@@ -56,7 +55,7 @@ from typing import (
     runtime_checkable,
 )
 
-from emergent.wire.axis.schema._universal import SchemaAxisCapability
+from emergent.wire.axis.schema._universal import SchemaAxisCapability, _is_tuple
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -238,11 +237,6 @@ def _to_capability(ann: Any) -> SchemaAxisCapability | None:
         # Class form — instantiate (works for no-arg capabilities like Identity, Unique)
         return ann()
     return None
-
-
-def _is_tuple(ann: Any) -> TypeGuard[tuple[Any, ...]]:
-    """Check if annotation is a tuple (pattern of capabilities)."""
-    return isinstance(ann, tuple)
 
 
 def _extract_from_pattern(

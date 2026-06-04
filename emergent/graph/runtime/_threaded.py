@@ -33,6 +33,7 @@ from nodnod.value import Value
 
 from emergent.graph.runtime._helpers import GraphInfo as _GraphInfo
 from emergent.graph.runtime._helpers import build_graph_info as _build_graph_info
+from emergent.graph.runtime._helpers import _is_result_node
 
 if TYPE_CHECKING:
     from emergent.graph.runtime._policy import WorkStealingContext
@@ -42,13 +43,6 @@ type ScopeMap = dict[type[Node], Scope]
 type EventMap = dict[type[Node], threading.Event]
 type TraitsMap = Mapping[type[Node], WorkStealingContext]
 type MappedScopes = Mapping[type[Node], Scope]
-
-
-def _is_result_node(node: type[Node]) -> bool:
-    """Check if node is a ResultNode without narrowing the type."""
-    from nodnod.interface.result_node import ResultNode
-
-    return issubclass(node, ResultNode)
 
 
 def _is_sequential_either(node: type[Node]) -> bool:

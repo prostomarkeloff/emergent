@@ -51,7 +51,11 @@ from emergent.wire.axis.surface.codecs.resolve import get_method_params, TypeFor
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
 from emergent.wire.compile._core import Axes, fold
-from emergent.wire.compile._target import CodecBinding, TargetCompiler
+from emergent.wire.compile._target import (
+    CodecBinding,
+    TargetCompiler,
+    wrap_for_stack as _wrap_for_stack,
+)
 from emergent.wire.compile._capabilities import apply_response_capabilities
 from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
 from emergent.wire.compile._stateful import execute_stateful_turn, execute_stateful_done
@@ -517,27 +521,6 @@ def cli_compile(
         register_handler(subparsers, trigger, handler, route, request_axes)
 
     return parser
-
-
-def _wrap_for_stack(
-    handler: Handler[Any],
-    trigger: CLITrigger,
-    axes: Axes,
-    compiler: TargetCompiler[CLITrigger],
-) -> CLIRoute:
-    """Find the right binding and wrap handler for stack compilation."""
-    if compiler.assemble is None:
-        raise ValueError("Compiler has no assemble function")
-    for binding in compiler.bindings:
-        if isinstance(handler.codec, binding.codec_type):
-            ctx = binding.from_codec(handler.codec, trigger)
-            ctx = fold(
-                handler.capabilities, ctx,
-                compiler.pipeline_protocol, compiler.pipeline_method,
-                trace=axes.trace,
-            )
-            return compiler.assemble(ctx, handler, axes)
-    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 def cli_compile_stack(
