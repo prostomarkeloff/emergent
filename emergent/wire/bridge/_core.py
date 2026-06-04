@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import Any, TYPE_CHECKING, ParamSpec, TypeVar
 
 from kungfu import Result
 
@@ -35,7 +35,7 @@ def _empty_caps() -> tuple[SurfaceCapability, ...]:
     return ()
 
 
-def _empty_triggers() -> tuple[tuple[type, Callable[..., object]], ...]:
+def _empty_triggers() -> tuple[tuple[type, Callable[..., Any]], ...]:
     return ()
 
 

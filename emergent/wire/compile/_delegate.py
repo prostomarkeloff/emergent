@@ -150,7 +150,7 @@ def _get_base_type(param_type: Any) -> type | None:
     return param_type if isinstance(param_type, type) else None
 
 
-def _extract_compose_result(raw: tuple[bool, object]) -> tuple[bool, object]:
+def _extract_compose_result(raw: tuple[bool, Any]) -> tuple[bool, Any]:
     """Extract compose result — breaks Unknown propagation from generic T.
 
     Composer.compose[T] returns tuple[bool, T | str]. When T is Unknown
@@ -173,8 +173,8 @@ async def _compose_node(
     # With bare `type` (no type param), T resolves to Unknown — unavoidable since the
     # node_type is only known at runtime via reflection (get_type_hints).
     # _extract_compose_result breaks the Unknown propagation chain.
-    raw = await composer.compose(node_type)  # pyright: ignore[reportUnknownVariableType]  # T is Unknown because node_type is bare `type`
-    success, value = _extract_compose_result(raw)  # pyright: ignore[reportUnknownArgumentType]  # tuple carries Unknown T from compose
+    raw = await composer.compose(node_type)
+    success, value = _extract_compose_result(raw)
     if success:
         return True, value
     return False, None

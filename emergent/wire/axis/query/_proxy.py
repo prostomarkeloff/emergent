@@ -89,12 +89,12 @@ class _ComparableMixin:
     Subclass must define to_expr() -> Expr.
     """
 
-    def to_expr(self) -> Expr: ...  # type: ignore[empty-body]
+    def to_expr(self) -> Expr: ...
 
-    def __eq__(self, other: Any) -> Expr:  # type: ignore[override]
+    def __eq__(self, other: Any) -> Expr:
         return Eq(self.to_expr(), _wrap(other))
 
-    def __ne__(self, other: Any) -> Expr:  # type: ignore[override]
+    def __ne__(self, other: Any) -> Expr:
         return Ne(self.to_expr(), _wrap(other))
 
     def __lt__(self, other: Any) -> Expr:
@@ -271,7 +271,7 @@ class FieldProxy(_ComparableMixin):
 
     # ─── Window Functions (field-specific) ───────────────────────────────────
 
-    def lag(self, offset: int = 1, default: object = None) -> WindowBuilder:
+    def lag(self, offset: int = 1, default: Any = None) -> WindowBuilder:
         """LAG(field, offset, default) — access previous row's value.
 
         Usage:
@@ -282,7 +282,7 @@ class FieldProxy(_ComparableMixin):
 
         return WindowBuilder(Lag(offset, default), self.name)
 
-    def lead(self, offset: int = 1, default: object = None) -> WindowBuilder:
+    def lead(self, offset: int = 1, default: Any = None) -> WindowBuilder:
         """LEAD(field, offset, default) — access next row's value.
 
         Usage:

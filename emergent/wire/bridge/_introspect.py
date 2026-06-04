@@ -41,7 +41,7 @@ import inspect
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
-from typing import Callable, Iterator, Protocol, cast, get_type_hints, runtime_checkable
+from typing import Any, Callable, Iterator, Protocol, cast, get_type_hints, runtime_checkable
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -116,8 +116,8 @@ class UnwrapStrategy(Protocol):
 
     def unwrap(
         self,
-        obj: object,
-    ) -> tuple[Callable[..., object], tuple[DecoratorInfo, ...]]:
+        obj: Any,
+    ) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
         """Unwrap decorator chain.
 
         Returns (original_callable, decorator_infos).
@@ -127,14 +127,14 @@ class UnwrapStrategy(Protocol):
 
 
 def _unwrap_via_wrapped(
-    obj: object,
-) -> tuple[Callable[..., object], tuple[DecoratorInfo, ...]]:
+    obj: Any,
+) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
     """Default unwrap: walk __wrapped__ chain."""
     if not callable(obj):
         raise TypeError(f"Expected callable, got {type(obj).__name__}")
 
     decorators: list[DecoratorInfo] = []
-    current: Callable[..., object] = obj  # type: ignore[assignment]
+    current: Callable[..., Any] = obj
 
     while hasattr(current, "__wrapped__"):
         decorators.append(
@@ -144,14 +144,14 @@ def _unwrap_via_wrapped(
                 wrapper_module=getattr(current, "__module__", None),
             )
         )
-        current = current.__wrapped__  # type: ignore[attr-defined]
+        current = current.__wrapped__
 
     return current, tuple(decorators)
 
 
 def _unwrap_from_closure(
-    obj: object,
-) -> tuple[Callable[..., object], tuple[DecoratorInfo, ...]]:
+    obj: Any,
+) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
     """Try to extract original from closure (for decorators w/o __wrapped__).
 
     Heuristic: looks for callable in closure that isn't the wrapper itself.
@@ -160,7 +160,7 @@ def _unwrap_from_closure(
     if not callable(obj):
         raise TypeError(f"Expected callable, got {type(obj).__name__}")
 
-    wrapper: Callable[..., object] = obj  # type: ignore[assignment]
+    wrapper: Callable[..., Any] = obj
 
     if hasattr(wrapper, "__closure__") and wrapper.__closure__:
         for cell in wrapper.__closure__:
@@ -188,8 +188,8 @@ class ClosureFallbackUnwrap:
 
     def unwrap(
         self,
-        obj: object,
-    ) -> tuple[Callable[..., object], tuple[DecoratorInfo, ...]]:
+        obj: Any,
+    ) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
         handler, decorators = _unwrap_via_wrapped(obj)
         if not decorators:
             # No __wrapped__ found, try closure
@@ -198,9 +198,9 @@ class ClosureFallbackUnwrap:
 
 
 def unwrap_handler(
-    obj: object,
+    obj: Any,
     strategy: UnwrapStrategy | None = None,
-) -> tuple[Callable[..., object], tuple[DecoratorInfo, ...]]:
+) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
     """Unwrap decorator chain.
 
     Args:
@@ -233,7 +233,7 @@ def unwrap_handler(
 def extract_class_methods(
     cls: type,
     method_names: tuple[str, ...],
-) -> Iterator[tuple[str, Callable[..., object]]]:
+) -> Iterator[tuple[str, Callable[..., Any]]]:
     """Extract methods from class by name.
 
     Args:
@@ -249,12 +249,12 @@ def extract_class_methods(
             yield name, method
 
 
-def get_view_class(obj: object) -> type | None:
+def get_view_class(obj: Any) -> type | None:
     """Get class from object if it's a class or has view_class attr."""
     if isinstance(obj, type):
         return obj
     if hasattr(obj, "view_class"):
-        return obj.view_class  # type: ignore[attr-defined]
+        return obj.view_class
     return None
 
 
@@ -302,7 +302,7 @@ class ParameterShape:
         )
 
 
-def no_default() -> object:
+def no_default() -> Any:
     """Sentinel for 'no default value'."""
     return _NO_DEFAULT
 
@@ -353,7 +353,7 @@ def _empty_decorators() -> tuple[DecoratorInfo, ...]:
     return ()
 
 
-def _empty_partial_keywords() -> dict[str, object]:
+def _empty_partial_keywords() -> dict[str, Any]:
     return {}
 
 
@@ -368,7 +368,7 @@ class HandlerShape:
     parameters: dict[str, ParameterShape] = field(default_factory=_empty_params)
     return_type: type | None = None
     decorators: tuple[DecoratorInfo, ...] = field(default_factory=_empty_decorators)
-    original: object = None  # type: ignore[assignment]
+    original: object = None
     source_file: str | None = None
     source_line: int | None = None
     # For callable instances
@@ -383,7 +383,7 @@ class HandlerShape:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def resolve_descriptor(obj: object, owner: type | None = None) -> object:
+def resolve_descriptor(obj: Any, owner: type | None = None) -> Any:
     """If obj is a descriptor, resolve it to get the actual callable.
 
     Args:
@@ -395,7 +395,7 @@ def resolve_descriptor(obj: object, owner: type | None = None) -> object:
     """
     if hasattr(obj, "__get__") and not isinstance(obj, type):
         try:
-            return obj.__get__(None, owner)  # type: ignore[union-attr]
+            return obj.__get__(None, owner)
         except Exception:
             pass
     return obj
@@ -408,7 +408,7 @@ DEFAULT_SKIP_PARAMS: frozenset[str] = frozenset({"self", "cls"})
 
 
 def analyze_handler(
-    obj: object,
+    obj: Any,
     *,
     unwrap_strategy: UnwrapStrategy | None = None,
     skip_params: frozenset[str] = DEFAULT_SKIP_PARAMS,
@@ -446,16 +446,16 @@ def analyze_handler(
         obj = resolve_descriptor(obj)
 
     # Handle functools.partial
-    partial_func: Callable[..., object] | None = None
-    partial_keywords: dict[str, object] = {}
-    to_unwrap: object = obj
+    partial_func: Callable[..., Any] | None = None
+    partial_keywords: dict[str, Any] = {}
+    to_unwrap: Any = obj
 
     if isinstance(obj, partial):
         # partial.func is typed as generic, we treat it as object for unwrapping
-        underlying: object = obj.func
+        underlying: Any = obj.func
         # REASON FOR CAST: partial.func has type _T which becomes Unknown at runtime
         # introspection. We know it's callable, so cast to Callable is safe.
-        partial_func = cast(Callable[..., object], obj.func)
+        partial_func = cast(Callable[..., Any], obj.func)
         # obj.keywords is Mapping[str, Any], convert to dict[str, object]
         partial_keywords = {k: v for k, v in obj.keywords.items()}
         to_unwrap = underlying
@@ -503,7 +503,7 @@ def analyze_handler(
                 init_parameters=init_params,
             )
             # Use __call__ for signature
-            target_for_signature = handler.__call__  # type: ignore[union-attr]
+            target_for_signature = handler.__call__
         except Exception:
             pass
 
@@ -558,7 +558,7 @@ def analyze_handler(
     # including partial[Unknown] from functools.partial introspection.
     # handler is verified callable by unwrap_handler, cast is safe.
     return HandlerShape(
-        handler=cast(Callable[..., object], handler),
+        handler=cast(Callable[..., Any], handler),
         name=name,
         is_async=is_async,
         is_generator=is_generator,

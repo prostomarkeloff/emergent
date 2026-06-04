@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.bridge._to_wire import ToWire, compose_to_wire
 from emergent.wire.bridge._types import RouteData
@@ -39,12 +39,12 @@ class HTTPToWire:
         from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
         return HTTPRouteTrigger(
-            method=route.method,  # type: ignore[arg-type]
+            method=route.method,
             path=route.path,
         )
 
     def to_codec(
-        self, route: HTTPRouteData, handler: Callable[..., object]
+        self, route: HTTPRouteData, handler: Callable[..., Any]
     ) -> Codec:
         """Convert to delegate codec."""
         from emergent.wire.axis.surface.codecs.delegate import delegate
@@ -68,7 +68,7 @@ class WebSocketToWire:
         return WebSocketTrigger(path=route.path, name=route.name)
 
     def to_codec(
-        self, route: WebSocketRouteData, handler: Callable[..., object]
+        self, route: WebSocketRouteData, handler: Callable[..., Any]
     ) -> Codec:
         """Convert to delegate codec."""
         from emergent.wire.axis.surface.codecs.delegate import delegate
@@ -98,7 +98,7 @@ class LifespanToWire:
             raise ValueError(msg)
 
     def to_codec(
-        self, route: LifespanData, handler: Callable[..., object]
+        self, route: LifespanData, handler: Callable[..., Any]
     ) -> Codec:
         """Convert to delegate codec."""
         from emergent.wire.axis.surface.codecs.delegate import delegate
@@ -122,7 +122,7 @@ class ExceptionHandlerToWire:
         return ExceptionTrigger(exception_type=route.exception_type)
 
     def to_codec(
-        self, route: ExceptionHandlerData, handler: Callable[..., object]
+        self, route: ExceptionHandlerData, handler: Callable[..., Any]
     ) -> Codec:
         """Convert to delegate codec."""
         from emergent.wire.axis.surface.codecs.delegate import delegate

@@ -257,7 +257,7 @@ class Provide(ScopeEnricher, Generic[T, E]):
     op: Callable[[Scope], Op[T, E]]
     on_error: Callable[[Result[T, E]], object]
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | object:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | Any:
         built_op = self.op(scope)
         result: Result[T, E] = await self.runner.run(built_op)
 
@@ -316,7 +316,7 @@ class Validate(ScopeEnricher, Generic[T]):
     predicate: Callable[[T], bool]
     on_invalid: Callable[[T], object]
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | object:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | Any:
         value = self.extract(scope)
         if not self.predicate(value):
             return self.on_invalid(value)

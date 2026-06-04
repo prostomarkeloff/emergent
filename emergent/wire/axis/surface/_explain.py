@@ -47,7 +47,7 @@ type SurfaceExplainHandler = Callable[[Any], dict[str, Any]]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _dataclass_dict(obj: object) -> dict[str, Any]:
+def _dataclass_dict(obj: Any) -> dict[str, Any]:
     """Any frozen dataclass -> dict via dataclass fields contract."""
     d: dict[str, Any] = {"type": type(obj).__name__}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -57,7 +57,7 @@ def _dataclass_dict(obj: object) -> dict[str, Any]:
     return d
 
 
-def _unknown_dict(obj: object) -> dict[str, Any]:
+def _unknown_dict(obj: Any) -> dict[str, Any]:
     """Fallback for unknown types — just the type name."""
     return _dataclass_dict(obj)
 
@@ -83,13 +83,13 @@ def _explain_cli_trigger(t: CLITrigger) -> dict[str, Any]:
 
 def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> dict[str, Any]:
     d: dict[str, Any] = {"type": "TelegrinderTrigger", "view": t.view}
-    rules: tuple[object, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
+    rules: tuple[Any, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
     if rules:
         d["rules"] = [type(r).__name__ for r in rules]
     return d
 
 
-def _explain_event_trigger(t: EventTrigger[object]) -> dict[str, Any]:
+def _explain_event_trigger(t: EventTrigger[Any]) -> dict[str, Any]:
     return {"type": "EventTrigger", "event_type": t.event_type.__name__}
 
 
@@ -165,7 +165,7 @@ SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
 
 
 def _explain_obj(
-    obj: object,
+    obj: Any,
     handlers: Mapping[type, SurfaceExplainHandler] | None,
 ) -> dict[str, Any]:
     """Explain any object using handler dispatch with fallback."""
@@ -290,12 +290,12 @@ def _format_obj_short(d: dict[str, Any]) -> str:
     return f"{name}({parts})"
 
 
-def _is_sequence(v: object) -> TypeGuard[Sequence[object]]:
+def _is_sequence(v: Any) -> TypeGuard[Sequence[Any]]:
     """TypeGuard: narrow object to Sequence[object] without Unknown propagation."""
     return isinstance(v, (list, tuple))
 
 
-def _format_value(v: object) -> str:
+def _format_value(v: Any) -> str:
     """Format a dict value for human-readable output."""
     if _is_sequence(v):
         return ", ".join(str(x) for x in v)

@@ -18,6 +18,8 @@
 Requires: httpx
 """
 
+
+from typing import Any
 try:
     from emergent.wire.axis.query.contrib._impls._http import (
         # Builder
@@ -82,18 +84,18 @@ try:
 except ImportError as e:
     _msg = f"httpx is required for HTTP API provider: {e}"
 
-    def _raise_import_error(*_args: object, **_kwargs: object) -> None:
+    def _raise_import_error(*_args: Any, **_kwargs: Any) -> None:
         raise ImportError(_msg)
 
     # Stubs that raise on use
-    api = _raise_import_error  # type: ignore[assignment]
-    page_size = _raise_import_error  # type: ignore[assignment]
-    offset_limit = _raise_import_error  # type: ignore[assignment]
-    cursor = _raise_import_error  # type: ignore[assignment]
-    bearer = _raise_import_error  # type: ignore[assignment]
-    api_key = _raise_import_error  # type: ignore[assignment]
-    basic = _raise_import_error  # type: ignore[assignment]
-    query_params = _raise_import_error  # type: ignore[assignment]
-    body_filters = _raise_import_error  # type: ignore[assignment]
+    api = _raise_import_error
+    page_size = _raise_import_error
+    offset_limit = _raise_import_error
+    cursor = _raise_import_error
+    bearer = _raise_import_error
+    api_key = _raise_import_error
+    basic = _raise_import_error
+    query_params = _raise_import_error
+    body_filters = _raise_import_error
 
     __all__ = ("api",)

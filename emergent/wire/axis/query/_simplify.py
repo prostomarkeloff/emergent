@@ -194,7 +194,7 @@ def _simplify_children(expr: Expr) -> Expr:
     simplifies them, and reconstructs the node only if something changed.
     """
     changes: dict[str, Expr] = {}
-    for f in _dc.fields(expr):  # type: ignore[arg-type]
+    for f in _dc.fields(expr):
         val = getattr(expr, f.name)
         if isinstance(val, Expr):
             simplified = simplify_expr(val)
@@ -202,7 +202,7 @@ def _simplify_children(expr: Expr) -> Expr:
                 changes[f.name] = simplified
     if not changes:
         return expr
-    return _dc.replace(expr, **changes)  # type: ignore[type-var]
+    return _dc.replace(expr, **changes)
 
 
 def _is_true(expr: Expr) -> bool:

@@ -215,11 +215,11 @@ async def compose_params(
     for name, (original_type, compose_type) in params.items():
         # First check if already injected (e.g., Pydantic models from body)
         # compose_type is bare `type` — cast to type[object] for generic resolution
-        typed: type[object] = compose_type
+        typed: type[Any] = compose_type
         # nodnod's Value.value is untyped, so retrieve/compose return partially
         # unknown tuples; explicit annotations make the types known to pyright.
         found: bool
-        value: object | None
+        value: Any | None
         found, value = composer.retrieve(typed)
         if found:
             composed[name] = wrap(original_type, True, value)
@@ -232,7 +232,7 @@ async def compose_params(
 
         # Compose through Composer
         success: bool
-        result: object | str
+        result: Any | str
         success, result = await composer.compose(typed)
         if success:
             composed[name] = wrap(original_type, True, result)
@@ -270,10 +270,10 @@ async def try_compose_params(
 
         # First check if already injected
         # compose_type is bare `type` — cast to type[object] for generic resolution
-        typed: type[object] = compose_type
+        typed: type[Any] = compose_type
         # nodnod's Value.value is untyped; explicit annotations avoid Unknown
         found: bool
-        pre_value: object | None
+        pre_value: Any | None
         found, pre_value = composer.retrieve(typed)
         if found:
             composed[name] = wrap(original_type, True, pre_value)
@@ -288,7 +288,7 @@ async def try_compose_params(
 
         # Try to compose through Composer
         success: bool
-        result: object | str
+        result: Any | str
         success, result = await composer.compose(typed)
         if success:
             composed[name] = wrap(original_type, True, result)

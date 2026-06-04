@@ -19,7 +19,7 @@ id_field = helpers.get_identity_field(User, axes)
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import Any, TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from emergent.wire.axis.schema._universal import (
@@ -34,10 +34,10 @@ if TYPE_CHECKING:
 SchemaInspector = Callable[[type], dict[str, "FieldInfo"]]
 
 
-def _get_schema(cls: type, axes: object | None) -> dict[str, "FieldInfo"]:
+def _get_schema(cls: type, axes: Any | None) -> dict[str, "FieldInfo"]:
     """Get schema using axes if provided, otherwise default inspect_type."""
     if axes is not None and hasattr(axes, "schema"):
-        return axes.schema(cls)  # type: ignore[no-any-return]
+        return axes.schema(cls)
     from emergent.wire.axis.schema._inspect import inspect_type
 
     return inspect_type(cls)
@@ -48,7 +48,7 @@ def _get_schema(cls: type, axes: object | None) -> dict[str, "FieldInfo"]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def get_identity_field(cls: type, axes: object | None = None) -> FieldInfo | None:
+def get_identity_field(cls: type, axes: Any | None = None) -> FieldInfo | None:
     """Find field with Identity capability.
 
     Args:
@@ -75,7 +75,7 @@ def get_identity_field(cls: type, axes: object | None = None) -> FieldInfo | Non
     return None
 
 
-def get_required_fields(cls: type, axes: object | None = None) -> list[FieldInfo]:
+def get_required_fields(cls: type, axes: Any | None = None) -> list[FieldInfo]:
     """Get fields that are not optional.
 
     Args:
@@ -89,7 +89,7 @@ def get_required_fields(cls: type, axes: object | None = None) -> list[FieldInfo
     return [f for f in fields.values() if not f.is_optional]
 
 
-def get_optional_fields(cls: type, axes: object | None = None) -> list[FieldInfo]:
+def get_optional_fields(cls: type, axes: Any | None = None) -> list[FieldInfo]:
     """Get fields that are optional.
 
     Args:
@@ -104,7 +104,7 @@ def get_optional_fields(cls: type, axes: object | None = None) -> list[FieldInfo
 
 
 def partition_fields(
-    cls: type, axes: object | None = None
+    cls: type, axes: Any | None = None
 ) -> tuple[list[FieldInfo], list[FieldInfo]]:
     """Split fields into required and optional.
 
@@ -129,7 +129,7 @@ def partition_fields(
     return required, optional
 
 
-def field_by_name(cls: type, name: str, axes: object | None = None) -> FieldInfo | None:
+def field_by_name(cls: type, name: str, axes: Any | None = None) -> FieldInfo | None:
     """Get FieldInfo by field name.
 
     Args:
@@ -144,7 +144,7 @@ def field_by_name(cls: type, name: str, axes: object | None = None) -> FieldInfo
     return fields.get(name)
 
 
-def field_path_type(cls: type, path: str, axes: object | None = None) -> type | None:
+def field_path_type(cls: type, path: str, axes: Any | None = None) -> type | None:
     """Resolve nested field type by dot-separated path.
 
     Args:
@@ -175,7 +175,7 @@ def field_path_type(cls: type, path: str, axes: object | None = None) -> type | 
 def fields_with_capability[C: SchemaAxisCapability](
     cls: type,
     cap_type: type[C],
-    axes: object | None = None,
+    axes: Any | None = None,
 ) -> list[tuple[str, FieldInfo, C]]:
     """Find all fields with specific capability.
 
@@ -204,7 +204,7 @@ def fields_with_capability[C: SchemaAxisCapability](
 
 
 def get_refs(
-    cls: type, axes: object | None = None
+    cls: type, axes: Any | None = None
 ) -> list[tuple[str, FieldInfo, Ref]]:
     """Find all Ref fields (foreign key relationships).
 
@@ -228,7 +228,7 @@ def get_refs(
 def fields_by_dialect[D: SchemaAxisCapability](
     cls: type,
     dialect: type[D],
-    axes: object | None = None,
+    axes: Any | None = None,
 ) -> list[tuple[str, FieldInfo, tuple[D, ...]]]:
     """Get all fields with capabilities of specific dialect.
 
@@ -352,11 +352,9 @@ def filter_universal(
 ) -> tuple[UniversalCapability, ...]:
     """Get only universal capabilities.
 
-    Args:
-        caps: Capabilities to filter
-
-    Returns:
-        Tuple of UniversalCapability instances
+    Not a no-op: a SchemaAxisCapability is not necessarily a
+    UniversalCapability (e.g. Index, SQLCapability), so we filter by
+    isinstance to drop the non-universal ones.
     """
     from emergent.wire.axis.schema._universal import UniversalCapability
 

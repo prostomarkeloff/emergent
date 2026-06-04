@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeGuard  # noqa: TC003
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.surface import Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
@@ -32,9 +32,12 @@ from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
 from emergent.wire.derive._effects import DerivationEffect
 from emergent.wire.derive._errors import DomainError
 from emergent.wire.derive._handler import DescriptiveTemplate, HandlerSpec, HandlerTemplate
-from emergent.wire.derive._project import FieldProjection, ResponseSpec, response_converter, response_fields  # noqa: TC001
+from emergent.wire.derive._project import response_converter, response_fields
 
 if TYPE_CHECKING:
+    from typing import TypeGuard
+
+    from emergent.wire.derive._project import FieldProjection, ResponseSpec
     from emergent.wire.derive._trigger import TriggerGen
 
 
@@ -100,7 +103,7 @@ class OpSpec:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[object, DomainError]:
+def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[Any, DomainError]:
     """Build Op type, handler, and Exposure from an OpSpec.
 
     Takes DeriveCtx directly — no SurfaceCtx bridging needed.
@@ -147,7 +150,7 @@ def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation
 
     # Build handler from template, annotate with op_type for runner dispatch
     handler = spec.handler_template.build(handler_spec)
-    annotated_handler: OperationHandler[object, DomainError] = annotate_handler(handler, op_type)
+    annotated_handler: OperationHandler[Any, DomainError] = annotate_handler(handler, op_type)
 
     # Build exposure
     codec_fn = spec.codec_factory if spec.codec_factory is not None else rrc

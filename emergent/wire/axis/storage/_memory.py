@@ -98,7 +98,7 @@ class BaseTTLStorage(Generic[K, V]):
             k for k in self._data.keys()
             if isinstance(k, str) and fnmatch.fnmatch(k, pattern)
         ]
-        return Ok(matching)  # type: ignore[return-value]
+        return Ok(matching)
 
 
 class MemoryStorage(BaseTTLStorage[K, V]):

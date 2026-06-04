@@ -132,7 +132,7 @@ class ExposureBuilder[T, E]:
                         else:
                             return cls(**{f: getattr(val, f, None) for f in _fields})
                     case Error(err):
-                        return err  # type: ignore[return-value]
+                        return err
                     case _:
                         raise TypeError(f"Expected Result, got {type(result)}")
 

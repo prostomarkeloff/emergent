@@ -239,7 +239,7 @@ class TargetCompiler[Trigger]:
         elif isinstance(other, CodecBinding):
             remove_keys = {other.codec_type}
         else:
-            remove_keys = {b.codec_type for b in other.adapters}  # type: ignore[union-attr]
+            remove_keys = {b.codec_type for b in other.adapters}
         return replace(
             self,
             adapters=tuple(b for b in self.adapters if b.codec_type not in remove_keys),

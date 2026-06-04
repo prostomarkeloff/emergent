@@ -259,14 +259,14 @@ class EntityCompilation:
         # dict stores heterogeneous contexts as object; generic EntityCtx
         # on EntityFold provides correct static type at call site.
         # Same pattern as FieldCompilation.__getitem__.
-        return ctx  # type: ignore[return-value]
+        return ctx
 
     def get[EntityCtx](self, fold: EntityFold[EntityCtx]) -> EntityCtx | None:
         """Get typed entity context, or None if not present."""
         # Same heterogeneous dict → typed return bridge as __getitem__
-        return self._entity_contexts.get(fold.context_type)  # type: ignore[return-value]
+        return self._entity_contexts.get(fold.context_type)
 
-    def has_entity(self, fold: EntityFold[object]) -> bool:
+    def has_entity(self, fold: EntityFold[Any]) -> bool:
         """Check if entity context exists for this fold."""
         return fold.context_type in self._entity_contexts
 
@@ -319,7 +319,7 @@ def compile_fields(
     field_traces: list[Any] = [] if trace is not None else []
 
     for name, info in fields.items():
-        contexts: dict[type, object] = {}
+        contexts: dict[type, Any] = {}
         phase_traces: list[Any] = [] if trace is not None else []
 
         for phase in phases:
@@ -399,7 +399,7 @@ def compile_entity(
     field_compilations = compile_fields(cls, axes, phases)
 
     # 2. Entity-level folds (new)
-    entity_contexts: dict[type, object] = {}
+    entity_contexts: dict[type, Any] = {}
     trace = axes.trace
 
     for phase in phases:
@@ -700,9 +700,9 @@ STORAGE_SCHEMA = SchemaCompiler(phases=(STORAGE_FIELD_PHASE,))
 
 
 def to_storage_dict(
-    entity: object,
+    entity: Any,
     fields: tuple[FieldCompilation, ...],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Entity → storage dict. Applies to_storage coercion from STORAGE_FIELD_PHASE.
 
     Universal — SA, Mongo, Pandas, Redis all use this.
@@ -711,7 +711,7 @@ def to_storage_dict(
         # SA:    model_cls(**data)
         # Mongo: collection.insert_one(data)
     """
-    data: dict[str, object] = {}
+    data: dict[str, Any] = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getattr(entity, fc.name)
@@ -722,7 +722,7 @@ def to_storage_dict(
 
 
 def from_storage[T](
-    getter: Callable[[str], object],
+    getter: Callable[[str], Any],
     entity_cls: type[T],
     fields: tuple[FieldCompilation, ...],
 ) -> T:
@@ -737,7 +737,7 @@ def from_storage[T](
     """
     from enum import Enum as _Enum
 
-    data: dict[str, object] = {}
+    data: dict[str, Any] = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getter(fc.name)
@@ -766,7 +766,7 @@ def coerce_expr(
     """
     from emergent.wire.axis.query._coerce import ExprCoercer
 
-    coercion: dict[str, Callable[[object], object]] = {}
+    coercion: dict[str, Callable[[Any], Any]] = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         if meta.to_storage is not None:

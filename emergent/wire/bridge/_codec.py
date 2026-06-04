@@ -13,7 +13,7 @@ Bridger decides which codec to use. Core provides construction helpers.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import Any, TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface._types import Codec
@@ -30,7 +30,7 @@ def make_rrc(request_type: type, response_type: type) -> Codec:
 
 
 def make_delegate(
-    handler: Callable[..., object],
+    handler: Callable[..., Any],
     response_type: type | None = None,
 ) -> Codec:
     """Create delegate codec from handler.

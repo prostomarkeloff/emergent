@@ -94,7 +94,7 @@ class Run[T]:
     _target: type[T]
     _injections: tuple[tuple[type[Any], Any], ...]
 
-    def inject(self, value: object) -> Run[T]:
+    def inject(self, value: Any) -> Run[T]:
         """
         Inject a value. Type is inferred from runtime type.
 
@@ -118,7 +118,7 @@ class Run[T]:
             _injections=(*self._injections, typed_tuple),
         )
 
-    def given(self, *values: object) -> Run[T]:
+    def given(self, *values: Any) -> Run[T]:
         """
         Inject multiple values at once.
 
@@ -163,7 +163,7 @@ def run[T](target: type[T]) -> Run[T]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-async def compose[T](target: type[T], *inputs: object) -> T:
+async def compose[T](target: type[T], *inputs: Any) -> T:
     """
     One-shot composition. Shortest API.
 

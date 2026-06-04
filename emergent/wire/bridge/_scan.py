@@ -17,7 +17,7 @@ Like surface.scan() — parameterized extraction by type.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import overload
+from typing import Any, overload
 
 from emergent.wire.bridge._extractor import Extractor, compose_extractors
 from emergent.wire.bridge._types import Extracted, RouteData
@@ -30,7 +30,7 @@ from emergent.wire.bridge._types import Extracted, RouteData
 
 @overload
 def extract(
-    source: object,
+    source: Any,
     route_type: None = None,
     *,
     extractors: Sequence[Extractor[RouteData]] | None = None,
@@ -39,7 +39,7 @@ def extract(
 
 @overload
 def extract[R: RouteData](
-    source: object,
+    source: Any,
     route_type: type[R],
     *,
     extractors: Sequence[Extractor[RouteData]] | None = None,
@@ -47,7 +47,7 @@ def extract[R: RouteData](
 
 
 def extract[R: RouteData](
-    source: object,
+    source: Any,
     route_type: type[R] | None = None,
     *,
     extractors: Sequence[Extractor[RouteData]] | None = None,
@@ -103,12 +103,12 @@ def extract[R: RouteData](
         if route_type is not None:
             if not isinstance(extracted.route, route_type):
                 continue
-        results.append(extracted)  # type: ignore[arg-type]
+        results.append(extracted)
 
     return results
 
 
-def _detect_extractors(source: object) -> Extractor[RouteData] | None:
+def _detect_extractors(source: Any) -> Extractor[RouteData] | None:
     """Auto-detect extractors based on source type.
 
     Uses BridgeRegistry for open-world framework detection.

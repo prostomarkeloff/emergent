@@ -29,7 +29,7 @@ class CompiledRun[T]:
     _agent_cls: type[Agent]
     _injections: tuple[tuple[type[Any], Any], ...]
 
-    def inject(self, value: object) -> CompiledRun[T]:
+    def inject(self, value: Any) -> CompiledRun[T]:
         """Inject a value. Type is inferred from runtime type."""
         value_type = cast(type[Any], type(value))
         return CompiledRun(
@@ -47,7 +47,7 @@ class CompiledRun[T]:
             _injections=(*self._injections, typed_tuple),
         )
 
-    def given(self, *values: object) -> CompiledRun[T]:
+    def given(self, *values: Any) -> CompiledRun[T]:
         """Inject multiple values at once."""
         new_inj: list[tuple[type[Any], Any]] = []
         for v in values:

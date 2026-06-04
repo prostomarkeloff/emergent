@@ -27,7 +27,7 @@ class AppStack:
     """
 
     root_app: Application = field(default_factory=Application)
-    mounts: dict[str, Application | AppStack] = field(default_factory=dict)  # type: ignore[assignment]
+    mounts: dict[str, Application | AppStack] = field(default_factory=dict)
 
     def root(self, app: Application) -> AppStack:
         """Set root application (top-level commands)."""

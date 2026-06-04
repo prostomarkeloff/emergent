@@ -16,10 +16,10 @@ call compile_* on each that implements the protocol, accumulate context.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
-from typing import Any, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Callable, Protocol, TYPE_CHECKING, cast
 
 from emergent.wire.axis.schema import inspect_dataclass, FieldInfo
 
@@ -184,10 +184,15 @@ async def async_fold[Ctx](
         item_cls: type = item.__class__
         if handlers and item_cls in handlers:
             result = handlers[item_cls](item, ctx)
-            ctx = await result if isawaitable(result) else result
         elif isinstance(item, protocol):
             result = getattr(item, method)(ctx)
-            ctx = await result if isawaitable(result) else result
+        else:
+            continue
+        # emergent-type-cast-explain: handler returns Ctx but may transparently
+        # return Awaitable[Ctx] for async compile_* methods. isawaitable is a
+        # TypeGuard[Awaitable[Any]] so both branches produce Ctx-compatible values,
+        # but pyright widens the conditional to Ctx | Any which breaks strict return.
+        ctx = cast(Ctx, await result if isawaitable(result) else result)
     return ctx
 
 

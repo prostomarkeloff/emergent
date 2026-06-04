@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from emergent.wire.bridge._extractor import Extractor
@@ -77,7 +77,7 @@ class BridgeRegistry:
 
     bridgers: tuple[FrameworkBridger, ...]
 
-    def detect(self, source: object) -> FrameworkBridger | None:
+    def detect(self, source: Any) -> FrameworkBridger | None:
         """Find first bridger that can handle this source.
 
         Returns None if no bridger matches — caller decides error handling.

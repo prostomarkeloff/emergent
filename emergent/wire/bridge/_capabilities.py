@@ -255,7 +255,7 @@ def fold_bridge[T, **P, R](
             # BridgeCapabilityHandler is type-erased to BridgeContext[object, ..., object]
             # because heterogeneous handler mappings can't preserve per-key generics.
             # The handler contract guarantees it returns the same BridgeContext shape.
-            current = handlers[cap_type](cap, current)  # type: ignore[assignment]
+            current = handlers[cap_type](cap, current)
         elif isinstance(cap, BridgeCompilable):
             current = cap.compile_bridge(current)
         if current.skip:

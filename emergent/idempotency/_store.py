@@ -42,10 +42,10 @@ class StoreError:
     """Storage error wrapper for idempotency graphs."""
 
     message: str
-    cause: object | None = None
+    cause: BaseException | None = None
 
     @classmethod
-    def from_error(cls, err: object) -> StoreError:
+    def from_error(cls, err: BaseException) -> StoreError:
         """Wrap any error as StoreError."""
         return cls(message=str(err), cause=err)
 

@@ -10,6 +10,8 @@ Extracted bundles route + handler + metadata (like Handler).
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -29,7 +31,7 @@ type RouteData = object
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, object]:
+def _empty_metadata() -> dict[str, Any]:
     return {}
 
 

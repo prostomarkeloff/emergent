@@ -273,6 +273,7 @@ __all__ = (
     # Introspection — Core types
     "FieldInfo",
     "Inspector",
+    "NO_DEFAULT",
     # Introspection — Combinator
     "first_match",
     # Introspection — Individual inspectors (for custom composition)

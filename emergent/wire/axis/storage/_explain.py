@@ -45,7 +45,7 @@ class _ExplainCtx:
     def __init__(self, handlers: Mapping[type, StorageExplainHandler]) -> None:
         self.handlers = handlers
 
-    def explain(self, store: object) -> dict[str, Any]:
+    def explain(self, store: Any) -> dict[str, Any]:
         """Recursively explain a store."""
         handler = self.handlers.get(type(store))
         if handler is not None:
@@ -58,17 +58,17 @@ class _ExplainCtx:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _codec_name(codec: object) -> str:
+def _codec_name(codec: Any) -> str:
     """Get human-readable codec name."""
     return type(codec).__name__
 
 
-def _backend_name(backend: object) -> str:
+def _backend_name(backend: Any) -> str:
     """Get human-readable backend name."""
     return type(backend).__name__
 
 
-def _unknown_dict(obj: object) -> dict[str, Any]:
+def _unknown_dict(obj: Any) -> dict[str, Any]:
     """Fallback for unknown types."""
     d: dict[str, Any] = {"type": type(obj).__name__}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -225,7 +225,7 @@ STORAGE_EXPLAIN: Mapping[type, StorageExplainHandler] = {
 
 
 def storage_dict(
-    store: object,
+    store: Any,
     handlers: Mapping[type, StorageExplainHandler] | None = None,
 ) -> dict[str, Any]:
     """Storage pattern/wrapper as structured dict.
@@ -255,7 +255,7 @@ def storage_dict(
 
 
 def explain_storage(
-    store: object,
+    store: Any,
     handlers: Mapping[type, StorageExplainHandler] | None = None,
 ) -> str:
     """Human-readable explanation of a storage pattern. Formats from storage_dict().

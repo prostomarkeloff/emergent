@@ -39,7 +39,7 @@ logger = logging.getLogger("emergent.compile.pipeline")
 class Extractor(Protocol):
     """Extract raw dict from framework request object."""
 
-    async def extract(self, request: object) -> dict[str, object]: ...
+    async def extract(self, request: Any) -> dict[str, Any]: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +76,7 @@ class CompiledPipeline:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def compile_pipeline(ctx: object, axes: Axes) -> CompiledPipeline:
+def compile_pipeline(ctx: Any, axes: Axes) -> CompiledPipeline:
     """Build CompiledPipeline from WrapContext at compile time.
 
     Reads fields from ctx via getattr (WrapContext is target-specific).
@@ -137,9 +137,9 @@ async def execute_with_pipeline(
     compiled: CompiledPipeline,
     handler: Handler[Any],
     axes: Axes,
-    raw_request: object,
+    raw_request: Any,
     target: str | None = None,
-) -> object:
+) -> Any:
     """Shared: scope → inject → extract → coerce → enrichers → execute.
 
     Used by ALL assemblers. The assembler just wraps this in a route closure.
@@ -173,7 +173,7 @@ async def execute_with_pipeline(
                 await composer.compose_batch(set(layer.compose))
 
             # 3. Extract raw dict
-            get_value: Callable[[str], object] | None = None
+            get_value: Callable[[str], Any] | None = None
             if compiled.extractor is not None:
                 raw = await compiled.extractor.extract(raw_request)
 
@@ -189,12 +189,12 @@ async def execute_with_pipeline(
                 else:
                     coerced = raw
 
-                get_value = coerced.get  # type: ignore[union-attr]
+                get_value = coerced.get
 
             # 5. Execute with enrichers
             rt_ctx = fold_handler_runtime(handler.capabilities)
 
-            async def core(s: Scope) -> object:
+            async def core(s: Scope) -> Any:
                 return await compiled.execute(handler, s, get_value)
 
             if rt_ctx.enrichers:

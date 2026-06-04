@@ -42,7 +42,7 @@ class RelationalMixin(Generic[T]):
     entity: type[T]
     ops: tuple[Any, ...]
 
-    def _append(self, op: Any) -> Self: ...  # type: ignore[empty-body]
+    def _append(self, op: Any) -> Self: ...
 
     def _check_no_select(self, method: str) -> None:
         """Raise if ops already contain Select — Select is terminal."""

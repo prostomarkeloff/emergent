@@ -10,7 +10,7 @@ needed by the emergent codebase.
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from nodnod import Scope
 
@@ -115,7 +115,7 @@ class Context(Protocol):
     - .per_event_scope for accessing the per-event nodnod Scope
     """
 
-    def get(self, key: str) -> object | None: ...
+    def get(self, key: str) -> Any | None: ...
 
     @property
     def per_event_scope(self) -> Scope: ...
@@ -153,9 +153,9 @@ class CallbackQueryCute(Protocol):
     Captures the interface used by enrichers: answer(), edit_text().
     """
 
-    async def answer(self, **kwargs: object) -> object: ...
+    async def answer(self, **kwargs: Any) -> Any: ...
 
-    async def edit_text(self, **kwargs: object) -> object: ...
+    async def edit_text(self, **kwargs: Any) -> Any: ...
 
 
 class MessageCute(Protocol):
@@ -171,14 +171,14 @@ class MessageCute(Protocol):
 class API(Protocol):
     """Structural type for telegrinder's API."""
 
-    async def send_message(self, **kwargs: object) -> object: ...
+    async def send_message(self, **kwargs: Any) -> Any: ...
 
 
 class Update(Protocol):
     """Structural type for telegrinder's Update."""
 
     @property
-    def callback_query(self) -> object: ...
+    def callback_query(self) -> Any: ...
 
 
 __all__ = (

@@ -12,6 +12,8 @@ Like schema._patterns for common capability tuples.
 
 from __future__ import annotations
 
+from typing import Any
+
 from emergent.wire.bridge._capabilities import (
     BridgeCapability,
     SkipByName,
@@ -80,14 +82,14 @@ def fastapi_default() -> tuple[BridgeCapability, ...]:
 
 
 def fastapi_with_depends(
-    depends_map: dict[object, object],
+    depends_map: dict[Any, Any],
 ) -> tuple[BridgeCapability, ...]:
     """FastAPI with Depends() mapping."""
     from emergent.wire.bridge.bridgers.fastapi import InferFromFastAPI, MapDepends
 
     return (
         InferFromFastAPI(),
-        MapDepends(depends_map=depends_map),  # type: ignore[arg-type]
+        MapDepends(depends_map=depends_map),
         WrapAsDelegate(),
     )
 

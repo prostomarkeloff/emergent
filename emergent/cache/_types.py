@@ -13,6 +13,9 @@ from kungfu import Ok, Option, Some, Nothing
 
 from emergent.wire.axis.storage import Delete, DeletePattern, Get, Set
 
+type _LocalCacheMap[T] = dict[str, T]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Tier Protocol — Users Implement This
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,7 +105,7 @@ class LocalTier[T]:
 
     def __init__(self, max_size: int = 1000) -> None:
         self._max_size = max_size
-        self._cache: dict[str, T] = {}
+        self._cache: _LocalCacheMap[T] = {}
         self._order: list[str] = []
 
     @property

@@ -12,7 +12,7 @@ from __future__ import annotations
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass, make_dataclass
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import Any, TYPE_CHECKING, Callable, Protocol
 
 from kungfu import Error, Ok, Result
 
@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 type AnnotationValue = type | types.UnionType | types.GenericAlias
 
 # Field spec for make_dataclass: (name, annotation) or (name, annotation, default).
-type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, int | str | float | bool | None]
+# Default may be any Python value — dataclasses accept arbitrary defaults.
+type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, object]
 
 
 class HasAnnotations(Protocol):
@@ -69,7 +70,7 @@ class ResultConversion:
             case Error(err):
                 if self.error is not None:
                     return self.error(cls, err)
-                return err  # type: ignore[return-value]
+                return err
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -131,7 +132,7 @@ def create_request_type(
             return _op(**_m(self))
 
     cls = create_dataclass(name, fields, frozen=frozen, namespace={"to_domain": to_domain})
-    cls.__request_mapper__ = _mapper  # type: ignore[attr-defined]
+    cls.__request_mapper__ = _mapper
     return cls
 
 
@@ -160,7 +161,7 @@ def create_response_type(
         return "\n".join(parts)
 
     cls = create_dataclass(name, fields, frozen=frozen, namespace={"from_domain": from_domain, "__str__": __str__})
-    cls.__response_converter__ = _conv  # type: ignore[attr-defined]
+    cls.__response_converter__ = _conv
     return cls
 
 
@@ -180,7 +181,7 @@ def annotate_handler[T, E](
     takes a single positional arg to preserve dispatch semantics.
     """
 
-    async def annotated(op: object) -> Result[T, E]:
+    async def annotated(op: Any) -> Result[T, E]:
         return await handler(op)
 
     annotated.__annotations__ = {'op': op_type}
@@ -194,11 +195,11 @@ def annotate_handler[T, E](
 
 def create_sentinel_operation(
     name: str,
-) -> tuple[type, Callable[..., object]]:
+) -> tuple[type, Callable[..., Any]]:
     """Create a sentinel op type + noop handler for DelegateCodec exposures."""
     op_type = create_dataclass(name, [], frozen=True)
 
-    async def _noop(**kwargs: object) -> Result[object, object]:
+    async def _noop(**kwargs: Any) -> Result[Any, Any]:
         return Ok(kwargs.get("op"))
 
     return op_type, annotate_handler(_noop, op_type)

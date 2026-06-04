@@ -75,9 +75,9 @@ class TestRoute:
 
     async def call(
         self,
-        fields: Mapping[str, object] | None = None,
+        fields: Mapping[str, Any] | None = None,
         inject: ScopeInjector | None = None,
-    ) -> object:
+    ) -> Any:
         return await self._invoke(fields or {}, inject)
 
 
@@ -123,7 +123,7 @@ _NOOP_INJECT: ScopeInjector = lambda _scope: None
 
 def rrc_from_codec_testing(
     codec: RequestResponseCodec,
-    trigger: object,
+    trigger: Any,
 ) -> TestingWrapContext:
     """Seed TestingWrapContext from RRC codec."""
     return TestingWrapContext(execute=_rrc_execute_testing, trigger=trigger)
@@ -131,7 +131,7 @@ def rrc_from_codec_testing(
 
 def delegate_from_codec_testing(
     codec: DelegateCodec,
-    trigger: object,
+    trigger: Any,
 ) -> TestingWrapContext:
     """Seed TestingWrapContext from DelegateCodec."""
     return TestingWrapContext(execute=_delegate_execute_testing, trigger=trigger)
@@ -139,7 +139,7 @@ def delegate_from_codec_testing(
 
 def immediate_from_codec_testing(
     codec: ImmediateCodec | ImmediateFactoryCodec,
-    trigger: object,
+    trigger: Any,
 ) -> TestingWrapContext:
     """Seed TestingWrapContext from ImmediateCodec."""
     return TestingWrapContext(execute=_immediate_execute_testing, trigger=trigger)
@@ -152,10 +152,10 @@ def immediate_from_codec_testing(
 
 async def _rrc_execute_testing(
     handler: Handler[RequestResponseCodec],
-    fields: Mapping[str, object],
+    fields: Mapping[str, Any],
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     return await execute_rrc_unified(
         handler=handler,
         axes=axes,
@@ -166,10 +166,10 @@ async def _rrc_execute_testing(
 
 async def _delegate_execute_testing(
     handler: Handler[DelegateCodec],
-    fields: Mapping[str, object],
+    fields: Mapping[str, Any],
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     return await execute_delegate_unified(
         handler=handler,
         inject_scope=inject or _NOOP_INJECT,
@@ -179,10 +179,10 @@ async def _delegate_execute_testing(
 
 async def _immediate_execute_testing(
     handler: Handler[Any],
-    fields: Mapping[str, object],
+    fields: Mapping[str, Any],
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     return execute_immediate_unified(handler)
 
 
@@ -201,7 +201,7 @@ def assemble_testing_route(
     if execute_fn is None:
         raise ValueError("TestingWrapContext.execute must be set before assembly")
 
-    async def invoke(fields: Mapping[str, object], inject: ScopeInjector | None) -> object:
+    async def invoke(fields: Mapping[str, Any], inject: ScopeInjector | None) -> Any:
         return await execute_fn(handler, fields, inject, axes)
 
     return TestRoute(trigger=ctx.trigger, _invoke=invoke)
@@ -234,7 +234,7 @@ TESTING_COMPILER: TargetCompiler[object] = TargetCompiler(
 def testing_compile(
     app: Application,
     axes: Axes | None = None,
-    compiler: TargetCompiler[object] | None = None,
+    compiler: TargetCompiler[Any] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> TestApp:
     """Compile wire Application to callable test routes."""
@@ -276,7 +276,7 @@ def testing_compile(
 
 def wrap_rrc_testing(
     handler: Handler[RequestResponseCodec],
-    trigger: object,
+    trigger: Any,
     axes: Axes,
 ) -> TestRoute:
     ctx = rrc_from_codec_testing(handler.codec, trigger)
@@ -286,7 +286,7 @@ def wrap_rrc_testing(
 
 def wrap_delegate_testing(
     handler: Handler[DelegateCodec],
-    trigger: object,
+    trigger: Any,
     axes: Axes,
 ) -> TestRoute:
     ctx = delegate_from_codec_testing(handler.codec, trigger)
@@ -296,7 +296,7 @@ def wrap_delegate_testing(
 
 def wrap_immediate_testing(
     handler: Handler[ImmediateCodec],
-    trigger: object,
+    trigger: Any,
     axes: Axes,
 ) -> TestRoute:
     ctx = immediate_from_codec_testing(handler.codec, trigger)
@@ -306,7 +306,7 @@ def wrap_immediate_testing(
 
 def wrap_immediate_factory_testing(
     handler: Handler[ImmediateFactoryCodec],
-    trigger: object,
+    trigger: Any,
     axes: Axes,
 ) -> TestRoute:
     ctx = immediate_from_codec_testing(handler.codec, trigger)

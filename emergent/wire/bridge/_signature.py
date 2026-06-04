@@ -110,7 +110,7 @@ def _is_complex_type(t: type) -> bool:
 type SignatureAnalyzer = Callable[[Callable[..., object]], HandlerSignature | None]
 
 
-def analyze_signature(handler: Callable[..., object]) -> HandlerSignature:
+def analyze_signature(handler: Callable[..., Any]) -> HandlerSignature:
     """Analyze handler signature using schema axis utilities.
 
     Extracts:
@@ -173,7 +173,7 @@ def analyze_signature(handler: Callable[..., object]) -> HandlerSignature:
 def _parse_parameter(
     name: str,
     annotation: Any,
-    default: object,
+    default: Any,
 ) -> HandlerParameter:
     """Parse single parameter using schema utilities."""
     if annotation is None:
@@ -223,7 +223,7 @@ def first_analyzer(*analyzers: SignatureAnalyzer) -> SignatureAnalyzer:
         sig = analyzer(handler)
     """
 
-    def combined(handler: Callable[..., object]) -> HandlerSignature:
+    def combined(handler: Callable[..., Any]) -> HandlerSignature:
         for analyzer in analyzers:
             result = analyzer(handler)
             if result is not None:

@@ -16,9 +16,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import types
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+
+
+def _ns_get(ns: argparse.Namespace | None, name: str) -> Any:
+    """Read an argparse.Namespace attribute by name, returning None if absent.
+
+    Centralises the type erasure: argparse populates Namespace dynamically,
+    so pyright has no way to type the attributes — vars() returns dict[str, Any]
+    which gets widened to Unknown under strict mode. We narrow once here.
+    """
+    if ns is None:
+        return None
+    return vars(ns).get(name)
 
 from nodnod import Scope
 from nodnod.agent.base import Agent
@@ -98,15 +111,15 @@ class CLIRoute:
 async def _rrc_execute_cli(
     handler: Handler[RequestResponseCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """RRC execution for CLI."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else None
     return await execute_rrc_unified(
         handler=handler,
         axes=Axes.default(),
-        get_value=get_value or (lambda name: getattr(ns, name, None) if ns else None),
+        get_value=get_value or (lambda name: _ns_get(ns, name)),
         inject_scope=lambda s: s.inject(argparse.Namespace, ns) if ns else None,
         target="cli",
     )
@@ -115,8 +128,8 @@ async def _rrc_execute_cli(
 async def _stateful_execute_cli(
     handler: Handler[StatefulCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Stateful execution for CLI (interactive)."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
@@ -164,8 +177,8 @@ async def _stateful_execute_cli(
 async def _immediate_execute_cli(
     handler: Handler[Any],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Immediate execution for CLI."""
     return str(execute_immediate_unified(handler))
 
@@ -173,8 +186,8 @@ async def _immediate_execute_cli(
 async def _delegate_execute_cli(
     handler: Handler[DelegateCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Delegate execution for CLI."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
@@ -183,7 +196,7 @@ async def _delegate_execute_cli(
     args = _build_delegate_args(delegate_handler, ns)
 
     result = delegate_handler(**args)
-    if hasattr(result, "__await__"):
+    if inspect.isawaitable(result):
         result = await result
 
     result = apply_response_capabilities(result, handler.capabilities)
@@ -230,7 +243,7 @@ async def _compose_cli_param(
         composer = Composer.create(scope, agent_cls)
         # compose_type is bare `type` (no parameter), so compose returns Unknown;
         # we widen to object | str which is all wrap() needs
-        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # unparameterized type
+        compose_result: tuple[bool, Any | str] = await composer.compose(
             compose_type,
         )
         success, value = compose_result
@@ -313,13 +326,13 @@ def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> dict[str, Any]
         try:
             fields = inspect_dataclass(param_type)
             kwargs = {
-                field_name: getattr(ns, field_name, None)
+                field_name: _ns_get(ns, field_name)
                 for field_name in fields
-                if getattr(ns, field_name, None) is not None
+                if _ns_get(ns, field_name) is not None
             }
             result[name] = param_type(**kwargs)
         except TypeError:
-            value = getattr(ns, name, None)
+            value = _ns_get(ns, name)
             if value is not None:
                 result[name] = value
 
@@ -401,7 +414,7 @@ def assemble_cli_route(
         scope = layer.parent.create_child("cli") if layer else Scope()
         async with scope:
             scope.inject(argparse.Namespace, ns)
-            get_value: Callable[[str], object] = lambda name: getattr(ns, name, None)
+            get_value: Callable[[str], Any] = lambda name: _ns_get(ns, name)
             result = await execute_fn(handler, scope, get_value)
         return str(result) if result is not None else ""
 
@@ -495,8 +508,8 @@ def cli_compile(
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
-        parser._scope_app = app_scope  # type: ignore[attr-defined]
-        parser._scope_app_types = family.types_for(App)  # type: ignore[attr-defined]
+        parser._scope_app = app_scope
+        parser._scope_app_types = family.types_for(App)
 
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(subparsers, trigger, handler, route, request_axes)
@@ -631,13 +644,13 @@ def typed_rrc_from_codec_cli(
     async def _typed_execute(
         handler: Handler[RequestResponseCodec],
         scope: Scope,
-        get_value: Callable[[str], object] | None,
-    ) -> object:
+        get_value: Callable[[str], Any] | None,
+    ) -> Any:
         ns_wrapper = scope.get(argparse.Namespace)
         ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
         typed_get = coerce_cli_values(
             codec.request, Axes.default(),
-            get_value or (lambda name: getattr(ns, name, None)),
+            get_value or (lambda name: _ns_get(ns, name)),
         )
         return await execute_rrc_unified(
             handler=handler,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import types
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Union, TYPE_CHECKING, cast
+from typing import Any, Union, TYPE_CHECKING, cast, get_args, get_origin
 
 from emergent.wire.compile._core import Axes
 from emergent.wire.compile._phase import (
@@ -67,10 +67,10 @@ def type_to_json_schema(
         return dict(type_map[py_type])
 
     # Structural dispatch on generic origins
-    origin = getattr(py_type, "__origin__", None)
+    origin = get_origin(py_type)
 
     if origin is list:
-        args = getattr(py_type, "__args__", (Any,))
+        args = get_args(py_type) or (Any,)
         item_type = args[0] if args else Any
         return {
             "type": "array",
@@ -78,7 +78,7 @@ def type_to_json_schema(
         }
 
     if origin is dict:
-        args = getattr(py_type, "__args__", (str, Any))
+        args = get_args(py_type) or (str, Any)
         value_type = args[1] if len(args) > 1 else Any
         return {
             "type": "object",
@@ -88,7 +88,7 @@ def type_to_json_schema(
         }
 
     if origin is set or origin is frozenset:
-        args = getattr(py_type, "__args__", (Any,))
+        args = get_args(py_type) or (Any,)
         item_type = args[0] if args else Any
         return {
             "type": "array",
@@ -97,7 +97,7 @@ def type_to_json_schema(
         }
 
     if origin is tuple:
-        args = getattr(py_type, "__args__", ())
+        args = get_args(py_type)
         if args and args[-1] is not ...:
             return {
                 "type": "array",
@@ -114,7 +114,7 @@ def type_to_json_schema(
 
     # Union types (types.UnionType on 3.10-3.13 for X | Y, typing.Union for Union[X, Y])
     if origin is Union or origin is types.UnionType:
-        args = getattr(py_type, "__args__", ())
+        args = get_args(py_type)
         schemas = [type_to_json_schema(t, type_map) for t in args]
         null_schemas = [s for s in schemas if s.get("type") == "null"]
         non_null = [s for s in schemas if s.get("type") != "null"]

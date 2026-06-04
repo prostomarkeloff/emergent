@@ -139,7 +139,7 @@ class IdempotentModel(Protocol):
     def idempotency_expires_at(self, value: datetime | None) -> None: ...
 
 
-M = TypeVar("M")
+M = TypeVar("M", bound=IdempotencyMixin)
 P = TypeVar("P")  # Pending data type
 
 
@@ -205,7 +205,7 @@ class SQLAlchemyStore(Generic[M, P]):
         """Get record by idempotency_key. Does NOT commit."""
         try:
             stmt = select(self._model).where(
-                self._model.idempotency_key == key  # type: ignore[attr-defined]
+                self._model.idempotency_key == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -213,7 +213,7 @@ class SQLAlchemyStore(Generic[M, P]):
             if row is None:
                 return Ok(None)
 
-            model = cast(IdempotentModel, row)
+            model = row
 
             # Check expiry (ensure aware comparison — DB may return naive)
             expires_at = model.idempotency_expires_at
@@ -241,11 +241,13 @@ class SQLAlchemyStore(Generic[M, P]):
 
             # Set expiry if TTL provided
             if ttl:
-                cast(IdempotentModel, model).idempotency_expires_at = (
+                model.idempotency_expires_at = (
                     datetime.now(tz=timezone.utc) + ttl
                 )
 
             stmt = self._to_insert(model)
+            # emergent-type-cast-explain: AsyncSession.execute returns Result;
+            # cast narrows to CursorResult for .rowcount access used below.
             cursor = cast(CursorResult[Any], await self._session.execute(stmt))
 
             return Ok(cursor.rowcount > 0)
@@ -262,7 +264,7 @@ class SQLAlchemyStore(Generic[M, P]):
         """Mark record as completed. Does NOT commit."""
         try:
             stmt = select(self._model).where(
-                self._model.idempotency_key == key  # type: ignore[attr-defined]
+                self._model.idempotency_key == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -270,7 +272,7 @@ class SQLAlchemyStore(Generic[M, P]):
             if row is None:
                 return Error(StoreError(f"Record not found: {key}"))
 
-            model = cast(IdempotentModel, row)
+            model = row
             model.idempotency_status = IdempotencyStatus.COMPLETED
             model.idempotency_value = value
             if ttl:
@@ -290,7 +292,7 @@ class SQLAlchemyStore(Generic[M, P]):
         """Mark record as failed. Does NOT commit."""
         try:
             stmt = select(self._model).where(
-                self._model.idempotency_key == key  # type: ignore[attr-defined]
+                self._model.idempotency_key == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -298,7 +300,7 @@ class SQLAlchemyStore(Generic[M, P]):
             if row is None:
                 return Error(StoreError(f"Record not found: {key}"))
 
-            model = cast(IdempotentModel, row)
+            model = row
             model.idempotency_status = IdempotencyStatus.FAILED
             model.idempotency_error = str(error)
             if ttl:
@@ -313,7 +315,7 @@ class SQLAlchemyStore(Generic[M, P]):
         """Delete record. Does NOT commit."""
         try:
             stmt = select(self._model).where(
-                self._model.idempotency_key == key  # type: ignore[attr-defined]
+                self._model.idempotency_key == key
             )
             result = await self._session.execute(stmt)
             row = result.scalar_one_or_none()
@@ -327,7 +329,7 @@ class SQLAlchemyStore(Generic[M, P]):
         except Exception as e:
             return Error(StoreError(f"Failed to delete: {e}", e))
 
-    def _to_record(self, model: IdempotentModel) -> IdempotencyRecord[str, str]:
+    def _to_record(self, model: IdempotencyMixin) -> IdempotencyRecord[str, str]:
         """Convert model to IdempotencyRecord."""
         status = model.idempotency_status
 

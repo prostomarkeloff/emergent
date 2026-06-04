@@ -87,7 +87,7 @@ class Op(ABC, Generic[T_co, E_co]):
         return self.get().__await__()
 
 
-def _is_op_type(typ: object) -> bool:
+def _is_op_type(typ: Any) -> bool:
     """Check if type is an Op subclass."""
     try:
         return isinstance(typ, type) and issubclass(typ, Op)
@@ -113,12 +113,14 @@ class _CachedOp(Generic[T_co, E_co]):
 
     __slots__ = ("_result",)
 
+    _result: Result[T_co, E_co]
+
     def __init__(self, result: Result[T_co, E_co]) -> None:
-        object.__setattr__(self, "_result", result)
+        self._result = result
 
     def get(self) -> LazyCoroResult[T_co, E_co]:
         """Return cached result instantly."""
-        result: Result[T_co, E_co] = object.__getattribute__(self, "_result")
+        result: Result[T_co, E_co] = self._result
 
         async def instant() -> Result[T_co, E_co]:
             return result
@@ -186,7 +188,7 @@ def _create_node_for_handler(
         return await handler(**wrapped_kwargs)
 
     compose_fn.__annotations__ = compose_annotations
-    compose_fn.__signature__ = inspect.Signature(parameters=compose_params)  # type: ignore[attr-defined]
+    compose_fn.__signature__ = inspect.Signature(parameters=compose_params)
     compose_fn.__name__ = f"compose_{op_type.__name__}"
 
     # Store op_dep_params for reference
@@ -225,7 +227,7 @@ class OpsBuilder:
         others = tuple(i for i in self._items if i[0] is not op_type)
         return OpsBuilder(_items=(*others, (op_type, handler)))
 
-    def inject(self, typ: type[object], impl: object) -> OpsBuilder:
+    def inject(self, typ: type[Any], impl: Any) -> OpsBuilder:
         """Inject shared dependency."""
         self._precompile_scope.inject(typ, impl)
         return self
@@ -285,7 +287,7 @@ class Runner:
         default_factory=lambda: G.TypedScope(detail="ops:global")
     )
 
-    def inject(self, typ: type[object], impl: object) -> Runner:
+    def inject(self, typ: type[Any], impl: Any) -> Runner:
         """Inject shared dependency."""
         self._global_scope.inject(typ, impl)
         return self
@@ -308,8 +310,8 @@ class Runner:
             if not hasattr(op, "__dataclass_fields__"):
                 return
 
-            for f in fields(op):  # type: ignore[arg-type]
-                val: object = getattr(op, f.name)
+            for f in fields(op):
+                val: Any = getattr(op, f.name)
                 if isinstance(val, Op):
                     val_typed = cast(Op[Any, Any], val)
                     val_type = type(val_typed)
@@ -324,7 +326,7 @@ class Runner:
     async def run(
         self,
         req: Op[T, E],
-        scope_extras: dict[type, object] | None = None,
+        scope_extras: dict[type, Any] | None = None,
     ) -> Result[T, E]:
         """
         Execute operation with automatic parallelization.
@@ -370,7 +372,7 @@ class Runner:
                 scope.inject(dep_type, dep_val)
 
             # Run agent — nodnod parallelizes automatically
-            await agent.run(local_scope=scope.inner, mapped_scopes={})  # type: ignore[misc]
+            await agent.run(local_scope=scope.inner, mapped_scopes={})
 
             # Get result from scope
             result_opt = scope.inner.retrieve(reg.node_cls)

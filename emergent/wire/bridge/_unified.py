@@ -27,7 +27,7 @@ Core does:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import Any, TYPE_CHECKING, Callable, Sequence
 
 from emergent.wire.bridge._introspect import HandlerShape, analyze_handler
 from emergent.wire.bridge._detect import (
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, object]:
+def _empty_metadata() -> dict[str, Any]:
     return {}
 
 
@@ -113,14 +113,14 @@ class ExtractedWithShape[R: RouteData]:
 
 
 def build_extracted[R: RouteData](
-    handler: object,
+    handler: Any,
     route_data: R,
     *,
     # Metadata
     name: str | None = None,
     description: str | None = None,
     deprecated: bool = False,
-    metadata: dict[str, object] | None = None,
+    metadata: dict[str, Any] | None = None,
     # Bridger-provided detectors
     body_detectors: Sequence[BodyDetector] = (),
     di_detectors: Sequence[DIDetector] = (),

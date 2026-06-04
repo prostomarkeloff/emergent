@@ -22,6 +22,8 @@ Multiple generators (e.g. http_crud + cli_crud) are compiled independently:
 
 from __future__ import annotations
 
+from typing import Any
+
 from emergent.wire.axis.schema._universal import get_schema_meta
 from emergent.wire.compile._core import fold, fold_schema
 from emergent.wire.derive._ctx import DeriveCtx
@@ -74,7 +76,7 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
     caps = get_schema_meta(cls)
 
     generators: list[DeriveGeneratable] = []
-    others: list[object] = []
+    others: list[Any] = []
     for cap in caps:
         if isinstance(cap, DeriveGeneratable):
             generators.append(cap)
@@ -100,7 +102,7 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
         _validate_specs(ctx)
 
         # Phase 2+3: modify & augment — generator itself + shared caps
-        group: list[object] = [gen, *others]
+        group: list[Any] = [gen, *others]
         ctx = fold(group, ctx, DeriveModifiable, "compile_derive_modify")
         ctx = fold(group, ctx, DeriveAugmentable, "compile_derive_augment")
 

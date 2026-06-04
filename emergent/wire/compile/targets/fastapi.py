@@ -83,7 +83,7 @@ from emergent.wire.compile.targets.pure import (
 class FastAPIExtractor(Protocol):
     """Extract raw dict from FastAPI request."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]: ...
+    async def extract(self, request: fastapi.Request) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,21 +92,21 @@ class FastAPIJsonExtractor:
 
     include_path_params: bool = True
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
         content_type = request.headers.get("content-type", "")
         if (
             "application/x-www-form-urlencoded" in content_type
             or "multipart/form-data" in content_type
         ):
-            body: dict[str, object] = dict(await request.form())
+            body: dict[str, Any] = dict(await request.form())
         else:
             try:
-                raw_json: object = await request.json()
+                raw_json: Any = await request.json()
             except ValueError:
                 raw_json = {}
             from typing import cast as _cast
             # request.json() returns Any; isinstance narrows to dict[Unknown, Unknown]
-            body: dict[str, object] = _cast(dict[str, object], raw_json) if isinstance(raw_json, dict) else {}
+            body: dict[str, Any] = _cast(dict[str, Any], raw_json) if isinstance(raw_json, dict) else {}
         if self.include_path_params:
             return {**body, **dict(request.path_params)}
         return body
@@ -116,7 +116,7 @@ class FastAPIJsonExtractor:
 class FastAPIQueryExtractor:
     """Extract from query params + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
         return {**dict(request.query_params), **dict(request.path_params)}
 
 
@@ -124,7 +124,7 @@ class FastAPIQueryExtractor:
 class FastAPIFormExtractor:
     """Extract from form data + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> dict[str, Any]:
         return {**dict(await request.form()), **dict(request.path_params)}
 
 
@@ -285,8 +285,8 @@ class FastAPIRoute:
 async def _rrc_execute(
     handler: Handler[RequestResponseCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """RRC execution: build request → run op → map response."""
     from emergent.graph._compose import Composer
     from emergent.wire.compile._rrc import execute_rrc
@@ -309,8 +309,8 @@ async def _rrc_execute(
 async def _stateful_execute(
     handler: Handler[StatefulCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Stateful execution: compose key → load state → transition → done."""
     from emergent.graph._compose import Composer
 
@@ -331,7 +331,7 @@ async def _stateful_execute(
         composer = Composer.create(key_scope, codec.agent_cls)
         # codec.key_node is bare `type` (no type parameter), so compose()
         # returns tuple[bool, Unknown | str]. We only need str conversion.
-        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # key_node is unparameterized type; we widen Unknown to object
+        compose_result: tuple[bool, Any | str] = await composer.compose(
             codec.key_node,
         )
         success = compose_result[0]
@@ -379,8 +379,8 @@ async def _stateful_execute(
 async def _immediate_execute(
     handler: Handler[Any],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Immediate execution: produce response directly."""
     return execute_immediate_unified(handler)
 
@@ -388,8 +388,8 @@ async def _immediate_execute(
 async def _delegate_execute(
     handler: Handler[DelegateCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Delegate execution: compose params → call handler."""
     from emergent.wire.compile._execute import execute_delegate_unified
 
@@ -427,11 +427,11 @@ def _default_coercion() -> CoercionSpec:
     from emergent.wire.compile._phase import SchemaCompiler, PYDANTIC_PHASE, EntityCompilation
     from emergent.wire.compile._generate import assemble_pydantic
 
-    def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
+    def _pydantic_validate(model: type, raw: dict[str, Any]) -> dict[str, Any]:
         instance = model(**raw)
-        return instance.model_dump()  # type: ignore[no-any-return] # Pydantic BaseModel.model_dump has no stub returning dict
+        return instance.model_dump()
 
-    def _assemble(cls: type, ec: object) -> type:
+    def _assemble(cls: type, ec: Any) -> type:
         assert isinstance(ec, EntityCompilation)
         return assemble_pydantic(cls, ec)
 
@@ -1083,7 +1083,7 @@ def install_rfc7807_validation_handler(app: fastapi.FastAPI) -> None:
             media_type="application/problem+json",
         )
 
-    app.add_exception_handler(RequestValidationError, _handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, _handler)
 
 
 # Alias for cleaner API

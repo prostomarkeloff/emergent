@@ -14,12 +14,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field, replace
-from typing import TYPE_CHECKING, Never
+from typing import Any, TYPE_CHECKING, Never
 
 from emergent.wire.axis._capability import Capability
 from emergent.wire.axis.query import RelationalQuerySet
-from emergent.wire.axis.query._expr import Expr  # noqa: TC001
-from emergent.wire.axis.query._proxy import EntityProxy  # noqa: TC001
 from emergent.wire.axis.schema import FieldInfo, fields_with_capability, inspect_type
 from emergent.wire.axis.surface import Exposure
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
@@ -28,6 +26,10 @@ from emergent.wire.derive._query_strategy import (
     QueryStrategy,
     RelationalStrategy,
 )
+
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._expr import Expr
+    from emergent.wire.axis.query._proxy import EntityProxy
 
 
 def _make_annotated(base_type: type, capabilities: tuple[Capability, ...]) -> type:
@@ -170,7 +172,7 @@ class DeriveCtx[EntityT]:
         """Return new ctx with OpSpec appended."""
         return replace(self, specs=(*self.specs, spec))
 
-    def add_operation(self, op: Operation[object, DomainError]) -> DeriveCtx[EntityT]:
+    def add_operation(self, op: Operation[Any, DomainError]) -> DeriveCtx[EntityT]:
         """Return new ctx with direct operation appended."""
         return replace(self, operations=(*self.operations, op))
 
@@ -183,7 +185,7 @@ class DeriveCtx[EntityT]:
     def replace_handler(
         self,
         effect: type,
-        template: object,
+        template: Any,
     ) -> DeriveCtx[EntityT]:
         """Replace handler_template on specs matching effect type.
 

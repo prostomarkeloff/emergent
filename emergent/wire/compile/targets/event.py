@@ -76,7 +76,7 @@ def _chain_injectors(
 
     def combined(scope: Scope) -> None:
         event_inject(scope)
-        user_inject(scope)  # type: ignore[arg-type]
+        user_inject(scope)
 
     return combined
 
@@ -96,9 +96,9 @@ class EventRoute:
 
     async def call(
         self,
-        event: object,
+        event: Any,
         inject: ScopeInjector | None = None,
-    ) -> object:
+    ) -> Any:
         return await self._invoke(event, inject)
 
 
@@ -109,7 +109,7 @@ class EventRoute:
 
 def rrc_from_codec_event(
     codec: RequestResponseCodec,
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
 ) -> EventWrapContext:
     """Seed EventWrapContext from RRC codec."""
     return EventWrapContext(
@@ -121,7 +121,7 @@ def rrc_from_codec_event(
 
 def delegate_from_codec_event(
     codec: DelegateCodec,
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
 ) -> EventWrapContext:
     """Seed EventWrapContext from DelegateCodec."""
     return EventWrapContext(
@@ -138,10 +138,10 @@ def delegate_from_codec_event(
 
 async def _rrc_execute_event(
     handler: Handler[RequestResponseCodec],
-    event: object,
+    event: Any,
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     """RRC execution for events."""
     def event_inject(scope: Scope) -> None:
         scope.inject(type(event), event)
@@ -156,10 +156,10 @@ async def _rrc_execute_event(
 
 async def _delegate_execute_event(
     handler: Handler[DelegateCodec],
-    event: object,
+    event: Any,
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     """Delegate execution for events."""
     def event_inject(scope: Scope) -> None:
         scope.inject(type(event), event)
@@ -190,7 +190,7 @@ def assemble_event_route(
     if ctx.trigger is None:
         raise ValueError("EventWrapContext.trigger must be set before assembly")
 
-    async def invoke(event: object, inject: ScopeInjector | None) -> object:
+    async def invoke(event: Any, inject: ScopeInjector | None) -> Any:
         return await execute_fn(handler, event, inject, axes)
 
     return EventRoute(
@@ -232,9 +232,9 @@ class EventDispatcher:
 
     async def dispatch(
         self,
-        event: object,
+        event: Any,
         inject: ScopeInjector | None = None,
-    ) -> tuple[object, ...]:
+    ) -> tuple[Any, ...]:
         """Dispatch event to all matching handlers."""
         handlers = self.routes.get(type(event), ())
         return tuple([await r.call(event, inject) for r in handlers])
@@ -266,7 +266,7 @@ class EventDispatcher:
 def event_compile(
     app: Application,
     axes: Axes | None = None,
-    compiler: TargetCompiler[EventTrigger[object]] | None = None,
+    compiler: TargetCompiler[EventTrigger[Any]] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> EventDispatcher:
     """Compile wire Application to EventDispatcher."""
@@ -323,7 +323,7 @@ __all__ = (
 
 def wrap_rrc_event(
     handler: Handler[RequestResponseCodec],
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
     axes: Axes,
 ) -> EventRoute:
     ctx = rrc_from_codec_event(handler.codec, trigger)
@@ -333,7 +333,7 @@ def wrap_rrc_event(
 
 def wrap_delegate_event(
     handler: Handler[DelegateCodec],
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
     axes: Axes,
 ) -> EventRoute:
     ctx = delegate_from_codec_event(handler.codec, trigger)

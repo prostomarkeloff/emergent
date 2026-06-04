@@ -103,7 +103,7 @@ async def execute_stateful_done(
     # Core handler: state → op → result → response
     async def core_handler(scope: Scope) -> Any:
         op = state.to_domain()
-        scope_extras: dict[type, object] = {}
+        scope_extras: dict[type, Any] = {}
         for key, value in scope.merge().items():
             if key is not Scope:
                 scope_extras[key] = value.value

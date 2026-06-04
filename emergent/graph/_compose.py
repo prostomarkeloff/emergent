@@ -19,7 +19,7 @@ from nodnod.agent.base import Agent
 from nodnod.node import Node
 
 
-def _as_node_set(typ: type[object]) -> set[type[Node]]:
+def _as_node_set(typ: type[Any]) -> set[type[Node]]:
     """Widen an arbitrary type to set[type[Node]] for Agent.build().
 
     At runtime, callers always pass Node subclasses. This helper
@@ -130,7 +130,7 @@ class Composer:
     async def resolve_params(
         self,
         handler: Callable[..., Any],
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         """Resolve handler params using compose dialect.
 
         Delegates to _delegate.resolve_handler_params with this Composer's

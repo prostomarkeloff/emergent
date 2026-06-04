@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from sqlalchemy import (
     delete,
@@ -176,7 +176,7 @@ class BoundSQLAlchemyStore[T]:
         return name
 
     @staticmethod
-    def _as_where(clause: object) -> ColumnElement[bool]:
+    def _as_where(clause: Any) -> ColumnElement[bool]:
         """Convert compile_expr result (typed as object) to SA ColumnElement[bool].
 
         compile_expr returns `object` to avoid coupling the compilation module to SA.
@@ -187,11 +187,11 @@ class BoundSQLAlchemyStore[T]:
         if not isinstance(clause, CE):
             msg = f"Expected ColumnElement, got {type(clause)}"
             raise TypeError(msg)
-        return clause  # type: ignore[return-value]  # ColumnElement → ColumnElement[bool]: isinstance narrows to raw ColumnElement, not generic form
+        return clause
 
     # ─── KV Operations ────────────────────────────────────────────────────────
 
-    async def get(self, key: object) -> Result[Option[T], StorageError]:
+    async def get(self, key: Any) -> Result[Option[T], StorageError]:
         """Get entity by primary key."""
         try:
             id_field = self._identity_field_name()
@@ -220,7 +220,7 @@ class BoundSQLAlchemyStore[T]:
         except Exception as e:
             return Error(StorageError(f"Failed to set: {e}", e))
 
-    async def delete(self, key: object) -> Result[bool, StorageError]:
+    async def delete(self, key: Any) -> Result[bool, StorageError]:
         """Delete entity by primary key. Returns True if existed."""
         try:
             id_field = self._identity_field_name()
@@ -239,7 +239,7 @@ class BoundSQLAlchemyStore[T]:
         except Exception as e:
             return Error(StorageError(f"Failed to delete: {e}", e))
 
-    async def exists(self, key: object) -> Result[bool, StorageError]:
+    async def exists(self, key: Any) -> Result[bool, StorageError]:
         """Check if entity exists by primary key."""
         try:
             id_field = self._identity_field_name()
@@ -325,7 +325,7 @@ class BoundSQLAlchemyStore[T]:
             where_clause = self._as_where(compile_expr(expr, self._compiled))
 
             stmt = delete(self._compiled.model).where(where_clause)
-            cursor: CursorResult[tuple[object, ...]] = await self._session.execute(stmt)  # type: ignore[assignment]
+            cursor: CursorResult[tuple[Any, ...]] = await self._session.execute(stmt)
             return Ok(cursor.rowcount)
 
         except Exception as e:

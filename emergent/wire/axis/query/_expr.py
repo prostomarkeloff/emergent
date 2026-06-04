@@ -59,7 +59,7 @@ class Expr(ABC):
         """
         return tuple(
             getattr(self, f.name)
-            for f in _dc.fields(self)  # type: ignore[arg-type]
+            for f in _dc.fields(self)
             if isinstance(getattr(self, f.name), Expr)
         )
 

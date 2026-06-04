@@ -413,7 +413,7 @@ def sqlalchemy_column(ctx: SQLAlchemyContext, **kwargs: str | int | bool | None)
     return replace(ctx, column_kwargs=merged)
 
 
-def pydantic_metadata(ctx: PydanticContext, *items: object) -> PydanticContext:
+def pydantic_metadata(ctx: PydanticContext, *items: Any) -> PydanticContext:
     """Append items to Pydantic FieldInfo.metadata — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
     fi.metadata.extend(items)
@@ -429,7 +429,7 @@ def pydantic_extra(ctx: PydanticContext, **extra: JsonSchemaValue) -> PydanticCo
         # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref
         # that pyright cannot fully resolve, producing dict[str | Unknown, ...].
         # Structurally identical to our JsonSchemaDict — safe to copy directly.
-        existing = dict(current)  # type: ignore[arg-type]  # Pydantic JsonDict → our JsonSchemaDict: structurally identical, forward-ref makes pyright lose str key type
+        existing = dict(current)
     existing.update(extra)
     fi.json_schema_extra = existing
     return replace(ctx, field_info=fi)
@@ -749,7 +749,7 @@ class TelegrinderRenderCompilable(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_middleware() -> tuple[tuple[type, Mapping[str, object]], ...]:
+def _empty_middleware() -> tuple[tuple[type, Mapping[str, Any]], ...]:
     return ()
 
 
@@ -864,7 +864,7 @@ class HandlerRuntimeCompilable(Protocol):
 def fastapi_app_middleware(
     ctx: FastAPIAppContext,
     middleware_cls: type,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> FastAPIAppContext:
     """Add middleware to FastAPI app context.
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Any, TYPE_CHECKING, Protocol, runtime_checkable
 
 from emergent.wire.bridge._types import RouteData
 
@@ -52,7 +52,7 @@ class ToWire[R_contra: RouteData](Protocol):
         """Convert route data to wire Trigger."""
         ...
 
-    def to_codec(self, route: R_contra, handler: Callable[..., object]) -> Codec:
+    def to_codec(self, route: R_contra, handler: Callable[..., Any]) -> Codec:
         """Convert route data + handler to wire Codec."""
         ...
 
@@ -72,21 +72,21 @@ class ComposedToWire:
         """Find matching converter and convert to Trigger."""
         for route_type, converter in self.converters:
             if isinstance(route, route_type):
-                return converter.to_trigger(route)  # type: ignore[union-attr]
+                return converter.to_trigger(route)
         msg = f"No ToWire converter for route type {type(route).__name__}"
         raise TypeError(msg)
 
-    def to_codec(self, route: RouteData, handler: Callable[..., object]) -> Codec:
+    def to_codec(self, route: RouteData, handler: Callable[..., Any]) -> Codec:
         """Find matching converter and convert to Codec."""
         for route_type, converter in self.converters:
             if isinstance(route, route_type):
-                return converter.to_codec(route, handler)  # type: ignore[union-attr]
+                return converter.to_codec(route, handler)
         msg = f"No ToWire converter for route type {type(route).__name__}"
         raise TypeError(msg)
 
 
 def compose_to_wire(
-    *converters: tuple[type, object],
+    *converters: tuple[type, Any],
 ) -> ToWire[RouteData]:
     """Compose multiple ToWire converters.
 

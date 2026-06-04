@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, fields as dc_fields, MISSING
-from typing import Callable, Mapping, TYPE_CHECKING
+from typing import Any, Callable, Mapping, TYPE_CHECKING
 
 from collections.abc import Sequence
 
@@ -92,18 +92,21 @@ def to_pydantic(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
+def _pydantic_validate(model: type, raw: dict[str, Any]) -> dict[str, Any]:
     """Pydantic coercion: model(**raw) -> model_dump()."""
     instance = model(**raw)
     # model_dump() returns dict[str, Any] from Pydantic — no way to narrow to object
     # without cast; Pydantic's return type is inherently Any-based.
-    return instance.model_dump()  # type: ignore[no-any-return]
+    return instance.model_dump()
 
 
-def _pydantic_coercion() -> CoercionSpec:  # noqa: used via lazy import in fastapi.py and _pipeline.py
-    """Lazy construction to avoid circular imports."""
+def _pydantic_coercion() -> CoercionSpec:
+    """Lazy construction to avoid circular imports.
 
-    def _assemble_bridge(cls: type, ec: object) -> type:
+    Consumed via lazy import from fastapi.py and _pipeline.py.
+    """
+
+    def _assemble_bridge(cls: type, ec: Any) -> type:
         # CoercionSpec.assemble is Callable[[type, object], type] — object is
         # the deliberate erasure to avoid circular imports between _capability
         # and _phase. At runtime ec is always EntityCompilation.
@@ -153,10 +156,10 @@ def _assemble_pydantic(
         # Collect annotated_types markers (Ge, Le, MinLen, MaxLen, etc.)
         # These MUST go directly in Annotated[], NOT in Field(metadata=...)
         # Pydantic v2 ignores Field(metadata=...) for validation.
-        annotated_markers: list[object] = list(ctx.field_info.metadata) if ctx.field_info.metadata else []
+        annotated_markers: list[Any] = list(ctx.field_info.metadata) if ctx.field_info.metadata else []
 
         # Build Field() kwargs from FieldInfo (non-constraint properties only)
-        field_kwargs: dict[str, object] = {}
+        field_kwargs: dict[str, Any] = {}
 
         if ctx.field_info.alias is not None:
             field_kwargs["alias"] = ctx.field_info.alias
@@ -184,16 +187,16 @@ def _assemble_pydantic(
 
         # Build Annotated[type, *markers, Field(...)]
         # Markers go directly in Annotated for pydantic v2 validation enforcement.
-        ann_args: list[object] = list(annotated_markers)
+        ann_args: list[Any] = list(annotated_markers)
         if field_kwargs:
             # field_kwargs is heterogeneous (str, bool, dict, callable) — Field() accepts
             # these via **kwargs but pyright can't narrow dict[str, object] to each param.
-            ann_args.append(Field(**field_kwargs))  # type: ignore[arg-type]
+            ann_args.append(Field(**field_kwargs))
 
         if ann_args:
-            annotations[name] = Annotated[tuple([base_type, *ann_args])]  # type: ignore[assignment]
+            annotations[name] = Annotated[tuple([base_type, *ann_args])]
         else:
-            annotations[name] = base_type  # type: ignore[assignment]
+            annotations[name] = base_type
 
     # Build model via type() with Annotated annotations
     namespace: dict[str, dict[str, type] | str] = {
@@ -261,7 +264,7 @@ def _assemble_argparse(
     result: list[ArgSpec] = []
 
     # Get original dataclass fields if available (for defaults)
-    original_fields: dict[str, dataclasses.Field[object]] = {}
+    original_fields: dict[str, dataclasses.Field[Any]] = {}
     if dataclasses.is_dataclass(cls):
         original_fields = {f.name: f for f in dc_fields(cls)}
 
@@ -292,7 +295,7 @@ def _assemble_argparse(
             if len(ctx.arg_names) > 1:
                 kwargs["aliases"] = list(ctx.arg_names[1:])
             if orig_field and orig_field.default is not MISSING:
-                default_val: ArgparseKwargValue = orig_field.default  # type: ignore[assignment]
+                default_val: ArgparseKwargValue = orig_field.default
                 kwargs["default"] = default_val
             result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=False))
         elif ctx.field_type is bool and has_default:
@@ -302,7 +305,7 @@ def _assemble_argparse(
         elif has_default:
             arg_name = f"--{name.replace('_', '-')}"
             if orig_field and orig_field.default is not MISSING:
-                default_val = orig_field.default  # type: ignore[assignment]
+                default_val = orig_field.default
                 kwargs["default"] = default_val
             result.append(ArgSpec(name=arg_name, dest=name, kwargs=kwargs, is_positional=False))
         else:
@@ -335,7 +338,7 @@ def to_datanode(cls: type, compose_from: dict[str, type], axes: Axes | None = No
     # body all depend on runtime-inspected field metadata. type: ignore
     # annotations below suppress errors that arise from this fundamentally
     # untyped metaprogramming boundary.
-    def make_compose(params: dict[str, type], fields: list[str]) -> classmethod[type, ..., object]:  # type: ignore[type-arg]  # classmethod generic args are not expressible for dynamic signatures
+    def make_compose(params: dict[str, type], fields: list[str]) -> classmethod[type, ..., Any]:
         def __compose__(node_cls: type, **kwargs: object) -> object:
             extracted = {
                 n: getattr(kwargs[n], "value", kwargs[n])
@@ -344,7 +347,7 @@ def to_datanode(cls: type, compose_from: dict[str, type], axes: Axes | None = No
             return node_cls(**extracted)
 
         __compose__.__annotations__ = {**params, "return": cls}
-        return classmethod(__compose__)  # type: ignore[arg-type]  # classmethod expects specific callable signature, but __compose__ is dynamically shaped
+        return classmethod(__compose__)
 
     return type(
         f"{cls.__name__}Node",
@@ -380,7 +383,7 @@ def to_datanode_from_context(
         raise ImportError("nodnod required")
 
     try:
-        from telegrinder.bot.dispatch.context import Context  # type: ignore[import-unresolved]  # telegrinder is an optional dependency, not always installed
+        from telegrinder.bot.dispatch.context import Context
     except ImportError:
         raise ImportError("telegrinder required")
 
@@ -388,16 +391,16 @@ def to_datanode_from_context(
     extractors = field_extractors or {n: n for n in field_names}
 
     # Same dynamic metaprogramming pattern as to_datanode() — see comment there.
-    def make_compose(ext: dict[str, str], fields: list[str]) -> classmethod[type, ..., object]:  # type: ignore[type-arg]  # classmethod generic args are not expressible for dynamic signatures
+    def make_compose(ext: dict[str, str], fields: list[str]) -> classmethod[type, ..., Any]:
         def __compose__(node_cls: type, ctx: object) -> object:
             extracted: dict[str, object] = {
-                n: ctx.get(ext.get(n, n))  # type: ignore[attr-defined]  # ctx is telegrinder Context (optional dep) whose .get() method cannot be statically typed here
-                for n in fields if ctx.get(ext.get(n, n)) is not None  # type: ignore[attr-defined]  # same as above — Context.get() is from optional telegrinder
+                n: ctx.get(ext.get(n, n))
+                for n in fields if ctx.get(ext.get(n, n)) is not None
             }
             return node_cls(**extracted)
 
         __compose__.__annotations__ = {"ctx": Context, "return": cls}
-        return classmethod(__compose__)  # type: ignore[arg-type]  # classmethod expects specific callable signature, but __compose__ is dynamically shaped
+        return classmethod(__compose__)
 
     return type(
         f"{cls.__name__}Node",

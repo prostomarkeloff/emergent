@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from kungfu import Result
 
@@ -308,7 +308,7 @@ class PaginatedResponse:
             ("page_size", int),
         ]
 
-        def _paginated_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
+        def _paginated_ok(cls: type, data: Mapping[str, Any] | Sequence[Any]) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -376,7 +376,7 @@ class CursorPaginatedResponse:
             ("has_more", bool),
         ]
 
-        def _cursor_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
+        def _cursor_ok(cls: type, data: Mapping[str, Any] | Sequence[Any]) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),

@@ -21,7 +21,7 @@ import functools
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from typing import get_type_hints
+from typing import Any, get_type_hints
 
 from emergent.wire.axis.schema import (
     unwrap_annotated,
@@ -70,7 +70,7 @@ _SPECIAL_TYPE_NAMES: frozenset[str] = frozenset(
 )
 
 
-def _get_fastapi_marker(annotations: list[object]) -> str | None:
+def _get_fastapi_marker(annotations: list[Any]) -> str | None:
     """Find FastAPI marker in annotations list.
 
     Returns marker name ("Body", "Query", etc.) or None.
@@ -96,21 +96,21 @@ def _is_special_fastapi_type(t: type | None) -> bool:
     return False
 
 
-def _is_pydantic_model(t: object) -> bool:
+def _is_pydantic_model(t: Any) -> bool:
     """Check if type is a Pydantic BaseModel (using schema inspector)."""
     if t is None or not isinstance(t, type):
         return False
     return pydantic_inspector(t) is not None
 
 
-def _is_dataclass_type(t: object) -> bool:
+def _is_dataclass_type(t: Any) -> bool:
     """Check if type is a dataclass (using schema inspector)."""
     if t is None or not isinstance(t, type):
         return False
     return dataclass_inspector(t) is not None
 
 
-def _is_depends(obj: object) -> bool:
+def _is_depends(obj: Any) -> bool:
     """Check if object is FastAPI Depends instance."""
     return type(obj).__name__ == "Depends"
 
@@ -126,7 +126,7 @@ class ParsedParam:
     default: object
 
 
-def _parse_handler_params(handler: Callable[..., object]) -> list[ParsedParam]:
+def _parse_handler_params(handler: Callable[..., Any]) -> list[ParsedParam]:
     """Parse all parameters from a FastAPI handler.
 
     Uses schema inspection utilities for type unwrapping.
@@ -272,7 +272,7 @@ class InferFromFastAPI(BridgeCapability):
 
         return replace(ctx, request_type=request_type, response_type=response_type)
 
-    def _get_return_type(self, handler: Callable[..., object]) -> type | None:
+    def _get_return_type(self, handler: Callable[..., Any]) -> type | None:
         """Extract return type from handler using schema inspection."""
         if not callable(handler):
             return None
@@ -302,11 +302,11 @@ DEFAULT_INFERENCE: tuple[BridgeCapability, ...] = (InferFromFastAPI(),)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_depends_map() -> dict[Callable[..., object], Callable[[], object]]:
+def _empty_depends_map() -> dict[Callable[..., Any], Callable[[], Any]]:
     return {}
 
 
-def _empty_scope_map() -> dict[Callable[..., object], type]:
+def _empty_scope_map() -> dict[Callable[..., Any], type]:
     return {}
 
 
@@ -371,7 +371,7 @@ class MapDepends(BridgeCapability):
 
 
 def parse_fastapi_handler(
-    handler: Callable[..., object],
+    handler: Callable[..., Any],
 ) -> dict[str, list[ParsedParam]]:
     """Parse FastAPI handler and group parameters by source.
 

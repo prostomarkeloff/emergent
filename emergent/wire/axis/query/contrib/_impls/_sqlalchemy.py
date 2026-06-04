@@ -244,7 +244,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         stmt = delete(self._compiled.model).where(pk.in_(select(subq)))
         result = await self._session.execute(stmt)
         await self._session.flush()
-        return result.rowcount  # type: ignore[return-value]
+        return result.rowcount
 
     async def delete_returning(self, query: SQLRelationalQuerySet[T]) -> list[T]:
         """DELETE ... RETURNING — delete rows and return deleted entities.
@@ -289,7 +289,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
 
         if returning_fields:
             # Partial RETURNING — return dicts (not full entities)
-            return [  # type: ignore[return-value]
+            return [
                 {f: row[i] for i, f in enumerate(returning_fields)}
                 for row in rows
             ]
@@ -330,7 +330,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
                  if issubclass(cls, DeclarativeBase) and cls is not model and cls is not DeclarativeBase),
                 None,
             )
-            join_compiled: Compilation[object, DeclarativeBase] = compile_sa(target, tablename, base=base)
+            join_compiled: Compilation[Any, DeclarativeBase] = compile_sa(target, tablename, base=base)
             on_clause = _compile_expr_raw(on_expr, compiled, join_compiled)
             if kind == "right":
                 raise NotImplementedError(

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis._capability import CoercionSpec
@@ -49,17 +49,17 @@ class Coercion(SurfaceCapability):
 
     spec: CoercionSpec | None  # None = no coercion
 
-    def compile_fastapi_pipeline(self, ctx: object) -> object:
+    def compile_fastapi_pipeline(self, ctx: Any) -> Any:
         """Set coercion on FastAPI pipeline context."""
-        return replace(ctx, coercion=self.spec)  # type: ignore[arg-type]
+        return replace(ctx, coercion=self.spec)
 
-    def compile_cli_pipeline(self, ctx: object) -> object:
+    def compile_cli_pipeline(self, ctx: Any) -> Any:
         """Set coercion on CLI pipeline context."""
-        return replace(ctx, coercion=self.spec)  # type: ignore[arg-type]
+        return replace(ctx, coercion=self.spec)
 
-    def compile_telegram_pipeline(self, ctx: object) -> object:
+    def compile_telegram_pipeline(self, ctx: Any) -> Any:
         """Set coercion on Telegram pipeline context."""
-        return replace(ctx, coercion=self.spec)  # type: ignore[arg-type]
+        return replace(ctx, coercion=self.spec)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -86,22 +86,22 @@ class Extraction(SurfaceCapability):
     testing: object | None = None
     event: object | None = None
 
-    def compile_fastapi_pipeline(self, ctx: object) -> object:
+    def compile_fastapi_pipeline(self, ctx: Any) -> Any:
         """Set extractor on FastAPI pipeline context."""
         if self.fastapi is not None:
-            return replace(ctx, extractor=self.fastapi)  # type: ignore[arg-type]
+            return replace(ctx, extractor=self.fastapi)
         return ctx
 
-    def compile_cli_pipeline(self, ctx: object) -> object:
+    def compile_cli_pipeline(self, ctx: Any) -> Any:
         """Set extractor on CLI pipeline context."""
         if self.cli is not None:
-            return replace(ctx, extractor=self.cli)  # type: ignore[arg-type]
+            return replace(ctx, extractor=self.cli)
         return ctx
 
-    def compile_telegram_pipeline(self, ctx: object) -> object:
+    def compile_telegram_pipeline(self, ctx: Any) -> Any:
         """Set extractor on Telegram pipeline context."""
         if self.telegram is not None:
-            return replace(ctx, extractor=self.telegram)  # type: ignore[arg-type]
+            return replace(ctx, extractor=self.telegram)
         return ctx
 
 

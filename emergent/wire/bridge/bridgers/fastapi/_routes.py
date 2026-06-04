@@ -12,6 +12,8 @@ Each type captures framework-specific route information.
 
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass, field
 
 
@@ -112,7 +114,7 @@ class ExceptionHandlerData:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_options() -> dict[str, object]:
+def _empty_options() -> dict[str, Any]:
     return {}
 
 

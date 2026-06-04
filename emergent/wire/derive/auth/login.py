@@ -13,7 +13,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from kungfu import Error, Ok, Result
 
@@ -25,11 +25,12 @@ from emergent.wire.derive._effects import Creates
 from emergent.wire.derive._handler import HandlerSpec, HasProvider
 from emergent.wire.derive._opspec import Op
 from emergent.wire.derive._project import CustomResponse, SelectFields
-from emergent.wire.derive._trigger import HTTPTriggers, RouteSpec  # noqa: TC001
+from emergent.wire.derive._trigger import HTTPTriggers
 
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx, OperationHandler
     from emergent.wire.derive._errors import DomainError
+    from emergent.wire.derive._trigger import RouteSpec
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def token_converter[T, E](cls: type, result: Result[T, E]) -> object:
+def token_converter[T, E](cls: type, result: Result[T, E]) -> Any:
     """Standard converter for login response: {token, error}."""
     match result:
         case Ok(val):
@@ -104,7 +105,7 @@ class IssueToken[V]:
             if identity_fn is not None:
                 await sessions.set(qs.set(token, identity_fn(entity)))
             else:
-                await sessions.set(qs.set(token, entity))  # type: ignore[arg-type]
+                await sessions.set(qs.set(token, entity))
             return Ok(token)
 
         return handler

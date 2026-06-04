@@ -20,6 +20,7 @@ All behavior is unified here. Adapters just provide:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
@@ -112,7 +113,7 @@ async def execute_rrc_unified(
         async with scope:
             # 1. Inject framework context
             result = inject_scope(scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
 
             # Compute mapped_scopes from family
@@ -224,7 +225,7 @@ async def execute_stateful_unified(
             done_scope = Scope()
         async with done_scope:
             result = inject_scope(done_scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
             final = await execute_stateful_done(handler, new_state, done_scope, target=target)
 
@@ -327,7 +328,7 @@ async def execute_delegate_unified(
         async with scope:
             # 1. Inject framework context
             result = inject_scope(scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
 
             # Compute mapped_scopes from family

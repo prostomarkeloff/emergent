@@ -44,7 +44,7 @@ async def execute_rrc(
     async def core_handler(scope: Scope) -> Any:
         op = request.to_domain()
         # Extract scope values to pass to ops runner
-        scope_extras: dict[type, object] = {}
+        scope_extras: dict[type, Any] = {}
         for key, value in scope.items():
             if key is not Scope:  # Skip Scope itself
                 scope_extras[key] = value.value

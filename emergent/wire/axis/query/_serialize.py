@@ -73,7 +73,7 @@ from emergent.wire.axis.query._expr import (
 def _binary_dict(op_name: str) -> ExprHandler[dict[str, Any]]:
     """Handler factory for binary ops (left/right)."""
     def handler(node: Expr, recurse: Callable[[Expr], dict[str, Any]]) -> dict[str, Any]:
-        return {"op": op_name, "left": recurse(node.left), "right": recurse(node.right)}  # type: ignore[attr-defined]
+        return {"op": op_name, "left": recurse(node.left), "right": recurse(node.right)}
     return handler
 
 
@@ -81,7 +81,7 @@ def _make_serialize_handlers() -> dict[type, ExprHandler[dict[str, Any]]]:
     """Build handler map for Expr → dict serialization."""
     return {
         # Leaf
-        Field: lambda n, _r: {"op": "field", "name": n.name},  # type: ignore[attr-defined]
+        Field: lambda n, _r: {"op": "field", "name": n.name},
         Const: lambda n, _r: {"op": "const", "value": cast(Const[Any], n).value},
 
         # Comparison
@@ -95,36 +95,36 @@ def _make_serialize_handlers() -> dict[type, ExprHandler[dict[str, Any]]]:
         # Logical
         And: _binary_dict("and"),
         Or: _binary_dict("or"),
-        Not: lambda n, r: {"op": "not", "operand": r(n.operand)},  # type: ignore[attr-defined]
+        Not: lambda n, r: {"op": "not", "operand": r(n.operand)},
 
         # Collection
-        In: lambda n, r: {"op": "in", "field": r(n.field), "values": list(n.values)},  # type: ignore[attr-defined]
-        Contains: lambda n, r: {"op": "contains", "field": r(n.field), "substring": n.substring},  # type: ignore[attr-defined]
-        StartsWith: lambda n, r: {"op": "startswith", "field": r(n.field), "prefix": n.prefix},  # type: ignore[attr-defined]
-        EndsWith: lambda n, r: {"op": "endswith", "field": r(n.field), "suffix": n.suffix},  # type: ignore[attr-defined]
+        In: lambda n, r: {"op": "in", "field": r(n.field), "values": list(n.values)},
+        Contains: lambda n, r: {"op": "contains", "field": r(n.field), "substring": n.substring},
+        StartsWith: lambda n, r: {"op": "startswith", "field": r(n.field), "prefix": n.prefix},
+        EndsWith: lambda n, r: {"op": "endswith", "field": r(n.field), "suffix": n.suffix},
 
         # Null
-        IsNull: lambda n, r: {"op": "is_null", "field": r(n.field)},  # type: ignore[attr-defined]
-        IsNotNull: lambda n, r: {"op": "is_not_null", "field": r(n.field)},  # type: ignore[attr-defined]
+        IsNull: lambda n, r: {"op": "is_null", "field": r(n.field)},
+        IsNotNull: lambda n, r: {"op": "is_not_null", "field": r(n.field)},
 
         # Range
-        Between: lambda n, r: {"op": "between", "field": r(n.field), "low": r(n.low), "high": r(n.high)},  # type: ignore[attr-defined]
+        Between: lambda n, r: {"op": "between", "field": r(n.field), "low": r(n.low), "high": r(n.high)},
 
         # Pattern
-        Like: lambda n, r: {"op": "like", "field": r(n.field), "pattern": n.pattern},  # type: ignore[attr-defined]
-        ILike: lambda n, r: {"op": "ilike", "field": r(n.field), "pattern": n.pattern},  # type: ignore[attr-defined]
-        Regex: lambda n, r: {"op": "regex", "field": r(n.field), "pattern": n.pattern},  # type: ignore[attr-defined]
+        Like: lambda n, r: {"op": "like", "field": r(n.field), "pattern": n.pattern},
+        ILike: lambda n, r: {"op": "ilike", "field": r(n.field), "pattern": n.pattern},
+        Regex: lambda n, r: {"op": "regex", "field": r(n.field), "pattern": n.pattern},
 
         # Array
-        ArrayContains: lambda n, r: {"op": "array_contains", "field": r(n.field), "value": n.value},  # type: ignore[attr-defined]
-        ArrayAny: lambda n, r: {"op": "array_any", "field": r(n.field), "values": list(n.values)},  # type: ignore[attr-defined]
-        ArrayAll: lambda n, r: {"op": "array_all", "field": r(n.field), "values": list(n.values)},  # type: ignore[attr-defined]
-        ArrayOverlap: lambda n, r: {"op": "array_overlap", "field": r(n.field), "values": list(n.values)},  # type: ignore[attr-defined]
+        ArrayContains: lambda n, r: {"op": "array_contains", "field": r(n.field), "value": n.value},
+        ArrayAny: lambda n, r: {"op": "array_any", "field": r(n.field), "values": list(n.values)},
+        ArrayAll: lambda n, r: {"op": "array_all", "field": r(n.field), "values": list(n.values)},
+        ArrayOverlap: lambda n, r: {"op": "array_overlap", "field": r(n.field), "values": list(n.values)},
 
         # JSON
-        JsonExtract: lambda n, r: {"op": "json_extract", "field": r(n.field), "path": n.path},  # type: ignore[attr-defined]
-        JsonContains: lambda n, r: {"op": "json_contains", "field": r(n.field), "value": n.value},  # type: ignore[attr-defined]
-        JsonHasKey: lambda n, r: {"op": "json_has_key", "field": r(n.field), "key": n.key},  # type: ignore[attr-defined]
+        JsonExtract: lambda n, r: {"op": "json_extract", "field": r(n.field), "path": n.path},
+        JsonContains: lambda n, r: {"op": "json_contains", "field": r(n.field), "value": n.value},
+        JsonHasKey: lambda n, r: {"op": "json_has_key", "field": r(n.field), "key": n.key},
     }
 
 
@@ -232,7 +232,7 @@ def expr_from_dict(
 
     def recurse(d: dict[str, Any]) -> Expr:
         op = d.get("op")
-        factory = reg.get(op)  # type: ignore[arg-type]
+        factory = reg.get(op)
         if factory is not None:
             return factory(d, recurse)
         raise ValueError(f"Unknown operation: {op}")
@@ -309,7 +309,7 @@ def expr_depth(expr: Expr) -> int:
 def _binary_repr(op_symbol: str) -> ExprHandler[str]:
     """Handler factory for binary comparison repr."""
     def handler(node: Expr, recurse: Callable[[Expr], str]) -> str:
-        return f"{recurse(node.left)} {op_symbol} {recurse(node.right)}"  # type: ignore[attr-defined]
+        return f"{recurse(node.left)} {op_symbol} {recurse(node.right)}"
     return handler
 
 
@@ -317,7 +317,7 @@ def _make_repr_handlers() -> dict[type, ExprHandler[str]]:
     """Build handler map for Expr → human-readable string."""
     return {
         # Leaf
-        Field: lambda n, _r: n.name,  # type: ignore[attr-defined]
+        Field: lambda n, _r: n.name,
         Const: lambda n, _r: repr(cast(Const[Any], n).value),
 
         # Comparison
@@ -329,38 +329,38 @@ def _make_repr_handlers() -> dict[type, ExprHandler[str]]:
         Ge: _binary_repr(">="),
 
         # Logical
-        And: lambda n, r: f"({r(n.left)}) & ({r(n.right)})",  # type: ignore[attr-defined]
-        Or: lambda n, r: f"({r(n.left)}) | ({r(n.right)})",  # type: ignore[attr-defined]
-        Not: lambda n, r: f"~({r(n.operand)})",  # type: ignore[attr-defined]
+        And: lambda n, r: f"({r(n.left)}) & ({r(n.right)})",
+        Or: lambda n, r: f"({r(n.left)}) | ({r(n.right)})",
+        Not: lambda n, r: f"~({r(n.operand)})",
 
         # Collection
-        In: lambda n, r: f"{r(n.field)} IN {n.values!r}",  # type: ignore[attr-defined]
-        Contains: lambda n, r: f"{r(n.field)}.contains({n.substring!r})",  # type: ignore[attr-defined]
-        StartsWith: lambda n, r: f"{r(n.field)}.startswith({n.prefix!r})",  # type: ignore[attr-defined]
-        EndsWith: lambda n, r: f"{r(n.field)}.endswith({n.suffix!r})",  # type: ignore[attr-defined]
+        In: lambda n, r: f"{r(n.field)} IN {n.values!r}",
+        Contains: lambda n, r: f"{r(n.field)}.contains({n.substring!r})",
+        StartsWith: lambda n, r: f"{r(n.field)}.startswith({n.prefix!r})",
+        EndsWith: lambda n, r: f"{r(n.field)}.endswith({n.suffix!r})",
 
         # Null
-        IsNull: lambda n, r: f"{r(n.field)} IS NULL",  # type: ignore[attr-defined]
-        IsNotNull: lambda n, r: f"{r(n.field)} IS NOT NULL",  # type: ignore[attr-defined]
+        IsNull: lambda n, r: f"{r(n.field)} IS NULL",
+        IsNotNull: lambda n, r: f"{r(n.field)} IS NOT NULL",
 
         # Range
-        Between: lambda n, r: f"{r(n.field)} BETWEEN {r(n.low)} AND {r(n.high)}",  # type: ignore[attr-defined]
+        Between: lambda n, r: f"{r(n.field)} BETWEEN {r(n.low)} AND {r(n.high)}",
 
         # Pattern
-        Like: lambda n, r: f"{r(n.field)} LIKE {n.pattern!r}",  # type: ignore[attr-defined]
-        ILike: lambda n, r: f"{r(n.field)} ILIKE {n.pattern!r}",  # type: ignore[attr-defined]
-        Regex: lambda n, r: f"{r(n.field)} ~ {n.pattern!r}",  # type: ignore[attr-defined]
+        Like: lambda n, r: f"{r(n.field)} LIKE {n.pattern!r}",
+        ILike: lambda n, r: f"{r(n.field)} ILIKE {n.pattern!r}",
+        Regex: lambda n, r: f"{r(n.field)} ~ {n.pattern!r}",
 
         # Array
-        ArrayContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",  # type: ignore[attr-defined]
-        ArrayAny: lambda n, r: f"{r(n.field)} && ANY {n.values!r}",  # type: ignore[attr-defined]
-        ArrayAll: lambda n, r: f"{r(n.field)} @> ALL {n.values!r}",  # type: ignore[attr-defined]
-        ArrayOverlap: lambda n, r: f"{r(n.field)} && {n.values!r}",  # type: ignore[attr-defined]
+        ArrayContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",
+        ArrayAny: lambda n, r: f"{r(n.field)} && ANY {n.values!r}",
+        ArrayAll: lambda n, r: f"{r(n.field)} @> ALL {n.values!r}",
+        ArrayOverlap: lambda n, r: f"{r(n.field)} && {n.values!r}",
 
         # JSON
-        JsonExtract: lambda n, r: f"{r(n.field)}->>'{n.path}'",  # type: ignore[attr-defined]
-        JsonContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",  # type: ignore[attr-defined]
-        JsonHasKey: lambda n, r: f"{r(n.field)} ? {n.key!r}",  # type: ignore[attr-defined]
+        JsonExtract: lambda n, r: f"{r(n.field)}->>'{n.path}'",
+        JsonContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",
+        JsonHasKey: lambda n, r: f"{r(n.field)} ? {n.key!r}",
     }
 
 

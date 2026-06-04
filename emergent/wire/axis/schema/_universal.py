@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, TypeGuard
+from typing import Any, TYPE_CHECKING, TypeGuard
 
 from emergent.wire.axis._capability import (
     Capability as RootCapability,
@@ -475,7 +475,7 @@ class OneOf(UniversalCapability):
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
         from typing import Literal
-        literal_type = Literal[self.values]  # type: ignore[valid-type]
+        literal_type = Literal[self.values]
         return replace(ctx, field_type=literal_type)
 
     def compile_openapi(self, ctx: "OpenAPIContext") -> "OpenAPIContext":
@@ -807,7 +807,7 @@ class _Miss:
 _MISS = _Miss()
 
 
-def _extract_attr(target: type, obj: object, name: str) -> object | _Miss:
+def _extract_attr(target: type, obj: Any, name: str) -> Any | _Miss:
     """Extract attribute, checking isinstance first to avoid Unknown propagation.
 
     When isinstance narrows to e.g. Some[Unknown], accessing .value produces Unknown.
@@ -821,27 +821,27 @@ def _extract_attr(target: type, obj: object, name: str) -> object | _Miss:
     return _MISS
 
 
-def _is_tuple(v: object) -> TypeGuard[tuple[object, ...]]:
+def _is_tuple(v: Any) -> TypeGuard[tuple[Any, ...]]:
     """TypeGuard: narrow object to tuple[object, ...] without Unknown propagation."""
     return isinstance(v, tuple)
 
 
-def _is_list(v: object) -> TypeGuard[list[object]]:
+def _is_list(v: Any) -> TypeGuard[list[Any]]:
     """TypeGuard: narrow object to list[object] without Unknown propagation."""
     return isinstance(v, list)
 
 
-def _is_set(v: object) -> TypeGuard[set[object]]:
+def _is_set(v: Any) -> TypeGuard[set[Any]]:
     """TypeGuard: narrow object to set[object] without Unknown propagation."""
     return isinstance(v, set)
 
 
-def _is_frozenset(v: object) -> TypeGuard[frozenset[object]]:
+def _is_frozenset(v: Any) -> TypeGuard[frozenset[Any]]:
     """TypeGuard: narrow object to frozenset[object] without Unknown propagation."""
     return isinstance(v, frozenset)
 
 
-def _is_dict(v: object) -> TypeGuard[dict[str, object]]:
+def _is_dict(v: Any) -> TypeGuard[dict[str, Any]]:
     """TypeGuard: narrow object to dict[str, object] without Unknown propagation.
 
     json.loads always produces dict[str, ...] so str keys are guaranteed.
@@ -850,7 +850,7 @@ def _is_dict(v: object) -> TypeGuard[dict[str, object]]:
 
 
 def _resolve_coerce(
-    origin: object,
+    origin: Any,
 ) -> tuple[
     "Callable[[object], object] | None",
     "Callable[[object], object] | None",
@@ -862,33 +862,33 @@ def _resolve_coerce(
     origin is typed as object because it may be a type, TypeAliasType, or UnionType.
     """
     if origin is tuple:
-        def _tuple_to(v: object) -> object:
+        def _tuple_to(v: Any) -> Any:
             return list(v) if _is_tuple(v) else v
 
-        def _tuple_from(v: object) -> object:
+        def _tuple_from(v: Any) -> Any:
             return tuple(v) if _is_list(v) else v
 
         return (_tuple_to, _tuple_from, list)
     if origin is set:
-        def _set_to(v: object) -> object:
+        def _set_to(v: Any) -> Any:
             return list(v) if _is_set(v) else v
 
-        def _set_from(v: object) -> object:
+        def _set_from(v: Any) -> Any:
             return set(v) if _is_list(v) else v
 
         return (_set_to, _set_from, list)
     if origin is frozenset:
-        def _frozenset_to(v: object) -> object:
+        def _frozenset_to(v: Any) -> Any:
             return list(v) if _is_frozenset(v) else v
 
-        def _frozenset_from(v: object) -> object:
+        def _frozenset_from(v: Any) -> Any:
             return frozenset(v) if _is_list(v) else v
 
         return (_frozenset_to, _frozenset_from, list)
 
     from kungfu import Option, Some, Nothing
     if origin is Option:
-        def _to(v: object) -> object:
+        def _to(v: Any) -> Any:
             # _extract_attr avoids Unknown from isinstance narrowing on erased generics
             val = _extract_attr(Some, v, "value")
             if not isinstance(val, _Miss):
@@ -897,7 +897,7 @@ def _resolve_coerce(
                 return None
             return v
 
-        def _from(v: object) -> object:
+        def _from(v: Any) -> Any:
             return Nothing() if v is None else Some(v)
 
         return (_to, _from, None)  # storage_type resolved in __init__ from source args
@@ -906,16 +906,16 @@ def _resolve_coerce(
     if origin is Sum:
         import json
 
-        def _sum_to(v: object) -> object:
+        def _sum_to(v: Any) -> Any:
             # _extract_attr avoids Unknown from isinstance narrowing on erased generics
             raw = _extract_attr(Sum, v, "v")
             if not isinstance(raw, _Miss):
                 return json.dumps({"_t": type(raw).__name__, "_v": raw})
             return v
 
-        def _sum_from(v: object) -> object:
+        def _sum_from(v: Any) -> Any:
             # Generic fallback — Coerce.__init__ overrides with Sum-aware version
-            parsed: object = json.loads(v) if isinstance(v, str) else v
+            parsed: Any = json.loads(v) if isinstance(v, str) else v
             if _is_dict(parsed):
                 return parsed["_v"] if "_v" in parsed else parsed
             return parsed
@@ -930,14 +930,14 @@ def _resolve_coerce(
     _is_result = origin is Result
     if not _is_result:
         if isinstance(origin, types.UnionType):
-            union_args: tuple[object, ...] = origin.__args__
+            union_args: tuple[Any, ...] = origin.__args__
             _origins = {getattr(a, "__origin__", a) for a in union_args}
             _is_result = _origins == {Ok, Error}
 
     if _is_result:
         import json
 
-        def _result_to(v: object) -> object:
+        def _result_to(v: Any) -> Any:
             # _extract_attr avoids Unknown from isinstance narrowing on erased generics
             ok_val = _extract_attr(Ok, v, "value")
             if not isinstance(ok_val, _Miss):
@@ -947,14 +947,14 @@ def _resolve_coerce(
                 return json.dumps({"ok": False, "e": err_val})
             return v
 
-        def _result_from(v: object) -> object:
-            parsed: object = json.loads(v) if isinstance(v, str) else v
+        def _result_from(v: Any) -> Any:
+            parsed: Any = json.loads(v) if isinstance(v, str) else v
             if _is_dict(parsed):
                 ok_flag = parsed.get("ok")
                 if ok_flag:
-                    v_val: object = parsed["v"]
+                    v_val: Any = parsed["v"]
                     return Ok(v_val)
-                e_val: object = parsed["e"]
+                e_val: Any = parsed["e"]
                 return Error(e_val)
             return v
 

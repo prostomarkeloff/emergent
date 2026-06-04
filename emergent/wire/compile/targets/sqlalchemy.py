@@ -165,12 +165,12 @@ def _assemble_model[T](
             if hasattr(mapper.class_, '__tablename__') and mapper.class_.__tablename__ == tablename:
                 return mapper.class_
 
-    attrs: dict[str, Column[object] | str | dict[str, str]] = {
-        "__tablename__": tablename,  # type: ignore[dict-item]
+    attrs: dict[str, Column[Any] | str | dict[str, str]] = {
+        "__tablename__": tablename,
     }
 
     if schema:
-        attrs["__table_args__"] = {"schema": schema}  # type: ignore[assignment]
+        attrs["__table_args__"] = {"schema": schema}
 
     for fc in compiled:
         sa = fc[SA_PHASE]
@@ -193,12 +193,12 @@ def _assemble_model[T](
             )
 
         if fk_instance is not None:
-            attrs[fc.name] = Column(col_type, fk_instance, **col_kwargs)  # type: ignore[arg-type]
+            attrs[fc.name] = Column(col_type, fk_instance, **col_kwargs)
         else:
-            attrs[fc.name] = Column(col_type, **col_kwargs)  # type: ignore[arg-type]
+            attrs[fc.name] = Column(col_type, **col_kwargs)
 
     model_name = f"{entity.__name__}Model"
-    return type(model_name, (model_base,), attrs)  # type: ignore[return-value]
+    return type(model_name, (model_base,), attrs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -304,7 +304,7 @@ def compile_expr[T](
     # extra compilations may be for different entity types (e.g. JOIN targets);
     # Any for entity type is unavoidable here — we only use .model and .fields.
     *extra: Compilation[Any, DeclarativeBase],
-) -> object:
+) -> Any:
     """Compile query Expr to SQLAlchemy column expression.
 
     Applies universal coerce_expr (to_storage from STORAGE_FIELD_PHASE) before SA translation.
@@ -316,14 +316,14 @@ def compile_expr[T](
 def _make_sa_expr_handlers(
     model: type[DeclarativeBase],
     *extra_models: type[DeclarativeBase],
-) -> dict[type, ExprHandler[object]]:
+) -> dict[type, ExprHandler[Any]]:
     """Build handler map for Expr → SA expression. Closures capture model.
 
     Open-world: callers can extend the returned map with custom Expr handlers.
     """
     from sqlalchemy import and_, or_, not_
 
-    def resolve_field(name: str) -> object:
+    def resolve_field(name: str) -> Any:
         if hasattr(model, name):
             return getattr(model, name)
         for m in extra_models:
@@ -334,15 +334,15 @@ def _make_sa_expr_handlers(
     # Any is unavoidable here: SA column objects use __lt__/__le__/__gt__/__ge__
     # overloads returning ColumnElement, not bool. No static type captures this
     # without coupling to SA internals.
-    def _cmp(op: Callable[[Any, Any], object]) -> ExprHandler[object]:
-        def handler(n: Expr, r: Callable[[Expr], object]) -> object:
-            return op(r(n.left), r(n.right))  # type: ignore[attr-defined]
+    def _cmp(op: Callable[[Any, Any], Any]) -> ExprHandler[Any]:
+        def handler(n: Expr, r: Callable[[Expr], Any]) -> Any:
+            return op(r(n.left), r(n.right))
         return handler
 
     return {
         # Leaf
-        Field: lambda n, _r: resolve_field(n.name),  # type: ignore[attr-defined]
-        Const: lambda n, _r: n.value,  # type: ignore[attr-defined]
+        Field: lambda n, _r: resolve_field(n.name),
+        Const: lambda n, _r: n.value,
 
         # Comparison
         Eq: _cmp(lambda l, r: l == r),
@@ -353,42 +353,42 @@ def _make_sa_expr_handlers(
         Ge: _cmp(lambda l, r: l >= r),
 
         # Logical
-        And: lambda n, r: and_(r(n.left), r(n.right)),  # type: ignore[attr-defined]
-        Or: lambda n, r: or_(r(n.left), r(n.right)),  # type: ignore[attr-defined]
-        Not: lambda n, r: not_(r(n.operand)),  # type: ignore[attr-defined]
+        And: lambda n, r: and_(r(n.left), r(n.right)),
+        Or: lambda n, r: or_(r(n.left), r(n.right)),
+        Not: lambda n, r: not_(r(n.operand)),
 
         # Collection
-        In: lambda n, r: r(n.field).in_(n.values),  # type: ignore[attr-defined,union-attr]
-        Contains: lambda n, r: r(n.field).contains(n.substring),  # type: ignore[attr-defined,union-attr]
-        StartsWith: lambda n, r: r(n.field).startswith(n.prefix),  # type: ignore[attr-defined,union-attr]
-        EndsWith: lambda n, r: r(n.field).endswith(n.suffix),  # type: ignore[attr-defined,union-attr]
+        In: lambda n, r: r(n.field).in_(n.values),
+        Contains: lambda n, r: r(n.field).contains(n.substring),
+        StartsWith: lambda n, r: r(n.field).startswith(n.prefix),
+        EndsWith: lambda n, r: r(n.field).endswith(n.suffix),
 
         # Null
-        IsNull: lambda n, r: r(n.field).is_(None),  # type: ignore[attr-defined,union-attr]
-        IsNotNull: lambda n, r: r(n.field).isnot(None),  # type: ignore[attr-defined,union-attr]
+        IsNull: lambda n, r: r(n.field).is_(None),
+        IsNotNull: lambda n, r: r(n.field).isnot(None),
 
         # Range
-        Between: lambda n, r: r(n.field).between(r(n.low), r(n.high)),  # type: ignore[attr-defined,union-attr]
+        Between: lambda n, r: r(n.field).between(r(n.low), r(n.high)),
 
         # Pattern
-        Like: lambda n, r: r(n.field).like(n.pattern),  # type: ignore[attr-defined,union-attr]
-        ILike: lambda n, r: r(n.field).ilike(n.pattern),  # type: ignore[attr-defined,union-attr]
-        Regex: lambda n, r: r(n.field).regexp_match(n.pattern),  # type: ignore[attr-defined,union-attr]
+        Like: lambda n, r: r(n.field).like(n.pattern),
+        ILike: lambda n, r: r(n.field).ilike(n.pattern),
+        Regex: lambda n, r: r(n.field).regexp_match(n.pattern),
 
         # JSON
-        JsonExtract: lambda n, r: _json_extract(r(n.field), n.path),  # type: ignore[attr-defined]
-        JsonContains: lambda n, r: r(n.field).contains(n.value),  # type: ignore[attr-defined,union-attr]
-        JsonHasKey: lambda n, r: r(n.field).has_key(n.key),  # type: ignore[attr-defined,union-attr]
+        JsonExtract: lambda n, r: _json_extract(r(n.field), n.path),
+        JsonContains: lambda n, r: r(n.field).contains(n.value),
+        JsonHasKey: lambda n, r: r(n.field).has_key(n.key),
 
         # Array
-        ArrayContains: lambda n, r: r(n.field).contains([n.value]),  # type: ignore[attr-defined,union-attr]
-        ArrayAny: lambda n, r: r(n.field).overlap(list(n.values)),  # type: ignore[attr-defined,union-attr]
-        ArrayAll: lambda n, r: r(n.field).contains(list(n.values)),  # type: ignore[attr-defined,union-attr]
-        ArrayOverlap: lambda n, r: r(n.field).overlap(list(n.values)),  # type: ignore[attr-defined,union-attr]
+        ArrayContains: lambda n, r: r(n.field).contains([n.value]),
+        ArrayAny: lambda n, r: r(n.field).overlap(list(n.values)),
+        ArrayAll: lambda n, r: r(n.field).contains(list(n.values)),
+        ArrayOverlap: lambda n, r: r(n.field).overlap(list(n.values)),
     }
 
 
-def _json_extract(col: object, path: str) -> object:
+def _json_extract(col: Any, path: str) -> Any:
     """Navigate JSON path on SA column."""
     # Any unavoidable: SA column's __getitem__ returns ColumnElement
     # which has no static type accessible without coupling to SA internals.
@@ -402,8 +402,8 @@ def _compile_expr_raw(
     expr: Expr,
     model: type[DeclarativeBase],
     *extra_models: type[DeclarativeBase],
-    handlers: Mapping[type, ExprHandler[object]] | None = None,
-) -> object:
+    handlers: Mapping[type, ExprHandler[Any]] | None = None,
+) -> Any:
     """Raw Expr → SA expression compiler. No coercion — pure translation.
 
     Open-world via fold_expr: pass handlers to extend with custom Expr types,

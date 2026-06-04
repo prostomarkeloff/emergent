@@ -12,7 +12,7 @@ Not CRUD-specific. Any pattern producing DomainError can use these.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.axis.surface.transforms import ResponseTransform
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class ErrorTransform(ResponseTransform):
     """Calls response.to_problem() if available, passes through otherwise."""
 
-    def apply_response(self, response: object) -> object:
+    def apply_response(self, response: Any) -> Any:
         to_problem = getattr(response, "to_problem", None)
         if callable(to_problem):
             return to_problem()
@@ -44,7 +44,7 @@ class ProblemResponse(ResponseTransform):
 
     media_type: str = "application/problem+json"
 
-    def apply_response(self, response: object) -> object:
+    def apply_response(self, response: Any) -> Any:
         to_dict = getattr(response, "to_dict", None)
         status_code = getattr(response, "status_code", None)
         if callable(to_dict) and status_code is not None:

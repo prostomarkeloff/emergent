@@ -557,7 +557,7 @@ class HTTPAPIProvider(Generic[T]):
             )
         field_names = {f.name for f in dataclasses.fields(self.entity)}
         filtered = {k: v for k, v in data.items() if k in field_names}
-        return self.entity(**filtered)  # type: ignore
+        return self.entity(**filtered)
 
     def _serialize_entity(self, entity: T) -> dict[str, Any]:
         """Serialize entity to dict."""
@@ -565,7 +565,7 @@ class HTTPAPIProvider(Generic[T]):
             raise TypeError(
                 f"{type(entity).__name__} must be a dataclass instance"
             )
-        return dataclasses.asdict(entity)  # type: ignore
+        return dataclasses.asdict(entity)
 
 
 # ─── Builder ─────────────────────────────────────────────────────────────────

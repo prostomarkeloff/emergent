@@ -163,7 +163,7 @@ class MemoryRelationalProvider(Generic[T]):
         """Execute query on data via fold() with MemoryQueryCompilable protocol."""
         ctx = MemoryQueryContext(data=list(self._data))
         result = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
-        return result.data  # type: ignore[return-value]
+        return result.data
 
     async def fetch_one(self, query: RelationalQuerySet[T]) -> T | None:
         """Fetch single result."""
@@ -240,7 +240,7 @@ class MemoryRelationalProvider(Generic[T]):
     async def aggregate(
         self,
         query: RelationalQuerySet[T],
-        handlers: dict[type, AggHandler[list[object]]] | None = None,
+        handlers: dict[type, AggHandler[list[Any]]] | None = None,
     ) -> dict[str, Any]:
         """Execute aggregate query.
 
@@ -278,48 +278,48 @@ class MemoryRelationalProvider(Generic[T]):
         return result
 
 
-def _get_non_null_values(data: list[object], field: str) -> list[Any]:
+def _get_non_null_values(data: list[Any], field: str) -> list[Any]:
     """Extract non-null field values from data list."""
     return [getattr(item, field) for item in data if getattr(item, field, None) is not None]
 
 
-def _make_memory_agg_handlers() -> dict[type, AggHandler[list[object]]]:
+def _make_memory_agg_handlers() -> dict[type, AggHandler[list[Any]]]:
     """Build handler map for in-memory aggregate computation."""
-    def handle_count(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_count(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return len(data)
         return sum(1 for item in data if getattr(item, spec.field, None) is not None)
 
-    def handle_sum(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_sum(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return None
         values = _get_non_null_values(data, spec.field)
         return sum(values) if values else None
 
-    def handle_avg(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_avg(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return None
         values = _get_non_null_values(data, spec.field)
         return sum(values) / len(values) if values else None
 
-    def handle_min(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_min(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return None
         values = _get_non_null_values(data, spec.field)
         return min(values) if values else None
 
-    def handle_max(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_max(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return None
         values = _get_non_null_values(data, spec.field)
         return max(values) if values else None
 
-    def handle_array_agg(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_array_agg(spec: AggregateSpec, data: list[Any]) -> Any:
         if spec.field is None:
             return []
         return [getattr(item, spec.field) for item in data]
 
-    def handle_string_agg(spec: AggregateSpec, data: list[object]) -> object:
+    def handle_string_agg(spec: AggregateSpec, data: list[Any]) -> Any:
         if not isinstance(spec.func, StringAgg):
             return ""
         sep = spec.func.separator
@@ -444,7 +444,7 @@ AK = TypeVar("AK")  # API key type
 
 
 def _include_mod_memory_raise(
-    mod: object, ctx: MemoryAPIContext,
+    mod: Any, ctx: MemoryAPIContext,
 ) -> MemoryAPIContext:
     """Handler override: IncludeMod raises for memory provider."""
     raise TypeError(
@@ -522,7 +522,7 @@ class MemoryAPIProvider(Generic[AK, T]):
         )
         # Fold preserves element types (only filters/sorts/slices).
         # list is invariant so list[object] → list[T] cannot be expressed.
-        items: list[T] = result.data  # type: ignore[assignment]  # list invariance; fold preserves T
+        items: list[T] = result.data
         return items, result.total, result.has_more
 
     # ─── Read Operations ──────────────────────────────────────────────────
@@ -579,12 +579,12 @@ class MemoryAPIProvider(Generic[AK, T]):
                             # Merge non-None fields from update into existing
                             updates = {
                                 f.name: getattr(entity, f.name)
-                                for f in dataclasses.fields(entity)  # type: ignore[arg-type]
+                                for f in dataclasses.fields(entity)
                                 if getattr(entity, f.name) is not None
                             }
-                            merged = dataclasses.replace(item, **updates)  # type: ignore[type-var]
+                            merged = dataclasses.replace(item, **updates)
                             self._data[i] = merged
-                            return merged  # type: ignore[return-value]
+                            return merged
                         else:
                             self._data[i] = entity
                             return entity

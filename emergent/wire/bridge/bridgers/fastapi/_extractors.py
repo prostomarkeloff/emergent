@@ -12,6 +12,8 @@ Each extractor handles one route kind, composable via compose_extractors.
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -30,7 +32,7 @@ from emergent.wire.bridge.bridgers.fastapi._routes import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def is_fastapi_app(source: object) -> bool:
+def is_fastapi_app(source: Any) -> bool:
     """Check if source is a FastAPI application."""
     # Check for FastAPI type
     type_name = type(source).__name__
@@ -60,11 +62,11 @@ class HTTPRouteExtractor:
     Handles APIRoute instances, yields one Extracted per method.
     """
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if source has routes we can extract."""
         return hasattr(source, "routes")
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield HTTPRouteData for each route/method pair."""
         try:
             from fastapi.routing import APIRoute
@@ -125,11 +127,11 @@ class HTTPRouteExtractor:
 class WebSocketExtractor:
     """Extract WebSocket routes from FastAPI app."""
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if source has routes."""
         return hasattr(source, "routes")
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield WebSocketRouteData for each WebSocket route."""
         try:
             from starlette.routing import WebSocketRoute
@@ -171,14 +173,14 @@ class WebSocketExtractor:
 class LifespanExtractor:
     """Extract lifecycle handlers (startup/shutdown) from FastAPI app."""
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if source has router with lifecycle hooks."""
         router = getattr(source, "router", None)
         if router is None:
             return False
         return hasattr(router, "on_startup") or hasattr(router, "on_shutdown")
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield LifespanData for each startup/shutdown handler."""
         router = getattr(source, "router", None)
         if router is None:
@@ -227,11 +229,11 @@ class ExceptionHandlerExtractor:
     # Skip Starlette's default handlers
     skip_modules: tuple[str, ...] = ("starlette.",)
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if source has exception handlers."""
         return hasattr(source, "exception_handlers")
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield ExceptionHandlerData for each exception handler."""
         handlers = getattr(source, "exception_handlers", {})
 
@@ -272,11 +274,11 @@ class MountedAppExtractor:
 
     inner: Extractor[RouteData]
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if source has routes."""
         return hasattr(source, "routes")
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield routes from mounted apps, with path prefix."""
         try:
             from starlette.routing import Mount
@@ -329,7 +331,7 @@ def _prepend_path(route: RouteData, prefix: str) -> RouteData:
     new_path = f"{prefix.rstrip('/')}/{current_path.lstrip('/')}"
 
     # route is a dataclass instance, safe to replace
-    return dataclasses.replace(route, path=new_path)  # type: ignore[type-var]
+    return dataclasses.replace(route, path=new_path)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

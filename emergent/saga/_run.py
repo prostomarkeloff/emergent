@@ -229,7 +229,7 @@ async def run_parallel[T, E](
             comp_run, comp_failed = await run_compensators(compensators)
             return Error(
                 SagaError(
-                    error=par.sagas[0].action if par.sagas else None,  # type: ignore[arg-type]
+                    error=par.sagas[0].action if par.sagas else None,
                     step_failed=0,
                     compensators_run=comp_run,
                     compensators_failed=comp_failed,

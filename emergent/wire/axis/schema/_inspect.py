@@ -182,8 +182,10 @@ def with_field_capability[T](cls: type[T], field_name: str, *caps: Any) -> type[
 
         ReloadSA = with_field_capability(Reload, "capabilities", PickleCoerce)
     """
-    from dataclasses import fields as dc_fields, make_dataclass, MISSING
+    from dataclasses import fields as dc_fields, is_dataclass, make_dataclass, MISSING
 
+    if not is_dataclass(cls):
+        raise TypeError(f"{cls.__name__} is not a dataclass")
     if field_name not in cls.__annotations__:
         raise ValueError(f"{cls.__name__} has no field {field_name!r}")
 
@@ -216,7 +218,7 @@ def unwrap_annotated(type_hint: Any) -> tuple[Any, list[Any]]:
     return type_hint, []
 
 
-def _to_capability(ann: object) -> SchemaAxisCapability | None:
+def _to_capability(ann: Any) -> SchemaAxisCapability | None:
     """Convert annotation to capability instance.
 
     Supports both:
@@ -231,13 +233,13 @@ def _to_capability(ann: object) -> SchemaAxisCapability | None:
     return None
 
 
-def _is_tuple(ann: object) -> TypeGuard[tuple[object, ...]]:
+def _is_tuple(ann: Any) -> TypeGuard[tuple[Any, ...]]:
     """Check if annotation is a tuple (pattern of capabilities)."""
     return isinstance(ann, tuple)
 
 
 def _extract_from_pattern(
-    pattern: tuple[object, ...], out: list[SchemaAxisCapability]
+    pattern: tuple[Any, ...], out: list[SchemaAxisCapability]
 ) -> None:
     """Extract capabilities from a pattern tuple into the output list."""
     for item in pattern:
@@ -246,7 +248,7 @@ def _extract_from_pattern(
             out.append(cap)
 
 
-def extract_capabilities(annotations: Sequence[object]) -> tuple[SchemaAxisCapability, ...]:
+def extract_capabilities(annotations: Sequence[Any]) -> tuple[SchemaAxisCapability, ...]:
     """Extract SchemaAxisCapability instances from annotations.
 
     Supports both class and instance forms:
@@ -488,7 +490,7 @@ def namedtuple_inspector(cls: type) -> dict[str, FieldInfo] | None:
 
     result: dict[str, FieldInfo] = {}
     hints = get_type_hints(cls, include_extras=True)
-    defaults: dict[str, object] = getattr(cls, "_field_defaults", {})
+    defaults: dict[str, Any] = getattr(cls, "_field_defaults", {})
 
     for field_name in field_names:
         type_hint = hints.get(field_name, str)
