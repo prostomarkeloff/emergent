@@ -21,7 +21,7 @@ for free. No trace kwarg threading needed.
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from emergent.wire.compile._core import Axes
@@ -31,8 +31,67 @@ if TYPE_CHECKING:
         FoldStep,
         FoldTrace,
         ListCollector,
+        ScanEvent,
         TypeTrace,
+        WrapEvent,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TypedDict shapes for the structured trace
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class StepDict(TypedDict):
+    capability: str
+    dispatch: str
+    changed: bool
+
+
+class FoldTraceDict(TypedDict):
+    protocol: str
+    method: str
+    items_total: int
+    items_applied: int
+    steps: list[StepDict]
+
+
+class PhaseTraceDict(TypedDict):
+    phase: str
+    fold: FoldTraceDict
+
+
+class FieldTraceDict(TypedDict):
+    field: str
+    type: str
+    capabilities: list[str]
+    phases: list[PhaseTraceDict]
+
+
+# "class" is a Python reserved word — functional TypedDict syntax handles it.
+TypeTraceDict = TypedDict(
+    "TypeTraceDict",
+    {"class": str, "fields": list[FieldTraceDict]},
+)
+
+
+class ScanDict(TypedDict):
+    trigger_type: str
+    trigger: str
+    codec: str
+    capabilities: list[str]
+
+
+class WrapDict(TypedDict):
+    codec: str
+    trigger: str
+    result: str
+
+
+class TraceDict(TypedDict):
+    types: list[TypeTraceDict]
+    scan: list[ScanDict]
+    wrap: list[WrapDict]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +112,7 @@ def _get_collector(axes: Axes) -> ListCollector | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def trace_dict(axes: Axes) -> dict[str, Any]:
+def trace_dict(axes: Axes) -> TraceDict:
     """Full compilation trace as structured dict.
 
         data = trace_dict(axes)
@@ -63,16 +122,16 @@ def trace_dict(axes: Axes) -> dict[str, Any]:
     """
     collector = _get_collector(axes)
     if collector is None:
-        return {}
+        return TraceDict(types=[], scan=[], wrap=[])
 
-    return {
-        "types": [_type_trace_dict(tt) for tt in collector.type_traces],
-        "scan": [_scan_dict(se) for se in collector.scan_events],
-        "wrap": [_wrap_dict(we) for we in collector.wrap_events],
-    }
+    return TraceDict(
+        types=[_type_trace_dict(tt) for tt in collector.type_traces],
+        scan=[_scan_dict(se) for se in collector.scan_events],
+        wrap=[_wrap_dict(we) for we in collector.wrap_events],
+    )
 
 
-def field_dict(axes: Axes, field_name: str) -> dict[str, Any] | None:
+def field_dict(axes: Axes, field_name: str) -> FieldTraceDict | None:
     """One field's compilation trace as dict.
 
         d = field_dict(axes, "email")
@@ -85,7 +144,7 @@ def field_dict(axes: Axes, field_name: str) -> dict[str, Any] | None:
     return _field_trace_dict(ft)
 
 
-def type_dict(axes: Axes, cls_name: str) -> dict[str, Any] | None:
+def type_dict(axes: Axes, cls_name: str) -> TypeTraceDict | None:
     """One type's compilation trace as dict."""
     collector = _get_collector(axes)
     if collector is None:
@@ -101,62 +160,61 @@ def type_dict(axes: Axes, cls_name: str) -> dict[str, Any] | None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _step_dict(step: FoldStep) -> dict[str, Any]:
-    return {
-        "capability": step.item_type,
-        "dispatch": step.dispatch,
-        "changed": step.changed,
-    }
+def _step_dict(step: FoldStep) -> StepDict:
+    return StepDict(
+        capability=step.item_type,
+        dispatch=step.dispatch,
+        changed=step.changed,
+    )
 
 
-def _fold_trace_dict(ft: FoldTrace) -> dict[str, Any]:
-    return {
-        "protocol": ft.protocol,
-        "method": ft.method,
-        "items_total": ft.items_total,
-        "items_applied": ft.items_applied,
-        "steps": [_step_dict(s) for s in ft.steps],
-    }
+def _fold_trace_dict(ft: FoldTrace) -> FoldTraceDict:
+    return FoldTraceDict(
+        protocol=ft.protocol,
+        method=ft.method,
+        items_total=ft.items_total,
+        items_applied=ft.items_applied,
+        steps=[_step_dict(s) for s in ft.steps],
+    )
 
 
-def _phase_trace_dict(fpt: FieldPhaseTrace) -> dict[str, Any]:
-    return {
-        "phase": fpt.phase,
-        "fold": _fold_trace_dict(fpt.fold),
-    }
+def _phase_trace_dict(fpt: FieldPhaseTrace) -> PhaseTraceDict:
+    return PhaseTraceDict(
+        phase=fpt.phase,
+        fold=_fold_trace_dict(fpt.fold),
+    )
 
 
-def _field_trace_dict(ft: FieldTrace) -> dict[str, Any]:
-    return {
-        "field": ft.field_name,
-        "type": ft.field_type,
-        "capabilities": list(ft.capabilities),
-        "phases": [_phase_trace_dict(p) for p in ft.phases],
-    }
+def _field_trace_dict(ft: FieldTrace) -> FieldTraceDict:
+    return FieldTraceDict(
+        field=ft.field_name,
+        type=ft.field_type,
+        capabilities=list(ft.capabilities),
+        phases=[_phase_trace_dict(p) for p in ft.phases],
+    )
 
 
-def _type_trace_dict(tt: TypeTrace) -> dict[str, Any]:
-    return {
-        "class": tt.cls_name,
-        "fields": [_field_trace_dict(f) for f in tt.fields],
-    }
+def _type_trace_dict(tt: TypeTrace) -> TypeTraceDict:
+    return TypeTraceDict(
+        {"class": tt.cls_name, "fields": [_field_trace_dict(f) for f in tt.fields]},
+    )
 
 
-def _scan_dict(se: Any) -> dict[str, Any]:
-    return {
-        "trigger_type": se.trigger_type,
-        "trigger": se.trigger_repr,
-        "codec": se.codec_type,
-        "capabilities": list(se.capabilities),
-    }
+def _scan_dict(se: ScanEvent) -> ScanDict:
+    return ScanDict(
+        trigger_type=se.trigger_type,
+        trigger=se.trigger_repr,
+        codec=se.codec_type,
+        capabilities=list(se.capabilities),
+    )
 
 
-def _wrap_dict(we: Any) -> dict[str, Any]:
-    return {
-        "codec": we.codec_type,
-        "trigger": we.trigger_repr,
-        "result": we.result_type,
-    }
+def _wrap_dict(we: WrapEvent) -> WrapDict:
+    return WrapDict(
+        codec=we.codec_type,
+        trigger=we.trigger_repr,
+        result=we.result_type,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -172,7 +230,7 @@ def explain(axes: Axes) -> str:
         print(explain(axes))
     """
     data = trace_dict(axes)
-    if not data:
+    if not data["types"] and not data["scan"] and not data["wrap"]:
         return "(tracing not enabled -- use Axes.traced())"
     return _format_trace(data)
 
@@ -256,12 +314,12 @@ def active_capabilities(axes: Axes, field_name: str) -> list[str]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _format_trace(data: dict[str, Any]) -> str:
+def _format_trace(data: TraceDict) -> str:
     lines: list[str] = []
-    for td in data.get("types", []):
+    for td in data["types"]:
         lines.append(_format_type(td))
 
-    scan = data.get("scan", [])
+    scan = data["scan"]
     if scan:
         lines.append("")
         lines.append("=== Scan ===")
@@ -269,7 +327,7 @@ def _format_trace(data: dict[str, Any]) -> str:
             caps = f"  [{len(s['capabilities'])} caps]" if s["capabilities"] else ""
             lines.append(f"  {s['trigger']} -> {s['codec']}{caps}")
 
-    wrap = data.get("wrap", [])
+    wrap = data["wrap"]
     if wrap:
         lines.append("")
         lines.append("=== Wrap ===")
@@ -279,20 +337,20 @@ def _format_trace(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_type(td: dict[str, Any]) -> str:
+def _format_type(td: TypeTraceDict) -> str:
     lines = [f"=== {td['class']} ==="]
-    for fd in td.get("fields", []):
+    for fd in td["fields"]:
         lines.append(_format_field(fd))
     return "\n".join(lines)
 
 
-def _format_field(fd: dict[str, Any]) -> str:
+def _format_field(fd: FieldTraceDict) -> str:
     lines: list[str] = []
     lines.append(f"  {fd['field']} ({fd['type']}):")
-    caps = fd.get("capabilities", [])
+    caps = fd["capabilities"]
     if caps:
         lines.append(f"    [{', '.join(caps)}]")
-    for pd in fd.get("phases", []):
+    for pd in fd["phases"]:
         parts: list[str] = []
         for step in pd["fold"]["steps"]:
             cap = step["capability"]
@@ -308,6 +366,15 @@ def _format_field(fd: dict[str, Any]) -> str:
 
 
 __all__ = (
+    # TypedDicts (for consumers wanting typed access)
+    "TraceDict",
+    "TypeTraceDict",
+    "FieldTraceDict",
+    "PhaseTraceDict",
+    "FoldTraceDict",
+    "StepDict",
+    "ScanDict",
+    "WrapDict",
     # Dict layer
     "trace_dict",
     "field_dict",

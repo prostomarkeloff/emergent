@@ -1887,12 +1887,13 @@ class TestCompileExplain:
     """Tests for compile/_explain.py."""
 
     def test_trace_dict_no_trace(self):
-        """trace_dict returns empty dict when no trace."""
+        """trace_dict returns empty-shape TraceDict when no trace."""
         from emergent.wire.compile._explain import trace_dict
 
         axes = Axes.default()
         data = trace_dict(axes)
-        assert data == {}
+        # Post-TypedDict refactor: always returns TraceDict shape.
+        assert data == {"types": [], "scan": [], "wrap": []}
 
     def test_trace_dict_with_traced(self):
         """trace_dict returns structured data with traced axes."""
