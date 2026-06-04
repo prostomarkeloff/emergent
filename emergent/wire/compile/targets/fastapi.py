@@ -187,7 +187,8 @@ class FastAPIWrapContext:
 
     # From codec (via from_codec):
     request_type: type | None = None
-    response_type: type | types.UnionType | None = None
+    # GenericAlias covers ``list[item]`` for collection (bare-array) responses.
+    response_type: type | types.UnionType | types.GenericAlias | None = None
     execute: Callable[..., Any] | None = None
 
     # From trigger/framework defaults (via from_codec):
@@ -455,6 +456,24 @@ def _validation_error_type() -> type:
     return RequestValidationError
 
 
+def _response_model(
+    codec_response: type | None,
+) -> type | types.UnionType | types.GenericAlias | None:
+    """Response model for the route.
+
+    A collection response (top-level JSON array) maps to ``list[item]`` so the
+    body is a bare array; any other response is its own type.
+    """
+    from emergent.wire.derive._codegen import CollectionResponseMarker
+
+    if (
+        isinstance(codec_response, type)
+        and issubclass(codec_response, CollectionResponseMarker)
+    ):
+        return list[codec_response.collection_item()]
+    return codec_response
+
+
 def rrc_from_codec(
     codec: RequestResponseCodec,
     trigger: HTTPRouteTrigger,
@@ -462,7 +481,7 @@ def rrc_from_codec(
     """Seed WrapContext from RRC codec — request/response types + extraction."""
     return FastAPIWrapContext(
         request_type=codec.request,
-        response_type=codec.response,
+        response_type=_response_model(codec.response),
         execute=_rrc_execute,
         trigger=trigger,
         extractor=_default_extractor(trigger),

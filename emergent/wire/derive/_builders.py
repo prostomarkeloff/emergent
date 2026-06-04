@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Never
 from emergent.wire.derive._codegen import (
     HasAnnotations,
     annotate_handler,
+    create_collection_response_type,
     create_dataclass,
     create_request_type,
     create_response_type,
@@ -66,6 +67,7 @@ class ExposureBuilder[T, E]:
     _trigger: Trigger | None
     _capabilities: tuple[SurfaceCapability, ...]
     _response_converter: ResponseConverter | None
+    _collection: bool = False
 
     def request(self, **fields: type) -> ExposureBuilder[T, E]:
         return replace(self, _request_fields=fields)
@@ -73,7 +75,15 @@ class ExposureBuilder[T, E]:
     def response(
         self, **fields: type | tuple[type, int | str | float | bool | None]
     ) -> ExposureBuilder[T, E]:
-        return replace(self, _response_fields=fields)
+        return replace(self, _response_fields=fields, _collection=False)
+
+    def response_list(self, **item_fields: type) -> ExposureBuilder[T, E]:
+        """Declare a top-level JSON array response: body is ``list[{item_fields}]``.
+
+        The handler returns ``Ok(list_of_dicts)``; each element is mapped through
+        the item type, producing a bare array (no ``{"items": ...}`` envelope).
+        """
+        return replace(self, _response_fields=item_fields, _collection=True)
 
     def handler[NewT, NewE](
         self, fn: OperationHandler[NewT, NewE]
@@ -87,6 +97,7 @@ class ExposureBuilder[T, E]:
             _trigger=self._trigger,
             _capabilities=self._capabilities,
             _response_converter=self._response_converter,
+            _collection=self._collection,
         )
 
     def trigger(self, t: Trigger) -> ExposureBuilder[T, E]:
@@ -122,6 +133,24 @@ class ExposureBuilder[T, E]:
                 response_field_specs.append((name, spec[0], spec[1]))
             else:
                 response_field_specs.append((name, spec))
+
+        if self._collection:
+            response_type = create_collection_response_type(
+                f"{self._name.title()}Response", response_field_specs,
+            )
+            annotated_handler = annotate_handler(self._handler, op_type)
+            from emergent.wire.axis.surface import Exposure as _ExposureColl
+            from emergent.wire.axis.surface.codecs import rrc as _rrc_coll
+            codec = _rrc_coll(request_type, response_type)
+            return (
+                op_type,
+                annotated_handler,
+                _ExposureColl(
+                    trigger=self._trigger,
+                    codec=codec,
+                    capabilities=tuple(self._capabilities),
+                ),
+            )
 
         if self._response_converter is not None:
             converter = self._response_converter

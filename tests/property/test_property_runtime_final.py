@@ -1679,6 +1679,31 @@ class TestExposureBuilder:
         ep = endpoint_builder().build([operation])
         assert ep is not None and len(ep.exposures) == 1
 
+    def test_response_list_returns_bare_array(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from emergent.wire.axis.surface import application
+        from emergent.wire.compile.targets.fastapi import fastapi_compile
+        from emergent.wire.derive._builders import endpoint_builder, exposure
+
+        async def handler(op: object) -> Result[list[dict[str, Any]], str]:
+            return Ok([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}])
+
+        operation = (
+            exposure("items", Widget)
+            .response_list(id=int, name=str)
+            .handler(handler)
+            .trigger(HTTPRouteTrigger("GET", "/items"))
+            .build()
+        )
+        client = TestClient(fastapi_compile(application().mount(endpoint_builder().build([operation]))))
+        resp = client.get("/items")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Top-level JSON array, not a {"items": ...} envelope.
+        assert isinstance(body, list)
+        assert body == [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 18. derive/auth/login.py — LoginOp, token_converter

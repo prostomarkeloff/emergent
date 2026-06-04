@@ -169,6 +169,53 @@ def create_response_type(
     return cls
 
 
+class CollectionResponseMarker:
+    """Marker base: a response whose HTTP body is a top-level JSON array.
+
+    Targets test ``issubclass(response, CollectionResponseMarker)`` and read
+    ``collection_item()`` to set the response model to ``list[item]`` so the body
+    is a bare array rather than an object envelope.
+    """
+
+    @classmethod
+    def collection_item(cls) -> type:
+        raise NotImplementedError
+
+
+def create_collection_response_type(
+    name: str,
+    item_fields: list[FieldSpec],
+    *,
+    frozen: bool = True,
+) -> type:
+    """Create a collection response whose body is ``list[<item>]``.
+
+    The handler returns ``Ok(list_of_dicts)``; ``from_domain`` maps each element
+    through the item dataclass, yielding a bare JSON array. ``Error`` is passed
+    through unchanged for the error capabilities to turn into a problem response.
+    """
+    item_cls = create_dataclass(f"{name}Item", item_fields, frozen=frozen)
+
+    @classmethod
+    def collection_item(cls: type) -> type:
+        return item_cls
+
+    @classmethod
+    def from_domain(cls: type, domain_result: HasAnnotations) -> object:
+        match domain_result:
+            case Ok(values):
+                return [item_cls(**element) for element in values]
+            case Error(err):
+                return err
+            case _:
+                raise TypeError(f"Expected Result, got {type(domain_result)}")
+
+    return create_dataclass(
+        name, [], frozen=frozen, bases=(CollectionResponseMarker,),
+        namespace={"collection_item": collection_item, "from_domain": from_domain},
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. HANDLER ANNOTATION
 # ═══════════════════════════════════════════════════════════════════════════════
