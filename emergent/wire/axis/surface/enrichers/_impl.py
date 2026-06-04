@@ -28,6 +28,8 @@ from combinators.concurrency import RateLimitPolicy
 from ._base import ScopeEnricher, EnricherNext
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from nodnod import Scope
     from emergent.ops._graph import Runner, Op
     from emergent.cache import CacheExecutor
@@ -292,6 +294,29 @@ class Inject(ScopeEnricher, Generic[T]):
         elif self.value is not None:
             scope.inject(self.type, self.value)
         return await call(scope)
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedResource(ScopeEnricher, Generic[T]):
+    """Provide a request-scoped async resource — open, inject, close on exit.
+
+    The resource (DB session, HTTP client, …) is created from ``factory()`` — an async
+    context manager — injected into the scope so nodes/handlers resolve it by type, then
+    closed when the handler completes (success OR error). Gives proper request-scoped
+    resource lifecycle without the scope needing its own cleanup support.
+
+    Example::
+
+        ScopedResource(type=AsyncSession, factory=lambda: db.session())
+    """
+
+    type: type[T]
+    factory: Callable[[], AbstractAsyncContextManager[T]]
+
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+        async with self.factory() as resource:
+            scope.inject(self.type, resource)
+            return await call(scope)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
