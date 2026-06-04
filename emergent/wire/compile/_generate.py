@@ -225,7 +225,11 @@ def _assemble_pydantic(
         if ctx.field_info.description:
             field_kwargs["description"] = ctx.field_info.description
 
-        # Handle defaults from original dataclass field
+        # Handle defaults from original dataclass field.
+        # A nullable type (`X | None`) does NOT imply a default: a field is optional
+        # iff it has an explicit default/default_factory — matching both dataclass and
+        # pydantic semantics (`x: str | None` with no default is required-but-nullable).
+        # Only synthetic fields with no backing dataclass field fall back to None.
         name = fc.name
         orig_field = original_fields.get(name)
         if orig_field:
@@ -233,8 +237,6 @@ def _assemble_pydantic(
                 field_kwargs["default"] = orig_field.default
             elif orig_field.default_factory is not MISSING:
                 field_kwargs["default_factory"] = orig_field.default_factory
-            elif schema_field_info.is_optional:
-                field_kwargs["default"] = None
         elif schema_field_info.is_optional:
             field_kwargs["default"] = None
 
