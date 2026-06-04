@@ -1,0 +1,8 @@
+id: ban-dunder-import
+language: python
+severity: error
+message: "__import__() is banned — use a top-level `import` or importlib.import_module() with a typed wrapper"
+ignores:
+  - tests/**
+rule:
+  pattern: "__import__($$$)"

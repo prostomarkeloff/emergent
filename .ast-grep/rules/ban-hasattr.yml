@@ -1,0 +1,8 @@
+id: ban-hasattr
+language: python
+severity: error
+message: "hasattr() is banned — use isinstance() or Protocol"
+ignores:
+  - tests/**
+rule:
+  pattern: "hasattr($$$)"

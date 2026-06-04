@@ -1,0 +1,10 @@
+id: ban-getattr
+language: python
+severity: error
+message: "getattr() / __getattribute__() is banned — use direct typed attribute access"
+ignores:
+  - tests/**
+rule:
+  any:
+    - pattern: "getattr($$$)"
+    - pattern: "$OBJ.__getattribute__($$$)"

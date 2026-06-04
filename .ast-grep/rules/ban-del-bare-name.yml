@@ -1,0 +1,9 @@
+id: ban-del-bare-name
+language: python
+severity: error
+message: "`del <name>` is banned as unused-variable suppression — prefix intentionally unused parameters with `_`"
+rule:
+  pattern: del $NAME
+constraints:
+  NAME:
+    kind: identifier

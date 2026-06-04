@@ -1,0 +1,7 @@
+id: ban-pyright-ignore
+language: python
+severity: error
+message: "# pyright: ignore is banned — fix the actual type error instead"
+rule:
+  kind: comment
+  regex: "# pyright:\\s*ignore"

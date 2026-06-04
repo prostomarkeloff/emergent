@@ -1,0 +1,8 @@
+id: ban-type-ignore
+language: python
+severity: error
+message: "# type: ignore is banned — fix the actual type error instead"
+ignores: []
+rule:
+  kind: comment
+  regex: "# type:\\s*ignore"

@@ -1,0 +1,6 @@
+id: ban-setattr
+language: python
+severity: error
+message: "setattr() is banned — use direct attribute assignment"
+rule:
+  pattern: "setattr($$$)"
