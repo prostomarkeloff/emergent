@@ -38,6 +38,7 @@ Transport-agnostic via @op + MethodDialect::
 from __future__ import annotations
 
 import inspect
+import types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING, get_args, get_origin, get_type_hints
@@ -72,6 +73,22 @@ F = Callable[..., object]
 
 type FieldTypeMap = dict[str, type]
 type StrAnyMap = dict[str, Any]
+
+# A class attribute may be a plain function or a static/classmethod descriptor.
+type _MethodAttr = staticmethod[Any, Any] | classmethod[Any, Any, Any] | types.FunctionType
+
+
+def _unwrap_descriptor(attr: _MethodAttr) -> Callable[..., Any]:
+    """Return the underlying function of a static/classmethod, else the attr.
+
+    Branches on each descriptor kind separately: a combined ``isinstance``
+    narrowing of an untyped attr leaves ``__func__`` with unknown type params.
+    """
+    if isinstance(attr, staticmethod):
+        return attr.__func__
+    if isinstance(attr, classmethod):
+        return attr.__func__
+    return attr
 
 TRIGGER_ENTRIES_ATTR = "__trigger_entries__"
 OP_ENTRIES_ATTR = "__op_entry__"
@@ -277,15 +294,13 @@ def _build_method_operation(
     hints = get_type_hints(method_fn, include_extras=True)
     sig = inspect.signature(method_fn)
 
-    raw_attr: Callable[..., Any] = inspect.getattr_static(service, method_name)
+    raw_attr: _MethodAttr = inspect.getattr_static(service, method_name)
     is_static = isinstance(raw_attr, staticmethod)
     is_classmethod = isinstance(raw_attr, classmethod)
 
     # Validate the method is async — sync methods will crash at await
     # Extract __func__ from classmethod/staticmethod descriptors
-    raw_fn: Callable[..., Any] = (
-        raw_attr.__func__ if isinstance(raw_attr, (staticmethod, classmethod)) else raw_attr
-    )
+    raw_fn: Callable[..., Any] = _unwrap_descriptor(raw_attr)
     if not inspect.iscoroutinefunction(raw_fn):
         raise TypeError(
             f"{service.__name__}.{method_name} must be async. "
@@ -457,12 +472,10 @@ class Methods(SchemaCapability):
         for name in dir(entity):
             if name.startswith("_"):
                 continue
-            raw: Callable[..., Any] | None = inspect.getattr_static(entity, name, None)
+            raw: _MethodAttr | None = inspect.getattr_static(entity, name, None)
             if raw is None:
                 continue
-            fn: Callable[..., Any] = (
-                raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
-            )
+            fn: Callable[..., Any] = _unwrap_descriptor(raw)
 
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             for i, entry in enumerate(entries):
@@ -510,12 +523,10 @@ class MethodDialect(SchemaCapability):
         for method_name in dir(entity):
             if method_name.startswith("_"):
                 continue
-            raw: Callable[..., Any] | None = inspect.getattr_static(entity, method_name, None)
+            raw: _MethodAttr | None = inspect.getattr_static(entity, method_name, None)
             if raw is None:
                 continue
-            fn: Callable[..., Any] = (
-                raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
-            )
+            fn: Callable[..., Any] = _unwrap_descriptor(raw)
 
             entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
             if entry is None:

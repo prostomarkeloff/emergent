@@ -37,7 +37,7 @@ from emergent.wire.bridge._detect import (
     DetectionResult,
     run_detectors,
 )
-from emergent.wire.bridge._types import Extracted, RouteData, _empty_metadata
+from emergent.wire.bridge._types import Extracted, RouteData, empty_metadata
 from emergent.wire.axis.surface.capabilities._base import empty_caps as _empty_caps
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ class ExtractedWithShape[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: MetadataObj = field(default_factory=_empty_metadata)
+    metadata: MetadataObj = field(default_factory=empty_metadata)
 
     # Extended
     shape: HandlerShape | None = None

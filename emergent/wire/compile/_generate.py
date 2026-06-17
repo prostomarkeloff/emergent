@@ -53,12 +53,15 @@ type PydanticHandlerMap = Mapping[type[Capability], PydanticHandler]
 type ArgparseHandlerMap = Mapping[type[Capability], ArgparseHandler]
 # Raw / validated keyword payloads for Pydantic coercion (Pydantic is Any-based).
 type RawDict = dict[str, Any]
-# field name → resolved Python annotation for the generated model.
-type AnnotationMap = dict[str, type]
+# field name → resolved Python annotation for the generated model. Values are
+# annotation *type-forms* (a bare `type`, `X | None`, `Annotated[...]`, `list[X]`, …),
+# which are not all `type` instances — Python's annotation namespace is Any-valued.
+type AnnotationMap = dict[str, Any]
 # Pydantic Field(...) keyword arguments (heterogeneous values).
 type FieldKwargs = dict[str, Any]
-# Namespace dict passed to type() when building the model.
-type ModelNamespace = dict[str, dict[str, type] | str | None]
+# Namespace dict passed to type() when building the model. The `__annotations__`
+# entry holds annotation type-forms (see AnnotationMap); other entries are str/None.
+type ModelNamespace = dict[str, AnnotationMap | str | None]
 # Argparse argument keyword payload.
 type KwargMap = dict[str, ArgparseKwargValue]
 # Original dataclass fields keyed by name.
@@ -78,6 +81,21 @@ class _HasValue(Protocol):
     """Marker wrapper exposing an unwrapped ``.value`` (e.g. scope-bound inputs)."""
 
     value: object
+
+
+class _ContextLike(Protocol):
+    """Structural view of telegrinder's ``Context`` used by the compose closure.
+
+    The closure runs against a real telegrinder ``Context`` at runtime (wired via
+    ``__annotations__``); statically we only need keyed lookup, so a structural
+    ``.get(key)`` is the precise contract without coupling to telegrinder's type.
+    The looked-up values are heterogeneous request payloads (Any), matching the
+    real Context.get signature.
+    """
+
+    # Any: context values are arbitrary runtime request payloads, like telegrinder's
+    # Context.get — there is no narrower static type for the union of all of them.
+    def get(self, key: str) -> Any | None: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -102,15 +120,23 @@ def _pydanticize_type(tp: Any) -> Any:
     `to_pydantic` keeps nested schemas consistent with top-level (docstrings, optionality).
     TypedDicts/aliases are not dataclasses, so they pass through untouched.
     """
+    # `tp` is an annotation type-form (Any). We hold an unnarrowed Any copy and return
+    # *that* on pass-through paths: returning the `isinstance`-narrowed `tp` would inject
+    # a concrete `type` member into the inferred return, which — combined with the
+    # recursive call's in-flight inference — makes pyright synthesise a partially-unknown
+    # return type. Keeping every branch uniformly Any avoids that.
+    plain: Any = tp
     if isinstance(tp, type) and is_dataclass(tp):
         return _nested_pydantic_model(tp)
-    origin = get_origin(tp)
+    origin: Any = get_origin(tp)
     if origin is None:
-        return tp
-    args = tuple(_pydanticize_type(a) for a in get_args(tp))
+        return plain
+    args: tuple[Any, ...] = tuple(_pydanticize_type(a) for a in get_args(tp))
     if origin is types.UnionType or origin is Union:
-        return functools.reduce(operator.or_, args)
-    return origin[args[0]] if len(args) == 1 else origin[args]
+        reduced: Any = functools.reduce(operator.or_, args)
+        return reduced
+    rebuilt: Any = origin[args[0]] if len(args) == 1 else origin[args]
+    return rebuilt
 
 
 def _authored_docstring(cls: type) -> str | None:
@@ -428,15 +454,17 @@ def to_datanode(cls: type, compose_from: ComposeFrom, axes: Axes | None = None) 
     # nodnod's DataNode.__compose__ is a dynamically-constructed classmethod
     # whose signature is built at runtime via __annotations__. Python's type
     # system cannot express this pattern — the parameters, return type, and
-    # body all depend on runtime-inspected field metadata. type: ignore
-    # annotations below suppress errors that arise from this fundamentally
-    # untyped metaprogramming boundary.
+    # body all depend on runtime-inspected field metadata, so the closure is
+    # typed against the structural shape it actually uses (`object` kwargs,
+    # `_ContextLike` ctx) rather than the late-bound runtime annotations.
     def make_compose(params: ComposeFrom, fields: list[str]) -> classmethod[type, ..., Any]:
         def __compose__(node_cls: type, **kwargs: object) -> object:
-            extracted = {
-                n: kwargs[n].value if isinstance(kwargs[n], _HasValue) else kwargs[n]
-                for n in fields if n in kwargs
-            }
+            extracted: ExtractedValues = {}
+            for n in fields:
+                if n not in kwargs:
+                    continue
+                arg = kwargs[n]
+                extracted[n] = arg.value if isinstance(arg, _HasValue) else arg
             return node_cls(**extracted)
 
         __compose__.__annotations__ = {**params, "return": cls}
@@ -485,7 +513,7 @@ def to_datanode_from_context(
 
     # Same dynamic metaprogramming pattern as to_datanode() — see comment there.
     def make_compose(ext: FieldExtractors, fields: list[str]) -> classmethod[type, ..., Any]:
-        def __compose__(node_cls: type, ctx: object) -> object:
+        def __compose__(node_cls: type, ctx: _ContextLike) -> object:
             extracted: ExtractedValues = {
                 n: ctx.get(ext.get(n, n))
                 for n in fields if ctx.get(ext.get(n, n)) is not None

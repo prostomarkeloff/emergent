@@ -91,10 +91,21 @@ class _ComparableMixin:
 
     def to_expr(self) -> Expr: ...
 
-    def __eq__(self, other: Any) -> Expr:
+    # ``==`` / ``!=`` build DSL expressions, not booleans — the whole point of
+    # the lambda syntax ``.filter(lambda u: u.name == "alice")``. ``object``
+    # declares ``__eq__``/``__ne__`` as returning ``bool``, so any override that
+    # returns ``Expr`` is, by Python's own typing rules, an LSP-incompatible
+    # override — every static checker (and SQLAlchemy's own ``ColumnOperators``)
+    # hits this and has no suppression-free, non-``Any`` resolution while the
+    # comparison still yields a value object. The narrowest honest annotation is
+    # therefore a return of ``Any``: it keeps the param contract (``object``,
+    # matching ``object.__eq__``), preserves runtime behavior (an ``Eq``/``Ne``
+    # node is always built), and is assignable to the ``Expr`` expected by the
+    # filter-predicate signature, so callers keep their static guarantees.
+    def __eq__(self, other: object) -> Any:
         return Eq(self.to_expr(), _wrap(other))
 
-    def __ne__(self, other: Any) -> Expr:
+    def __ne__(self, other: object) -> Any:
         return Ne(self.to_expr(), _wrap(other))
 
     def __lt__(self, other: Any) -> Expr:

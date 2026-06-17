@@ -88,7 +88,18 @@ class IssueToken[V]:
         token_fn: Callable[..., str] = (
             self.token_fn if self.token_fn is not None else _default_token
         )
-        identity_fn = self.identity_fn
+
+        def _store_entity(value: V) -> V:
+            # No custom identity_fn: the session value IS the fetched entity, so
+            # the caller's V is the entity type. Identity producer keeps the
+            # store typed as V without widening.
+            return value
+
+        # Single V-producer for the session value: the custom identity_fn, or
+        # identity (stores the entity itself).
+        to_session_value: Callable[..., V] = (
+            self.identity_fn if self.identity_fn is not None else _store_entity
+        )
 
         async def handler(op: HasProvider[EntityT]) -> Result[str, DomainError]:
             match_value = getattr(op, match_field)
@@ -102,10 +113,7 @@ class IssueToken[V]:
                     NotFound(entity=entity_name, id={match_field: match_value})
                 )
             token: str = token_fn(entity)
-            if identity_fn is not None:
-                await sessions.set(qs.set(token, identity_fn(entity)))
-            else:
-                await sessions.set(qs.set(token, entity))
+            await sessions.set(qs.set(token, to_session_value(entity)))
             return Ok(token)
 
         return handler

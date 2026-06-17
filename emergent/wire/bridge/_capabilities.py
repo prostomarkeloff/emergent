@@ -223,10 +223,19 @@ def chain_purifiers[**P, R](
     return result
 
 
-type BridgeCapabilityHandler = Callable[
-    [BridgeCapability, BridgeContext[object, ..., object]],
-    BridgeContext[object, ..., object],
-]
+@runtime_checkable
+class BridgeCapabilityHandler(Protocol):
+    """Custom per-type bridge handler.
+
+    The handler transforms a BridgeContext structurally (metadata/wire fields),
+    preserving its T/P/R shape. The generic ``__call__`` keeps those type
+    parameters bound through the fold instead of erasing them to ``object``.
+    """
+
+    def __call__[T, **P, R](
+        self, cap: BridgeCapability, ctx: BridgeContext[T, P, R]
+    ) -> BridgeContext[T, P, R]: ...
+
 
 type BridgeCapabilityHandlers = Mapping[type[BridgeCapability], BridgeCapabilityHandler]
 
@@ -257,9 +266,8 @@ def fold_bridge[T, **P, R](
     for cap in capabilities:
         cap_type = type(cap)
         if handlers and cap_type in handlers:
-            # BridgeCapabilityHandler is type-erased to BridgeContext[object, ..., object]
-            # because heterogeneous handler mappings can't preserve per-key generics.
-            # The handler contract guarantees it returns the same BridgeContext shape.
+            # BridgeCapabilityHandler.__call__ is generic over T/P/R, so the
+            # handler preserves the BridgeContext shape through the fold.
             current = handlers[cap_type](cap, current)
         elif isinstance(cap, BridgeCompilable):
             current = cap.compile_bridge(current)

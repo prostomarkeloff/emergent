@@ -52,7 +52,7 @@ type ScopeMap = dict[type[Node], Scope]
 type ScopeMapping = Mapping[type[Node], Scope]
 
 
-def _is_result_node(node: type[Node]) -> bool:
+def is_result_node(node: type[Node]) -> bool:
     """Check if node is a ResultNode without narrowing the type."""
     from nodnod.interface.result_node import ResultNode
 
@@ -289,7 +289,7 @@ class CallbackAgent(Agent):
                         local_scope=local_scope,
                         execute=self._execute,
                     ))
-            elif _is_result_node(node):
+            elif is_result_node(node):
                 dep_futures = [futures[dep] for dep in node.__dependencies__]
                 futures[node] = asyncio.ensure_future(_result_node_coroutine(
                     node, dep_futures, node_scope, local_scope, self._execute
@@ -362,4 +362,11 @@ async def _result_node_coroutine(
     return await execute(node, node_scope, local_scope)
 
 
-__all__ = ("GraphInfo", "build_graph_info", "NodeExecutor", "default_executor", "CallbackAgent")
+__all__ = (
+    "GraphInfo",
+    "build_graph_info",
+    "is_result_node",
+    "NodeExecutor",
+    "default_executor",
+    "CallbackAgent",
+)

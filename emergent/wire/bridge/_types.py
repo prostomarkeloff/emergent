@@ -35,7 +35,12 @@ type MetadataMap = dict[str, object]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> MetadataFactoryResult:
+def empty_metadata() -> MetadataFactoryResult:
+    """Default factory for an empty Extracted.metadata mapping.
+
+    Public so sibling modules (e.g. ExtractedWithShape) can share the exact
+    same default-factory instead of re-declaring a private one.
+    """
     return {}
 
 
@@ -62,10 +67,11 @@ class Extracted[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: MetadataMap = field(default_factory=_empty_metadata)
+    metadata: MetadataMap = field(default_factory=empty_metadata)
 
 
 __all__ = (
     "RouteData",
     "Extracted",
+    "empty_metadata",
 )

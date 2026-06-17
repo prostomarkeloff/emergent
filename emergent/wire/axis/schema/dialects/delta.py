@@ -469,8 +469,13 @@ def validate_delta(delta: Any, entity_type: type) -> list[str]:
     return errors
 
 
-def _delta_kind(delta: AnyDelta) -> str:
-    """Get delta kind string."""
+def _delta_kind(delta: Any) -> str:
+    """Get delta kind string.
+
+    Accepts ``Any`` (not AnyDelta) so the isinstance ladder is genuinely
+    discriminating and the ``"unknown"`` fallback stays reachable for values
+    outside the AnyDelta union.
+    """
     if isinstance(delta, NumericDelta):
         return "numeric"
     if isinstance(delta, StringDelta):

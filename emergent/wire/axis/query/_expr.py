@@ -23,6 +23,9 @@ from typing import Any, Generic, TypeVar
 T = TypeVar("T")
 R = TypeVar("R")
 
+# JSON-compatible serialized form of an expression node.
+type DictNode = dict[str, Any]
+
 
 # Non-narrowing type checks — prevent pyright from narrowing Any to
 # dict[Unknown, Unknown] / list[Unknown] etc. in JSON/array evaluate() methods.
@@ -41,6 +44,7 @@ def _is_collection(v: Any) -> bool:
 # ─── Base ─────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
 class Expr(ABC):
     """Base expression node."""
 
@@ -48,6 +52,30 @@ class Expr(ABC):
     def evaluate(self, obj: Any) -> Any:
         """Evaluate expression against an object (for interpreted mode)."""
         ...
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        """Serialize this node to a JSON-compatible dict.
+
+        ``recurse`` serializes a child Expr (so each node only describes its
+        own shape). Symmetric with :func:`expr_from_dict`. Each built-in node
+        overrides this so attribute access stays on the concrete type.
+
+        The base raises: a custom Expr subclass that wants dict serialization
+        must override this (or supply a serialize handler), mirroring the
+        closed-world behavior of ``fold_expr`` for unregistered nodes.
+        """
+        raise TypeError(
+            f"{type(self).__name__} does not implement serialize_node()"
+        )
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        """Render this node as a human-readable string.
+
+        ``recurse`` renders a child Expr. Each built-in node overrides this.
+        The base falls back to the dataclass repr, matching the open-world
+        default used by :func:`expr_repr` for unregistered node types.
+        """
+        return repr(self)
 
     def children(self) -> tuple[Expr, ...]:
         """Return all Expr sub-expressions.
@@ -97,6 +125,12 @@ class Field(Expr):
                 f"Field {self.name!r} not found on {type(obj).__name__}"
             ) from None
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "field", "name": self.name}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return self.name
+
 
 @dataclass(frozen=True, slots=True)
 class Const(Expr, Generic[T]):
@@ -106,6 +140,12 @@ class Const(Expr, Generic[T]):
 
     def evaluate(self, obj: Any) -> T:
         return self.value
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "const", "value": self.value}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return repr(self.value)
 
 
 # ─── Comparison Operators ─────────────────────────────────────────────────────
@@ -121,6 +161,12 @@ class Eq(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) == self.right.evaluate(obj)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "eq", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} == {recurse(self.right)}"
+
 
 @dataclass(frozen=True, slots=True)
 class Ne(Expr):
@@ -131,6 +177,12 @@ class Ne(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) != self.right.evaluate(obj)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "ne", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} != {recurse(self.right)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +195,12 @@ class Lt(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) < self.right.evaluate(obj)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "lt", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} < {recurse(self.right)}"
+
 
 @dataclass(frozen=True, slots=True)
 class Le(Expr):
@@ -153,6 +211,12 @@ class Le(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) <= self.right.evaluate(obj)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "le", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} <= {recurse(self.right)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +229,12 @@ class Gt(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) > self.right.evaluate(obj)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "gt", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} > {recurse(self.right)}"
+
 
 @dataclass(frozen=True, slots=True)
 class Ge(Expr):
@@ -175,6 +245,12 @@ class Ge(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) >= self.right.evaluate(obj)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "ge", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.left)} >= {recurse(self.right)}"
 
 
 # ─── Logical Operators ────────────────────────────────────────────────────────
@@ -190,6 +266,12 @@ class And(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) and self.right.evaluate(obj)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "and", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"({recurse(self.left)}) & ({recurse(self.right)})"
+
 
 @dataclass(frozen=True, slots=True)
 class Or(Expr):
@@ -201,6 +283,12 @@ class Or(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.left.evaluate(obj) or self.right.evaluate(obj)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "or", "left": recurse(self.left), "right": recurse(self.right)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"({recurse(self.left)}) | ({recurse(self.right)})"
+
 
 @dataclass(frozen=True, slots=True)
 class Not(Expr):
@@ -210,6 +298,12 @@ class Not(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return not self.operand.evaluate(obj)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "not", "operand": recurse(self.operand)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"~({recurse(self.operand)})"
 
 
 # ─── Collection Operators ─────────────────────────────────────────────────────
@@ -225,6 +319,12 @@ class In(Expr):
     def evaluate(self, obj: Any) -> bool:
         return self.field.evaluate(obj) in self.values
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "in", "field": recurse(self.field), "values": list(self.values)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} IN {self.values!r}"
+
 
 @dataclass(frozen=True, slots=True)
 class Contains(Expr):
@@ -235,6 +335,12 @@ class Contains(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return self.substring in str(self.field.evaluate(obj))
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "contains", "field": recurse(self.field), "substring": self.substring}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)}.contains({self.substring!r})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +353,12 @@ class StartsWith(Expr):
     def evaluate(self, obj: Any) -> bool:
         return str(self.field.evaluate(obj)).startswith(self.prefix)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "startswith", "field": recurse(self.field), "prefix": self.prefix}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)}.startswith({self.prefix!r})"
+
 
 @dataclass(frozen=True, slots=True)
 class EndsWith(Expr):
@@ -257,6 +369,12 @@ class EndsWith(Expr):
 
     def evaluate(self, obj: Any) -> bool:
         return str(self.field.evaluate(obj)).endswith(self.suffix)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "endswith", "field": recurse(self.field), "suffix": self.suffix}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)}.endswith({self.suffix!r})"
 
 
 # ─── Null Checks ──────────────────────────────────────────────────────────────
@@ -272,6 +390,12 @@ class IsNull(Expr):
         val = self.field.evaluate(obj)
         return val is None
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "is_null", "field": recurse(self.field)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} IS NULL"
+
 
 @dataclass(frozen=True, slots=True)
 class IsNotNull(Expr):
@@ -282,6 +406,12 @@ class IsNotNull(Expr):
     def evaluate(self, obj: Any) -> bool:
         val = self.field.evaluate(obj)
         return val is not None
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "is_not_null", "field": recurse(self.field)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} IS NOT NULL"
 
 
 # ─── Range Operators ─────────────────────────────────────────────────────────
@@ -304,6 +434,17 @@ class Between(Expr):
         low_val = self.low.evaluate(obj)
         high_val = self.high.evaluate(obj)
         return low_val <= val <= high_val
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {
+            "op": "between",
+            "field": recurse(self.field),
+            "low": recurse(self.low),
+            "high": recurse(self.high),
+        }
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} BETWEEN {recurse(self.low)} AND {recurse(self.high)}"
 
 
 # ─── Pattern Matching ────────────────────────────────────────────────────────
@@ -328,6 +469,12 @@ class Like(Expr):
         glob = self.pattern.replace("%", "*").replace("_", "?")
         return fnmatch.fnmatch(val, glob)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "like", "field": recurse(self.field), "pattern": self.pattern}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} LIKE {self.pattern!r}"
+
 
 @dataclass(frozen=True, slots=True)
 class ILike(Expr):
@@ -346,6 +493,12 @@ class ILike(Expr):
         val = str(self.field.evaluate(obj)).lower()
         glob = self.pattern.lower().replace("%", "*").replace("_", "?")
         return fnmatch.fnmatch(val, glob)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "ilike", "field": recurse(self.field), "pattern": self.pattern}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} ILIKE {self.pattern!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +523,12 @@ class Regex(Expr):
         val = str(self.field.evaluate(obj))
         return bool(re.search(self.pattern, val))
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "regex", "field": recurse(self.field), "pattern": self.pattern}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} ~ {self.pattern!r}"
+
 
 # ─── Array Operators ─────────────────────────────────────────────────────────
 
@@ -391,6 +550,12 @@ class ArrayContains(Expr):
             return False
         return self.value in arr
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "array_contains", "field": recurse(self.field), "value": self.value}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} @> {self.value!r}"
+
 
 @dataclass(frozen=True, slots=True)
 class ArrayAny(Expr):
@@ -408,6 +573,12 @@ class ArrayAny(Expr):
         if not isinstance(arr, (list, tuple, set, frozenset)):
             return False
         return any(v in arr for v in self.values)
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "array_any", "field": recurse(self.field), "values": list(self.values)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} && ANY {self.values!r}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +598,12 @@ class ArrayAll(Expr):
             return False
         return all(v in arr for v in self.values)
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "array_all", "field": recurse(self.field), "values": list(self.values)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} @> ALL {self.values!r}"
+
 
 @dataclass(frozen=True, slots=True)
 class ArrayOverlap(Expr):
@@ -444,6 +621,12 @@ class ArrayOverlap(Expr):
         if not _is_collection(arr):
             return False
         return bool(set(arr) & set(self.values))
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "array_overlap", "field": recurse(self.field), "values": list(self.values)}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} && {self.values!r}"
 
 
 # ─── JSON Operators ──────────────────────────────────────────────────────────
@@ -474,6 +657,12 @@ class JsonExtract(Expr):
                 return None
         return val
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "json_extract", "field": recurse(self.field), "path": self.path}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)}->>'{self.path}'"
+
 
 @dataclass(frozen=True, slots=True)
 class JsonContains(Expr):
@@ -492,6 +681,12 @@ class JsonContains(Expr):
             return all(val.get(k) == v for k, v in self.value.items())
         return val == self.value
 
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "json_contains", "field": recurse(self.field), "value": self.value}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} @> {self.value!r}"
+
 
 @dataclass(frozen=True, slots=True)
 class JsonHasKey(Expr):
@@ -509,6 +704,12 @@ class JsonHasKey(Expr):
         if isinstance(val, dict):
             return self.key in val
         return False
+
+    def serialize_node(self, recurse: Callable[[Expr], DictNode]) -> DictNode:
+        return {"op": "json_has_key", "field": recurse(self.field), "key": self.key}
+
+    def repr_node(self, recurse: Callable[[Expr], str]) -> str:
+        return f"{recurse(self.field)} ? {self.key!r}"
 
 
 # ─── Expr Fold — tree catamorphism ────────────────────────────────────────────

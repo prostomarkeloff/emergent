@@ -48,6 +48,7 @@ from typing import (
     Annotated,
     Any,
     Protocol,
+    TypeGuard,
     Union,
     get_args,
     get_origin,
@@ -55,7 +56,12 @@ from typing import (
     runtime_checkable,
 )
 
-from emergent.wire.axis.schema._universal import SchemaAxisCapability, _is_tuple
+from emergent.wire.axis.schema._universal import SchemaAxisCapability
+
+
+def is_tuple(value: Any) -> TypeGuard[tuple[Any, ...]]:
+    """TypeGuard: narrow a value to tuple[Any, ...] (annotation patterns)."""
+    return isinstance(value, tuple)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -263,7 +269,7 @@ def extract_capabilities(annotations: Sequence[Any]) -> tuple[SchemaAxisCapabili
         cap = _to_capability(ann)
         if cap is not None:
             capabilities.append(cap)
-        elif _is_tuple(ann):
+        elif is_tuple(ann):
             # Pattern — tuple of capabilities
             _extract_from_pattern(ann, capabilities)
 

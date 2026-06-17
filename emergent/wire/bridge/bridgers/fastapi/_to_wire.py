@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from emergent.wire.axis.surface.triggers.http import Method
 from emergent.wire.bridge._to_wire import ToWire, compose_to_wire
 from emergent.wire.bridge._types import RouteData
 from emergent.wire.bridge.bridgers.fastapi._routes import (
@@ -23,6 +24,29 @@ from emergent.wire.bridge.bridgers.fastapi._routes import (
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface._types import Codec, Trigger
+
+
+def _as_method(method: str) -> Method:
+    """Narrow a raw HTTP method string to the Method literal.
+
+    FastAPI/Starlette routes carry methods as plain strings; the wire
+    HTTPRouteTrigger requires a Method literal. Validate at the boundary and
+    fail explicitly on an unsupported verb rather than silently widening.
+    Each branch returns the literal directly so the result type is exactly Method.
+    """
+    upper = method.upper()
+    if upper == "GET":
+        return "GET"
+    if upper == "POST":
+        return "POST"
+    if upper == "PUT":
+        return "PUT"
+    if upper == "DELETE":
+        return "DELETE"
+    if upper == "PATCH":
+        return "PATCH"
+    msg = f"Unsupported HTTP method: {method!r}"
+    raise ValueError(msg)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -39,7 +63,7 @@ class HTTPToWire:
         from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
         return HTTPRouteTrigger(
-            method=route.method,
+            method=_as_method(route.method),
             path=route.path,
         )
 

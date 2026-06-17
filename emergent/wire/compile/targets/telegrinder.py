@@ -26,7 +26,7 @@ Command rules with generated Arguments.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, TYPE_CHECKING, Protocol as TypingProtocol, runtime_checkable as _runtime_checkable
+from typing import Any, Callable, TYPE_CHECKING, Protocol as TypingProtocol, TypeGuard, runtime_checkable as _runtime_checkable
 
 from kungfu import Ok, Some, Nothing
 from nodnod import Scope
@@ -121,18 +121,29 @@ class _HasIncomingUpdate(TypingProtocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if TYPE_CHECKING:
-    # Stubs for runtime-only names — pyright sees these Protocol types.
-    # Actual runtime values are set in the try/except else branch.
-    # Typed as type[Protocol] so constructors and isinstance narrowing
-    # work correctly in static analysis.
-    _tg_ABCRule: type[ABCRule] = ABCRule
-    _tg_AndRule: type[AndRule] = AndRule
-    _tg_OrRule: type[OrRule] = OrRule
-    _tg_Command: type[CommandProto] = CommandProto
-    _tg_Argument: type[ArgumentProto] = ArgumentProto
-    _tg_Dispatch: type[Dispatch] = Dispatch
-    _tg_BaseCute: type[BaseCute] = BaseCute
-    _tg_Context: type[Context] = Context
+    # Stubs for runtime-only names — pyright sees these as the compat Protocol
+    # *classes*. Declared (not assigned): a Protocol object is not assignable to
+    # `type[Protocol]`, but a bare `type[Proto]` annotation still gives constructors
+    # and isinstance/issubclass narrowing the right static shape. Actual runtime
+    # values come from the try/except else branch.
+    #
+    # _tg_ABCRule is the one name used as a *base class* (HasActiveFlowState below);
+    # a bare declaration would read as unbound there, so it gets a concrete Protocol
+    # impl as its static value — assignable to type[ABCRule] and subclassable.
+    class _ABCRuleStatic(ABCRule): ...
+    _tg_ABCRule: type[ABCRule] = _ABCRuleStatic
+    _tg_AndRule: type[AndRule]
+    _tg_OrRule: type[OrRule]
+    # For isinstance: a Command rule is statically only known to be an ABCRule —
+    # narrowing to CommandProto would make the structural `_HasNames`/`_HasArguments`
+    # feature-detection (and the fallback path where `_tg_Command = ABCRule`) appear
+    # redundant. `_tg_Command_ctor` carries the constructor signature separately.
+    _tg_Command: type[ABCRule]
+    _tg_Command_ctor: type[CommandProto]
+    _tg_Argument: type[ArgumentProto]
+    _tg_Dispatch: type[Dispatch]
+    _tg_BaseCute: type[BaseCute]
+    _tg_Context: type[Context]
 else:
     try:
         from telegrinder.bot.rules.abc import ABCRule as _tg_ABCRule, AndRule as _tg_AndRule, OrRule as _tg_OrRule
@@ -140,6 +151,9 @@ else:
         from telegrinder.bot.dispatch import Dispatch as _tg_Dispatch
         from telegrinder.bot.dispatch.context import Context as _tg_Context
         from telegrinder.bot.cute_types.base import BaseCute as _tg_BaseCute
+        # Same runtime Command class; the second binding only differs in static type
+        # (constructor signature) so enhance_command_with_args can build a Command.
+        _tg_Command_ctor = _tg_Command
     except ImportError:
         # Fallback stubs if telegrinder not installed — module will fail
         # at actual use but at least won't crash on import.
@@ -147,6 +161,7 @@ else:
         _tg_AndRule = AndRule
         _tg_OrRule = OrRule
         _tg_Command = ABCRule
+        _tg_Command_ctor = ABCRule
         _tg_Argument = type
         _tg_Dispatch = Dispatch
         _tg_BaseCute = BaseCute
@@ -161,6 +176,11 @@ else:
 _PASSTHROUGH_TYPES = (str, int, float, bool, bytes, dict, list, tuple, type(None))
 
 
+def _runtime_type[T](obj: T) -> type[T]:
+    """The runtime class of ``obj`` as ``type[T]`` (resolves type[Any]→concrete)."""
+    return type(obj)
+
+
 def _format_tg_response(response: Any) -> Any:
     """Convert response to str for telegrinder's return manager.
 
@@ -169,7 +189,9 @@ def _format_tg_response(response: Any) -> Any:
     2. Are NOT from telegrinder itself (HTML etc. have dedicated managers)
     3. Define a custom __str__ (not the default object.__str__)
     """
-    tp = type(response)
+    # `response` is Any, so `type(response)` is type[Any]; route through `object`
+    # to collapse it to a concrete `type` (no Unknown leaking into the checks).
+    tp = _runtime_type(response)
     if tp in _PASSTHROUGH_TYPES:
         return response
     if tp.__module__.startswith("telegrinder"):
@@ -259,11 +281,23 @@ def generate_command_args(request_cls: type) -> tuple[list[ArgumentProto], bool]
     return args, has_greedy
 
 
-def _is_command_without_args(rule: ABCRule) -> bool:
+def _is_command(rule: ABCRule) -> TypeGuard[CommandProto]:
+    """Whether ``rule`` is a telegrinder Command rule.
+
+    `isinstance(rule, _tg_Command)` is the coarse class filter; the structural
+    `_HasNames` check is the real feature-detection (`_tg_Command` may be the
+    ABCRule fallback). A matching rule carries the full Command interface.
+    """
+    return isinstance(rule, _tg_Command) and isinstance(rule, _HasNames)
+
+
+def _is_command_without_args(rule: ABCRule) -> TypeGuard[CommandProto]:
     """Check if rule is a Command without arguments.
 
-    Uses runtime _tg_Command for isinstance check. Separated to avoid
-    pyright narrowing rule to ABCRule (which lacks Command attributes).
+    Runtime: `isinstance(rule, _tg_Command)` is the coarse class filter and the
+    structural `_HasArguments` check confirms it carries the Command interface
+    (this is the real feature-detection — `_tg_Command` may be the ABCRule fallback).
+    A matching rule IS a Command, so we narrow callers to CommandProto.
     """
     return isinstance(rule, _tg_Command) and isinstance(rule, _HasArguments) and not rule.arguments
 
@@ -291,13 +325,13 @@ def enhance_command_with_args(
     # Find Command rule and enhance it
     new_rules: list[ABCRule] = []
     for rule in trigger.rules:
-        # isinstance narrows to ABCRule (static), but at runtime it's Command.
-        # Use _is_command helper + cast via CommandProto for attribute access.
+        # The TypeGuard narrows `rule` to CommandProto, exposing the Command
+        # attributes; _tg_Command_ctor carries the Command constructor signature.
         if _is_command_without_args(rule):
-            cmd: CommandProto = rule
+            cmd = rule
             # Create new Command with generated arguments
             # Use lazy=True if any argument is greedy (captures rest of line)
-            enhanced: ABCRule = _tg_Command(
+            enhanced: ABCRule = _tg_Command_ctor(
                 cmd.names,
                 *args,
                 prefixes=cmd.prefixes,
@@ -895,8 +929,13 @@ def telegrinder_compile(
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
-        dp._scope_app = app_scope
-        dp._scope_app_types = family.types_for(App)
+        # Stash the app-scope state on the dispatch for the runtime lifespan to read.
+        # telegrinder's Dispatch is a third-party object the compat Protocol can't
+        # declare extra attributes on, so we write through its __dict__ (same erasure
+        # pattern as _ns_get for argparse) instead of dynamic attribute assignment.
+        dispatch_state = vars(dp)
+        dispatch_state["_scope_app"] = app_scope
+        dispatch_state["_scope_app_types"] = family.types_for(App)
 
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(dp, trigger, handler, route)
@@ -931,9 +970,8 @@ def extract_command_info[C](
 
     cmd_rule: CommandProto | None = None
     for rule in trigger.rules:
-        # _tg_Command is bare `type` at static time — isinstance narrows to ABCRule,
-        # not CommandProto. Runtime Command satisfies CommandProto structurally.
-        if isinstance(rule, _tg_Command) and isinstance(rule, _HasNames):
+        # _is_command narrows to CommandProto via the structural _HasNames check.
+        if _is_command(rule):
             cmd_rule = rule
             break
 

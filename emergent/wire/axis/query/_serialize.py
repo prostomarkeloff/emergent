@@ -19,7 +19,7 @@ Open-world via fold_expr: pass custom handler maps to handle custom Expr types.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, cast
+from typing import Any
 
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -79,61 +79,69 @@ type ReprHandlerMap = Mapping[type, ExprHandler[str]]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _binary_dict(op_name: str) -> ExprHandler[DictNode]:
-    """Handler factory for binary ops (left/right)."""
-    def handler(node: Expr, recurse: Callable[[Expr], DictNode]) -> DictNode:
-        return {"op": op_name, "left": recurse(node.left), "right": recurse(node.right)}
-    return handler
+def _serialize_node(node: Expr, recurse: Callable[[Expr], DictNode]) -> DictNode:
+    """Delegate serialization to the node's own ``serialize_node``.
+
+    Each concrete Expr describes its own dict shape (see ``_expr.py``), so the
+    handler only needs to forward the recurse callback — attribute access stays
+    on the concrete type, never on the ``Expr`` base.
+    """
+    return node.serialize_node(recurse)
 
 
 def _make_serialize_handlers() -> SerializeHandlers:
-    """Build handler map for Expr → dict serialization."""
+    """Build handler map for Expr → dict serialization.
+
+    Every built-in node delegates to its own ``serialize_node``. The per-type
+    map is preserved so callers can override individual nodes via
+    :meth:`ExprDialect.with_handler` (open-world extension).
+    """
     return {
         # Leaf
-        Field: lambda n, _r: {"op": "field", "name": n.name},
-        Const: lambda n, _r: {"op": "const", "value": cast(Const[Any], n).value},
+        Field: _serialize_node,
+        Const: _serialize_node,
 
         # Comparison
-        Eq: _binary_dict("eq"),
-        Ne: _binary_dict("ne"),
-        Lt: _binary_dict("lt"),
-        Le: _binary_dict("le"),
-        Gt: _binary_dict("gt"),
-        Ge: _binary_dict("ge"),
+        Eq: _serialize_node,
+        Ne: _serialize_node,
+        Lt: _serialize_node,
+        Le: _serialize_node,
+        Gt: _serialize_node,
+        Ge: _serialize_node,
 
         # Logical
-        And: _binary_dict("and"),
-        Or: _binary_dict("or"),
-        Not: lambda n, r: {"op": "not", "operand": r(n.operand)},
+        And: _serialize_node,
+        Or: _serialize_node,
+        Not: _serialize_node,
 
         # Collection
-        In: lambda n, r: {"op": "in", "field": r(n.field), "values": list(n.values)},
-        Contains: lambda n, r: {"op": "contains", "field": r(n.field), "substring": n.substring},
-        StartsWith: lambda n, r: {"op": "startswith", "field": r(n.field), "prefix": n.prefix},
-        EndsWith: lambda n, r: {"op": "endswith", "field": r(n.field), "suffix": n.suffix},
+        In: _serialize_node,
+        Contains: _serialize_node,
+        StartsWith: _serialize_node,
+        EndsWith: _serialize_node,
 
         # Null
-        IsNull: lambda n, r: {"op": "is_null", "field": r(n.field)},
-        IsNotNull: lambda n, r: {"op": "is_not_null", "field": r(n.field)},
+        IsNull: _serialize_node,
+        IsNotNull: _serialize_node,
 
         # Range
-        Between: lambda n, r: {"op": "between", "field": r(n.field), "low": r(n.low), "high": r(n.high)},
+        Between: _serialize_node,
 
         # Pattern
-        Like: lambda n, r: {"op": "like", "field": r(n.field), "pattern": n.pattern},
-        ILike: lambda n, r: {"op": "ilike", "field": r(n.field), "pattern": n.pattern},
-        Regex: lambda n, r: {"op": "regex", "field": r(n.field), "pattern": n.pattern},
+        Like: _serialize_node,
+        ILike: _serialize_node,
+        Regex: _serialize_node,
 
         # Array
-        ArrayContains: lambda n, r: {"op": "array_contains", "field": r(n.field), "value": n.value},
-        ArrayAny: lambda n, r: {"op": "array_any", "field": r(n.field), "values": list(n.values)},
-        ArrayAll: lambda n, r: {"op": "array_all", "field": r(n.field), "values": list(n.values)},
-        ArrayOverlap: lambda n, r: {"op": "array_overlap", "field": r(n.field), "values": list(n.values)},
+        ArrayContains: _serialize_node,
+        ArrayAny: _serialize_node,
+        ArrayAll: _serialize_node,
+        ArrayOverlap: _serialize_node,
 
         # JSON
-        JsonExtract: lambda n, r: {"op": "json_extract", "field": r(n.field), "path": n.path},
-        JsonContains: lambda n, r: {"op": "json_contains", "field": r(n.field), "value": n.value},
-        JsonHasKey: lambda n, r: {"op": "json_has_key", "field": r(n.field), "key": n.key},
+        JsonExtract: _serialize_node,
+        JsonContains: _serialize_node,
+        JsonHasKey: _serialize_node,
     }
 
 
@@ -241,9 +249,10 @@ def expr_from_dict(
 
     def recurse(d: DictNode) -> Expr:
         op = d.get("op")
-        factory = reg.get(op)
-        if factory is not None:
-            return factory(d, recurse)
+        if isinstance(op, str):
+            factory = reg.get(op)
+            if factory is not None:
+                return factory(d, recurse)
         raise ValueError(f"Unknown operation: {op}")
 
     return recurse(data)
@@ -315,61 +324,67 @@ def expr_depth(expr: Expr) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _binary_repr(op_symbol: str) -> ExprHandler[str]:
-    """Handler factory for binary comparison repr."""
-    def handler(node: Expr, recurse: Callable[[Expr], str]) -> str:
-        return f"{recurse(node.left)} {op_symbol} {recurse(node.right)}"
-    return handler
+def _repr_node(node: Expr, recurse: Callable[[Expr], str]) -> str:
+    """Delegate repr rendering to the node's own ``repr_node``.
+
+    Mirror of :func:`_serialize_node`: each concrete Expr knows how to render
+    itself, so the handler only forwards the recurse callback.
+    """
+    return node.repr_node(recurse)
 
 
 def _make_repr_handlers() -> ReprHandlers:
-    """Build handler map for Expr → human-readable string."""
+    """Build handler map for Expr → human-readable string.
+
+    Every built-in node delegates to its own ``repr_node``. The per-type map is
+    preserved for open-world override via :meth:`ExprDialect.with_handler`.
+    """
     return {
         # Leaf
-        Field: lambda n, _r: n.name,
-        Const: lambda n, _r: repr(cast(Const[Any], n).value),
+        Field: _repr_node,
+        Const: _repr_node,
 
         # Comparison
-        Eq: _binary_repr("=="),
-        Ne: _binary_repr("!="),
-        Lt: _binary_repr("<"),
-        Le: _binary_repr("<="),
-        Gt: _binary_repr(">"),
-        Ge: _binary_repr(">="),
+        Eq: _repr_node,
+        Ne: _repr_node,
+        Lt: _repr_node,
+        Le: _repr_node,
+        Gt: _repr_node,
+        Ge: _repr_node,
 
         # Logical
-        And: lambda n, r: f"({r(n.left)}) & ({r(n.right)})",
-        Or: lambda n, r: f"({r(n.left)}) | ({r(n.right)})",
-        Not: lambda n, r: f"~({r(n.operand)})",
+        And: _repr_node,
+        Or: _repr_node,
+        Not: _repr_node,
 
         # Collection
-        In: lambda n, r: f"{r(n.field)} IN {n.values!r}",
-        Contains: lambda n, r: f"{r(n.field)}.contains({n.substring!r})",
-        StartsWith: lambda n, r: f"{r(n.field)}.startswith({n.prefix!r})",
-        EndsWith: lambda n, r: f"{r(n.field)}.endswith({n.suffix!r})",
+        In: _repr_node,
+        Contains: _repr_node,
+        StartsWith: _repr_node,
+        EndsWith: _repr_node,
 
         # Null
-        IsNull: lambda n, r: f"{r(n.field)} IS NULL",
-        IsNotNull: lambda n, r: f"{r(n.field)} IS NOT NULL",
+        IsNull: _repr_node,
+        IsNotNull: _repr_node,
 
         # Range
-        Between: lambda n, r: f"{r(n.field)} BETWEEN {r(n.low)} AND {r(n.high)}",
+        Between: _repr_node,
 
         # Pattern
-        Like: lambda n, r: f"{r(n.field)} LIKE {n.pattern!r}",
-        ILike: lambda n, r: f"{r(n.field)} ILIKE {n.pattern!r}",
-        Regex: lambda n, r: f"{r(n.field)} ~ {n.pattern!r}",
+        Like: _repr_node,
+        ILike: _repr_node,
+        Regex: _repr_node,
 
         # Array
-        ArrayContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",
-        ArrayAny: lambda n, r: f"{r(n.field)} && ANY {n.values!r}",
-        ArrayAll: lambda n, r: f"{r(n.field)} @> ALL {n.values!r}",
-        ArrayOverlap: lambda n, r: f"{r(n.field)} && {n.values!r}",
+        ArrayContains: _repr_node,
+        ArrayAny: _repr_node,
+        ArrayAll: _repr_node,
+        ArrayOverlap: _repr_node,
 
         # JSON
-        JsonExtract: lambda n, r: f"{r(n.field)}->>'{n.path}'",
-        JsonContains: lambda n, r: f"{r(n.field)} @> {n.value!r}",
-        JsonHasKey: lambda n, r: f"{r(n.field)} ? {n.key!r}",
+        JsonExtract: _repr_node,
+        JsonContains: _repr_node,
+        JsonHasKey: _repr_node,
     }
 
 

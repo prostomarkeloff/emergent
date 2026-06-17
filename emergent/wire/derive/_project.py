@@ -400,6 +400,21 @@ class CursorPaginatedResponse:
         return field_specs, converter
 
 
+def _dataclass_field_names(cls: type) -> list[str]:
+    """Field names of ``cls`` if it is a dataclass, else ``[]``.
+
+    Isolates the ``is_dataclass`` ``TypeGuard`` so it does not persistently
+    narrow the caller's ``cls`` to ``type[DataclassInstance]``.
+    """
+    # Local import: module-level `fields` is shadowed by the projection
+    # helper below, so reach the real dataclasses helpers here.
+    from dataclasses import fields as dataclass_fields, is_dataclass
+
+    if is_dataclass(cls):
+        return [f.name for f in dataclass_fields(cls)]
+    return []
+
+
 def dict_converter[T, E](cls: type, result: Result[T, E]) -> HasAnnotations:
     """Convert Result[dict|obj, E] -> response dataclass."""
     from kungfu import Error as Err, Ok
@@ -408,13 +423,7 @@ def dict_converter[T, E](cls: type, result: Result[T, E]) -> HasAnnotations:
         case Ok(val):
             if isinstance(val, dict):
                 return cls(**val)
-            # Local import: module-level `fields` is shadowed by the projection
-            # helper below, so reach the real dataclasses helpers here.
-            from dataclasses import fields as dataclass_fields, is_dataclass
-
-            field_names = (
-                [f.name for f in dataclass_fields(cls)] if is_dataclass(cls) else []
-            )
+            field_names = _dataclass_field_names(cls)
             return cls(**{f: getattr(val, f, None) for f in field_names})
         case Err(err):
             return err

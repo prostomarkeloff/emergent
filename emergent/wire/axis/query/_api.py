@@ -190,8 +190,14 @@ class SearchMod:
 
     def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
         search_lower = self.query.lower()
+        # Memory search inspects dataclass entities only; non-dataclass items
+        # never match (mirrors the prior behavior, where fields() only succeeds
+        # for dataclass instances). The is_dataclass + "not a type" guard
+        # narrows each item for fields() — the codebase-wide pattern.
         result = [
-            item for item in ctx.data
+            item
+            for item in ctx.data
+            if _dc.is_dataclass(item) and not isinstance(item, type)
             if any(
                 search_lower in str(getattr(item, f.name, "")).lower()
                 for f in _dc.fields(item)

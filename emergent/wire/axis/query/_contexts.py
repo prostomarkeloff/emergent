@@ -367,6 +367,11 @@ class QueryPhase[Ctx]:
     protocol: type
     method: str
     handlers: HandlerMap[Ctx] | None = None
+    # Concrete runtime type of Ctx. Lets QueryCompilation narrow its
+    # heterogeneous (object-valued) store back to Ctx via isinstance — the same
+    # bridge SchemaCompiler's FieldCompilation uses with context_type. Optional
+    # so ad-hoc phases that never go through QueryCompilation can omit it.
+    context_type: type[Ctx] | None = None
 
     def fold(self, ops: Iterable[Any], initial: Ctx) -> Ctx:
         """Run fold() with this phase's protocol and handlers."""
@@ -395,31 +400,37 @@ class QueryPhase[Ctx]:
 MEMORY_RELATIONAL: QueryPhase[MemoryQueryContext] = QueryPhase(
     protocol=MemoryQueryCompilable,
     method="compile_memory_query",
+    context_type=MemoryQueryContext,
 )
 
 SA_RELATIONAL: QueryPhase[SAQueryContext] = QueryPhase(
     protocol=SAQueryCompilable,
     method="compile_sa_query",
+    context_type=SAQueryContext,
 )
 
 MEMORY_API: QueryPhase[MemoryAPIContext] = QueryPhase(
     protocol=MemoryAPICompilable,
     method="compile_memory_api",
+    context_type=MemoryAPIContext,
 )
 
 HTTP_API: QueryPhase[HTTPAPIContext] = QueryPhase(
     protocol=HTTPAPICompilable,
     method="compile_http_api",
+    context_type=HTTPAPIContext,
 )
 
 MEMORY_KV: QueryPhase[MemoryKVContext] = QueryPhase(
     protocol=MemoryKVCompilable,
     method="compile_memory_kv",
+    context_type=MemoryKVContext,
 )
 
 HTTP_KV: QueryPhase[HTTPKVContext] = QueryPhase(
     protocol=HTTPKVCompilable,
     method="compile_http_kv",
+    context_type=HTTPKVContext,
 )
 
 
@@ -445,11 +456,35 @@ class QueryCompilation:
         ctx = self._contexts.get(phase.protocol)
         if ctx is None:
             raise KeyError(f"No context for protocol {phase.protocol.__name__}")
+        # The store is heterogeneous (object-valued); the phase's concrete
+        # context_type witness narrows it back to Ctx via isinstance — same
+        # bridge as FieldCompilation.__getitem__. Typed retrieval thus needs a
+        # context_type-bearing phase (all pre-built phase constants supply one;
+        # ad-hoc fold-only phases never reach here).
+        cty = phase.context_type
+        if cty is None:
+            raise TypeError(
+                f"Typed context access for protocol {phase.protocol.__name__} "
+                f"requires a QueryPhase with a context_type"
+            )
+        if not isinstance(ctx, cty):
+            raise TypeError(f"Expected {cty.__name__}, got {type(ctx).__name__}")
         return ctx
 
     def get[Ctx](self, phase: QueryPhase[Ctx]) -> Ctx | None:
         """Get context for phase, or None if not compiled."""
-        return self._contexts.get(phase.protocol)
+        ctx = self._contexts.get(phase.protocol)
+        if ctx is None:
+            return None
+        cty = phase.context_type
+        if cty is None:
+            raise TypeError(
+                f"Typed context access for protocol {phase.protocol.__name__} "
+                f"requires a QueryPhase with a context_type"
+            )
+        if not isinstance(ctx, cty):
+            raise TypeError(f"Expected {cty.__name__}, got {type(ctx).__name__}")
+        return ctx
 
     def __contains__(self, phase: QueryPhase[Any]) -> bool:
         return phase.protocol in self._contexts

@@ -247,9 +247,10 @@ async def _compose_cli_param(
 
     if is_node:
         composer = Composer.create(scope, agent_cls)
-        # compose_type is bare `type` (no parameter), so compose returns Unknown;
-        # we widen to object | str which is all wrap() needs
-        compose_result: tuple[bool, Any | str] = await composer.compose(
+        # compose_type is a bare `type` (no type parameter), so Composer.compose's
+        # generic T resolves to Unknown; the composed value is genuinely runtime-typed,
+        # so we pin the concrete tuple shape (Any payload) to stop the Unknown leaking.
+        compose_result: tuple[bool, Any] = await composer.compose(
             compose_type,
         )
         success, value = compose_result
@@ -489,6 +490,31 @@ CLI_COMPILER: TargetCompiler[CLITrigger] = TargetCompiler(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class _ScopedArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that carries the optional app-scope state for cli_run.
+
+    When compiled with a ``family``, the app-level scope and its provided types
+    are stashed on the parser so ``cli_run`` can open an app-scope lifespan.
+    Declaring them as typed attributes (with absent-by-default sentinels) keeps
+    the read/write paths type-safe — no dynamic attribute assignment. The public
+    accessors let cli_compile/cli_run cross the module boundary without tripping
+    the protected-member check while keeping the ``_scope_app`` attribute names.
+    """
+
+    _scope_app: Scope | None = None
+    _scope_app_types: frozenset[type] = frozenset()
+
+    def set_app_scope(self, scope: Scope, types: frozenset[type]) -> None:
+        self._scope_app = scope
+        self._scope_app_types = types
+
+    def app_scope(self) -> Scope | None:
+        return self._scope_app
+
+    def app_scope_types(self) -> frozenset[type]:
+        return self._scope_app_types
+
+
 def cli_compile(
     app: Application,
     axes: Axes | None = None,
@@ -501,7 +527,7 @@ def cli_compile(
     _compiler = compiler or CLI_COMPILER
     request_axes = base_axes
 
-    parser = argparse.ArgumentParser(prog=prog)
+    parser = _ScopedArgumentParser(prog=prog)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     if family is not None:
@@ -514,8 +540,7 @@ def cli_compile(
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
-        parser._scope_app = app_scope
-        parser._scope_app_types = family.types_for(App)
+        parser.set_app_scope(app_scope, family.types_for(App))
 
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(subparsers, trigger, handler, route, request_axes)
@@ -570,14 +595,20 @@ def cli_run(parser: argparse.ArgumentParser, args: list[str] | None = None) -> i
     import sys
 
     parsed = parser.parse_args(args)
-    handler = getattr(parsed, "_handler", None)
+    handler = _ns_get(parsed, "_handler")
 
     if handler is None:
         parser.print_help()
         return 1
 
-    app_scope: Scope | None = getattr(parser, "_scope_app", None)
-    app_types: frozenset[type] = getattr(parser, "_scope_app_types", frozenset[type]())
+    # Scope state is present only on parsers built by cli_compile/_stack (the
+    # subclass); a plain ArgumentParser (e.g. caller-supplied) has no app scope.
+    if isinstance(parser, _ScopedArgumentParser):
+        app_scope: Scope | None = parser.app_scope()
+        app_types: frozenset[type] = parser.app_scope_types()
+    else:
+        app_scope = None
+        app_types = frozenset()
 
     async def _run() -> str:
         if app_scope is not None:

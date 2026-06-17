@@ -16,12 +16,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field, replace
 from typing import Any, TYPE_CHECKING, Never
 
-from emergent.wire.axis._capability import Capability
 from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.query import RelationalQuerySet
 from emergent.wire.axis.schema import FieldInfo, fields_with_capability, inspect_type
 from emergent.wire.axis.surface import Exposure
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
+from emergent.wire.derive._codegen import AnnotationValue, make_annotation
 from emergent.wire.derive._query_strategy import (
     NoQueryStrategy,
     QueryStrategy,
@@ -31,21 +31,6 @@ from emergent.wire.derive._query_strategy import (
 if TYPE_CHECKING:
     from emergent.wire.axis.query._expr import Expr
     from emergent.wire.axis.query._proxy import EntityProxy
-
-
-def _make_annotated(base_type: type, capabilities: tuple[Capability, ...]) -> type:
-    """Build Annotated[base_type, *caps] at runtime.
-
-    Pyright treats Annotated as a special form and doesn't model
-    __getitem__ on it. No static alternative exists for building
-    Annotated types dynamically — this is a fundamental limitation of
-    the typing module's runtime API having no static type.
-    """
-    import typing
-
-    args: tuple[type | Capability, ...] = (base_type, *capabilities)
-    getitem: Callable[[tuple[type | Capability, ...]], type] = typing.Annotated.__getitem__
-    return getitem(args)
 
 
 if TYPE_CHECKING:
@@ -62,7 +47,7 @@ type Operation[T, E] = tuple[type, OperationHandler[T, E], Exposure]
 
 # ── Named type aliases (house style: alias instead of inline dict[...]) ──
 type FieldMap = dict[str, FieldInfo]
-type FieldTypeMap = dict[str, type]
+type FieldTypeMap = dict[str, AnnotationValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +162,7 @@ class DeriveCtx[EntityT]:
             if only is not None and name not in only:
                 continue
             if info.capabilities:
-                result[name] = _make_annotated(info.base_type, info.capabilities)
+                result[name] = make_annotation(info.base_type, *info.capabilities)
             else:
                 result[name] = info.base_type
         return result

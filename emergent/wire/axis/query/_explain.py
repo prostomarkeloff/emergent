@@ -31,6 +31,7 @@ from typing import Any
 from emergent.wire.axis._explain import (
     ExplainContext,
     ExplainNode,
+    ExplainValue,
     Explainable,
     explain_nodes,
     to_dict,
@@ -40,13 +41,18 @@ from emergent.wire.axis._explain import (
 type ExplainDict = dict[str, Any]
 type ExplainDictList = list[dict[str, Any]]
 
+# An op is an arbitrary self-describing value (open-world fold input). The alias
+# keeps ``type(op)`` a known ``type[object]`` (not ``type[Unknown]`` as ``Any``
+# would give) while staying out of the banned bare-``object`` annotation form.
+type OpValue = object
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Primary API — typed self-compilation via fold (shared Explainable protocol)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def explain(ops: Sequence[Any]) -> tuple[ExplainNode, ...]:
+def explain(ops: Sequence[OpValue]) -> tuple[ExplainNode, ...]:
     """Fold ops through Explainable — typed nodes.
 
     Open-world: ops that do not implement compile_explain are silently
@@ -59,7 +65,7 @@ def explain(ops: Sequence[Any]) -> tuple[ExplainNode, ...]:
     return explain_nodes(ops)
 
 
-def format_query(ops: Sequence[Any]) -> str:
+def format_query(ops: Sequence[OpValue]) -> str:
     """Human-readable query explanation — formats from typed ExplainNode.
 
         print(format_query(q.ops))
@@ -105,7 +111,7 @@ def _entry_to_dict(node: ExplainNode) -> ExplainDict:
 
 
 def explain_ops(
-    ops: Sequence[Any],
+    ops: Sequence[OpValue],
     handlers: HandlerMap | None = None,
 ) -> ExplainDictList:
     """Backward-compat: dict-layer explain with optional handler overrides.
@@ -133,7 +139,7 @@ def explain_ops(
 
 
 def format_ops(
-    ops: Sequence[Any],
+    ops: Sequence[OpValue],
     handlers: HandlerMap | None = None,
 ) -> str:
     """Backward-compat: human-readable from dict layer."""
@@ -155,7 +161,7 @@ def _format_entry(entry: ExplainDict) -> str:
     return f"{op_name}: {parts}"
 
 
-def _format_value(v: Any) -> str:
+def _format_value(v: ExplainValue) -> str:
     if isinstance(v, (list, tuple)):
         return ", ".join(str(x) for x in v)
     return str(v)

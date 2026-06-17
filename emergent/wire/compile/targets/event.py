@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Protocol
 
 from nodnod import Scope
@@ -38,6 +39,17 @@ from emergent.graph._family import ScopeFamily
 
 type EventRouteMap = Mapping[type, tuple["EventRoute", ...]]
 type EventRouteGroups = dict[type, list["EventRoute"]]
+
+
+def _runtime_type[T](obj: T) -> type[T]:
+    """The runtime class of ``obj`` as ``type[T]``.
+
+    The dispatched event is typed ``Any`` (its concrete type is only known at
+    runtime), so calling ``type(event)`` directly yields a partially-unknown
+    ``type[Unknown]``. Going through this generic resolves the call to a concrete
+    ``type[T]`` for the lookup against ``EventRouteMap`` — no Unknown leaks in.
+    """
+    return type(obj)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -242,7 +254,7 @@ class EventDispatcher:
         inject: ScopeInjector | None = None,
     ) -> tuple[Any, ...]:
         """Dispatch event to all matching handlers."""
-        handlers = self.routes.get(type(event), ())
+        handlers = self.routes.get(_runtime_type(event), ())
         return tuple([await r.call(event, inject) for r in handlers])
 
     async def __aenter__(self) -> EventDispatcher:
@@ -257,7 +269,7 @@ class EventDispatcher:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: object,
+        exc_tb: TracebackType | None,
     ) -> None:
         cm = self._lifespan_cm
         if cm is not None:

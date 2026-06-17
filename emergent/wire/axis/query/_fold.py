@@ -56,9 +56,14 @@ from emergent.wire.axis.query._relational import (
 type OpHandler[Ctx] = Callable[[Any, Ctx], Ctx]
 type HandlerMap[Ctx] = Mapping[type, OpHandler[Ctx]]
 
+# An op is an arbitrary value dispatched by exact type. The alias keeps
+# ``type(op)`` a known ``type[object]`` (not ``type[Unknown]`` as ``Any`` gives)
+# without using the banned bare-``object`` parameter annotation.
+type OpValue = object
+
 
 def fold_query[Ctx](
-    ops: Sequence[Any],
+    ops: Sequence[OpValue],
     initial: Ctx,
     handlers: HandlerMap[Ctx],
 ) -> Ctx:

@@ -29,6 +29,7 @@ from emergent.wire.axis._explain import (
     ExplainContext,
     ExplainNode,
     Explainable,
+    runtime_type,
     to_dict,
 )
 
@@ -58,7 +59,7 @@ class _ExplainCtx:
         self._ctx = ExplainContext(resolve=self._resolve)
 
     def _resolve(self, store: Any, ctx: ExplainContext) -> ExplainNode:
-        handler = self.handlers.get(type(store))
+        handler = self.handlers.get(runtime_type(store))
         if handler is not None:
             return ExplainNode(type(store).__name__, raw=handler(store, self))
         if isinstance(store, Explainable):

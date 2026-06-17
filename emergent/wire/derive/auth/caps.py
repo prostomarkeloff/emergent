@@ -221,7 +221,7 @@ class OwnerScoped(SchemaCapability):
     def compile_derive_modify[T](self, ctx: DeriveCtx[T]) -> DeriveCtx[T]:
         from emergent.wire.axis.schema.dialects.compose import Retrieve
         from emergent.wire.axis.surface.enrichers._impl import Inject as InjectEnricher
-        from emergent.wire.derive._codegen import AnnotationValue
+        from emergent.wire.derive._codegen import make_annotation
         from emergent.wire.derive._effects import Creates, has_effect
 
         identity_type = self.identity_type
@@ -238,12 +238,12 @@ class OwnerScoped(SchemaCapability):
 
         inject_enricher = InjectEnricher(type=OwnerContext, factory=_extract_owner)
         owner_value_type = ctx.fields.get(owner_field, None)
-        base_owner_type = owner_value_type.base_type if owner_value_type is not None else str | int
-        # Build Annotated type at runtime — Annotated is a special form that pyright
-        # doesn't model as type/UnionType/GenericAlias.
-        import typing as _typing
-        _annotated_getitem: Callable[..., AnnotationValue] = _typing.Annotated.__getitem__
-        owner_request_type: AnnotationValue = _annotated_getitem((base_owner_type, Retrieve(OwnerContext)))
+        base_owner_type: AnnotationValue = (
+            owner_value_type.base_type if owner_value_type is not None else str | int
+        )
+        owner_request_type: AnnotationValue = make_annotation(
+            base_owner_type, Retrieve(OwnerContext)
+        )
 
         new_specs: list[OpSpec] = []
         for s in ctx.specs:

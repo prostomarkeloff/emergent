@@ -25,6 +25,7 @@ from emergent.wire.axis._explain import (
     ExplainContext,
     Explainable,
     callable_name,
+    runtime_type,
     to_dict,
 )
 from emergent.wire.axis.surface._app import Application
@@ -183,7 +184,7 @@ def _explain_obj(
 ) -> JsonDict:
     """Explain any object: override handler → `Explainable` protocol → fallback."""
     effective = handlers if handlers is not None else SURFACE_EXPLAIN
-    handler = effective.get(type(obj))
+    handler = effective.get(runtime_type(obj))
     if handler is not None:
         return handler(obj)
     if isinstance(obj, Explainable):

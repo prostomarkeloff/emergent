@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Generic, Literal, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Callable, Generic, Literal, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeGuard, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -93,6 +93,7 @@ type SecurityRequirement = dict[str, list[str]]
 type SecuritySpec = tuple[SecurityRequirement, ...]
 type OpenAPIExtra = dict[str, Any]
 type JsonSchemaExtra = dict[str, JsonSchemaValue]
+type StrAnyMap = dict[str, Any]
 type MiddlewareSpec = tuple[tuple[type, Mapping[str, Any]], ...]
 type MiddlewareSpecObj = tuple[tuple[type, Mapping[str, object]], ...]
 type ValidateFn = Callable[[type, dict[str, object]], dict[str, object]]
@@ -105,6 +106,40 @@ type ValidateFn = Callable[[type, dict[str, object]], dict[str, object]]
 
 def _empty_schema() -> JsonSchemaDict:
     return {}
+
+
+def _is_any_dict(value: Any) -> TypeGuard[StrAnyMap]:
+    """TypeGuard: narrow to dict[str, Any] without Unknown propagation."""
+    return isinstance(value, dict)
+
+
+def _is_any_list(value: Any) -> TypeGuard[list[Any]]:
+    """TypeGuard: narrow to list[Any] without Unknown propagation."""
+    return isinstance(value, list)
+
+
+def _is_any_tuple(value: Any) -> TypeGuard[tuple[Any, ...]]:
+    """TypeGuard: narrow to tuple[Any, ...] without Unknown propagation."""
+    return isinstance(value, tuple)
+
+
+def _as_json_schema_value(value: Any) -> JsonSchemaValue:
+    """Recursively re-type an arbitrary JSON-shaped value as JsonSchemaValue.
+
+    Pydantic types ``json_schema_extra`` with an unresolvable recursive
+    forward-ref, so its narrowed values arrive as Any. This walks the structure
+    and re-asserts the typed JSON union explicitly.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if _is_any_dict(value):
+        result: JsonSchemaDict = {}
+        for k, v in value.items():
+            result[str(k)] = _as_json_schema_value(v)
+        return result
+    if _is_any_list(value) or _is_any_tuple(value):
+        return [_as_json_schema_value(item) for item in value]
+    raise TypeError(f"non-JSON value in json_schema_extra: {type(value).__name__}")
 
 
 def _empty_argparse_kwargs() -> ArgparseKwargs:
@@ -288,7 +323,13 @@ type IndexElement = str | ClauseElement
 # Literal SQLAlchemy `Index(...)` dialect kwargs, chosen by a dialect-specific
 # capability (e.g. `{"postgresql_using": "gin"}`). The assembler passes them
 # through verbatim — it does NOT invent or fan out across dialects.
-type IndexDialectKwargs = Mapping[str, str | list[str] | ClauseElement]
+type IndexDialectKwargValue = str | list[str] | ClauseElement
+type IndexDialectKwargs = Mapping[str, IndexDialectKwargValue]
+type IndexDialectKwargsMut = dict[str, IndexDialectKwargValue]
+
+
+def _empty_index_dialect_kwargs() -> IndexDialectKwargsMut:
+    return {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,7 +348,7 @@ class TableIndexSpec:
     fields: tuple[IndexElement, ...]
     name: str | None = None
     unique: bool = False
-    dialect_kwargs: IndexDialectKwargs = field(default_factory=dict)
+    dialect_kwargs: IndexDialectKwargs = field(default_factory=_empty_index_dialect_kwargs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -482,13 +523,13 @@ def pydantic_metadata(ctx: PydanticContext, *items: Any) -> PydanticContext:
 def pydantic_extra(ctx: PydanticContext, **extra: JsonSchemaValue) -> PydanticContext:
     """Merge into Pydantic FieldInfo.json_schema_extra — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
-    current = fi.json_schema_extra
+    # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref that
+    # pyright cannot resolve, so json_schema_extra arrives partially Unknown. Erase
+    # to Any, then re-assert the JSON shape via _as_json_schema_value.
+    current: Any = fi.json_schema_extra
     existing: JsonSchemaExtra = {}
-    if isinstance(current, dict):
-        # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref
-        # that pyright cannot fully resolve, producing dict[str | Unknown, ...].
-        # Structurally identical to our JsonSchemaDict — safe to copy directly.
-        existing = dict(current)
+    if _is_any_dict(current):
+        existing = {str(k): _as_json_schema_value(v) for k, v in current.items()}
     existing.update(extra)
     fi.json_schema_extra = existing
     return replace(ctx, field_info=fi)

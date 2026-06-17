@@ -31,7 +31,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import delete, func, select, tuple_
+from sqlalchemy import CursorResult, delete, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.sql import ColumnElement, Subquery
@@ -242,7 +242,7 @@ class SQLAlchemyRelationalProvider(Generic[T]):
             await self._session.flush()
 
     def _pk_match(
-        self, query: RelationalQuerySet[T]
+        self, query: RelationalQuerySet[T] | SQLRelationalQuerySet[T]
     ) -> "tuple[ColumnElement[Any], Subquery]":
         """Build the primary-key match expression for a bulk delete.
 
@@ -273,6 +273,9 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         stmt = delete(self._compiled.model).where(key.in_(select(subq)))
         result = await self._session.execute(stmt)
         await self._session.flush()
+        # A DELETE statement yields a CursorResult, which exposes rowcount; the
+        # generic Result base does not. The narrowing reflects the runtime type.
+        assert isinstance(result, CursorResult)
         return result.rowcount
 
     async def delete_returning(self, query: SQLRelationalQuerySet[T]) -> list[T]:
@@ -311,12 +314,20 @@ class SQLAlchemyRelationalProvider(Generic[T]):
         await self._session.flush()
 
         if returning_fields:
-            # Partial RETURNING — return dicts (not full entities)
-            return [
+            # Partial RETURNING returns only the selected columns, so the rows are
+            # field dicts that cannot be reconstructed into full entities. The
+            # SQLRelationalProvider protocol (axis/query/_provider.py) exposes a single
+            # list[T] surface for both shapes — callers requesting partial fields opt
+            # out of the entity contract and read the dicts directly. Widening the
+            # public protocol return to admit projection rows would break the documented
+            # `delete_returning -> list[entity]` API, so the heterogeneity is absorbed
+            # here as list[Any] (the one place it is unavoidable) rather than leaked out.
+            partial_rows: list[Any] = [
                 {f: row[i] for i, f in enumerate(returning_fields)}
                 for row in rows
             ]
-        # Full RETURNING — reconstruct entities
+            return partial_rows
+        # Full RETURNING — reconstruct entities (sound: model_to_entity returns T).
         return [model_to_entity(row[0], self._compiled) for row in rows]
 
     # ─── Query Compilation ─────────────────────────────────────────────────

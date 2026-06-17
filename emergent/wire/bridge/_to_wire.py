@@ -66,7 +66,7 @@ class ToWire[R_contra: RouteData](Protocol):
 class ComposedToWire:
     """Composed ToWire — tries converters in order."""
 
-    converters: tuple[tuple[type, object], ...]  # (route_type, converter)
+    converters: tuple[tuple[type, ToWire[RouteData]], ...]  # (route_type, converter)
 
     def to_trigger(self, route: RouteData) -> Trigger:
         """Find matching converter and convert to Trigger."""

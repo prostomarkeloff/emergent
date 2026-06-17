@@ -22,7 +22,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Any, Protocol, TYPE_CHECKING, TypeGuard, runtime_checkable
 
 from emergent.wire.axis._capability import (
     TelegrinderHandlerContext,
@@ -83,6 +83,22 @@ def _unwrap_some(obj: Any) -> Any | None:
     reportUnknownArgumentType when Some is narrowed from object via isinstance.
     """
     return obj.value if isinstance(obj, _HasValue) else None
+
+
+def _is_resp_dict(value: Any) -> TypeGuard[RespDict]:
+    """TypeGuard: a handler response is a str-keyed response dict."""
+    return isinstance(value, dict)
+
+
+def _as_resp_dict(response: Any) -> RespDict | None:
+    """Return the response as a RespDict if it is a dict, else None.
+
+    The TypeGuard's declared RespDict return keeps the narrowed dict typed
+    without leaking Unknown from the isinstance check at the call site.
+    """
+    if _is_resp_dict(response):
+        return response
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -166,7 +182,9 @@ class EditMessage(ScopeEnricher):
         """Mark handler for message editing (metadata)."""
         return telegrinder_handler(ctx, edit_message=True)
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | None:
+        # Returns None when the message is edited in place (telegrinder's return
+        # manager then sends nothing); otherwise passes the upstream response on.
         response = await call(scope)
 
         cq = _get_callback_query_from_scope(scope)
@@ -179,8 +197,8 @@ class EditMessage(ScopeEnricher):
             await cq.edit_text(text=response)
             return None
 
-        if isinstance(response, dict):
-            resp_dict: RespDict = response
+        resp_dict = _as_resp_dict(response)
+        if resp_dict is not None:
             if "text" in resp_dict:
                 text = str(resp_dict.pop("text"))
                 await cq.edit_text(text=text, **resp_dict)
@@ -310,7 +328,9 @@ class ReplyMessage(ScopeEnricher):
         )
     """
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | None:
+        # Returns None once the reply is sent (telegrinder's return manager then
+        # sends nothing); otherwise passes the upstream response on.
         response = await call(scope)
         if response is None:
             return None

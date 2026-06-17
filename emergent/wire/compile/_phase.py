@@ -38,6 +38,8 @@ compile_entity() wraps compile_fields() and adds entity-level folds.
 
 from __future__ import annotations
 
+import inspect
+
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, TYPE_CHECKING
@@ -269,15 +271,21 @@ class EntityCompilation:
             raise KeyError(
                 f"No entity context for {fold.context_type.__name__}"
             )
-        # dict stores heterogeneous contexts as object; generic EntityCtx
-        # on EntityFold provides correct static type at call site.
-        # Same pattern as FieldCompilation.__getitem__.
+        # The store is heterogeneous (object-valued); narrow via the fold's
+        # context_type — same isinstance bridge as FieldCompilation.__getitem__.
+        if not isinstance(ctx, fold.context_type):
+            raise TypeError(f"Expected {fold.context_type}, got {type(ctx)}")
         return ctx
 
     def get[EntityCtx](self, fold: EntityFold[EntityCtx]) -> EntityCtx | None:
         """Get typed entity context, or None if not present."""
-        # Same heterogeneous dict → typed return bridge as __getitem__
-        return self._entity_contexts.get(fold.context_type)
+        # Same heterogeneous dict → typed return bridge as __getitem__.
+        ctx = self._entity_contexts.get(fold.context_type)
+        if ctx is None:
+            return None
+        if not isinstance(ctx, fold.context_type):
+            raise TypeError(f"Expected {fold.context_type}, got {type(ctx)}")
+        return ctx
 
     def has_entity(self, fold: EntityFold[Any]) -> bool:
         """Check if entity context exists for this fold."""
@@ -769,10 +777,15 @@ def from_storage[T](
         value = getter(fc.name)
         if meta.from_storage is not None:
             value = meta.from_storage(value)
-        # Reconstruct enums: storage returns raw str/int, entity expects Enum
+        # Reconstruct enums: storage returns raw str/int, entity expects Enum.
+        # `base_type` is annotated `type` but at runtime may be a parametrized
+        # generic (`list[int]`, `X | None`) for which `issubclass` would raise;
+        # `inspect.isclass` selects only real classes — exactly the runtime
+        # contract of the previous `isinstance(declared, type)` guard, without
+        # pyright flagging it as a redundant type-vs-type check.
         declared = fc.info.base_type
         if (
-            isinstance(declared, type)
+            inspect.isclass(declared)
             and issubclass(declared, _Enum)
             and not isinstance(value, declared)
             and value is not None

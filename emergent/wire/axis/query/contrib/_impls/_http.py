@@ -564,7 +564,9 @@ class HTTPAPIProvider(Generic[T]):
 
     def _serialize_entity(self, entity: T) -> Params:
         """Serialize entity to dict."""
-        if not dataclasses.is_dataclass(entity):
+        # asdict() needs a dataclass *instance*; is_dataclass alone also admits the
+        # dataclass *type*, so exclude that to narrow entity to an instance.
+        if not dataclasses.is_dataclass(entity) or isinstance(entity, type):
             raise TypeError(
                 f"{type(entity).__name__} must be a dataclass instance"
             )

@@ -237,12 +237,12 @@ class TargetCompiler[Trigger]:
         self, other: TargetCompiler[Trigger] | CodecBinding[Trigger] | type,
     ) -> TargetCompiler[Trigger]:
         """Restriction — remove by codec_type."""
-        if isinstance(other, type) and not isinstance(other, TargetCompiler):
-            remove_keys: set[type] = {other}
+        if isinstance(other, TargetCompiler):
+            remove_keys: set[type] = {b.codec_type for b in other.adapters}
         elif isinstance(other, CodecBinding):
             remove_keys = {other.codec_type}
         else:
-            remove_keys = {b.codec_type for b in other.adapters}
+            remove_keys = {other}
         return replace(
             self,
             adapters=tuple(b for b in self.adapters if b.codec_type not in remove_keys),

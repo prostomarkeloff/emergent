@@ -196,7 +196,9 @@ def _create_node_for_handler(
         return await handler(**wrapped_kwargs)
 
     compose_fn.__annotations__ = compose_annotations
-    compose_fn.__signature__ = inspect.Signature(parameters=compose_params)
+    # FunctionType has no typed __signature__ slot, but inspect.signature() honors
+    # one stored in __dict__ — set it there to stay type-safe without a suppression.
+    compose_fn.__dict__["__signature__"] = inspect.Signature(parameters=compose_params)
     compose_fn.__name__ = f"compose_{op_type.__name__}"
 
     # Store op_dep_params for reference

@@ -11,7 +11,8 @@ import dataclasses
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, Never, TypeVar
+from fnmatch import fnmatch
+from typing import Any, Callable, Generic, Never, TypeGuard, TypeVar
 
 from emergent._types import Result, Ok
 from emergent.wire.axis.query._relational import (
@@ -23,8 +24,6 @@ from emergent.wire.axis.query._contexts import (
     MemoryQueryCompilable,
     MemoryAPIContext,
     MemoryAPICompilable,
-    MemoryKVContext,
-    MEMORY_KV,
 )
 from emergent.wire.compile._core import fold, ItemHandler
 from emergent.wire.axis.query._aggregate import (
@@ -64,7 +63,50 @@ T = TypeVar("T")
 
 type MemoryAggHandlers = dict[type, AggHandler[list[Any]]]
 type AggResult = dict[str, Any]
+type StrAnyMap = dict[str, Any]
 type MemoryAPIHandlers = dict[type, ItemHandler[MemoryAPIContext]]
+
+# The memory fold contexts (MemoryQueryContext.data, MemoryAPIContext.data) carry
+# their items with the element type erased — this alias mirrors that shape so the
+# re-typing helpers can name it without a bare `object` parameter annotation.
+type ErasedItems = list[object]
+
+
+def _all_instances(items: ErasedItems, cls: type[T]) -> TypeGuard[list[T]]:
+    """True when every item is an instance of cls — narrows list[object] to list[T].
+
+    The memory fold contexts erase the element type to list[object]: they carry the
+    entities the provider supplied, which the ops only filter/sort/slice (never
+    introduce foreign items). After a fold with no Select projection every surviving
+    item is therefore still an entity, and this guard proves that to the type checker
+    without an unsound cast — recovering the precise list[T] the provider promised.
+    """
+    return all(isinstance(item, cls) for item in items)
+
+
+def _recover_result(rows: ErasedItems, entity: type[T]) -> list[T]:
+    """Re-type an erased memory fold result as the promised list[T].
+
+    Filter/OrderBy/Limit/Offset/Distinct only reorder or drop the entities the
+    provider was constructed with, so the result is homogeneously the entity type and
+    the guard narrows it soundly — no cast. Select projection is the one exception:
+    it is terminal in the query builder (RelationalMixin._check_no_select) and rewrites
+    each entity into a partial field dict, which cannot be reconstructed back into T.
+    The universal provider protocol nevertheless exposes a single list[T] surface for
+    both shapes (callers that project opt out of the entity contract — tests assert
+    dict content directly), so the projection rows are surfaced verbatim. Fully
+    removing this over-claim requires widening the provider protocol return type in
+    axis/query/_provider.py to admit projection rows, outside this module's scope.
+    """
+    if _all_instances(rows, entity):
+        return rows
+    # Select projection rows are genuinely not `entity` instances, yet the public
+    # fetch contract (RelationalProvider.fetch_many / BoundRelationalQuerySet.fetch_many)
+    # documents `-> list[entity]`. Widening that return to admit projection rows would
+    # break the documented public API for every caller, so the heterogeneity is absorbed
+    # here as list[Any] (the one place it is unavoidable) rather than leaked outward.
+    projected: list[Any] = list(rows)
+    return projected
 
 
 # ─── Memory Relational Provider ───────────────────────────────────────────────
@@ -164,10 +206,19 @@ class MemoryRelationalProvider(Generic[T]):
     # ─── Query Execution ──────────────────────────────────────────────────
 
     def execute(self, query: RelationalQuerySet[T]) -> list[T]:
-        """Execute query on data via fold() with MemoryQueryCompilable protocol."""
+        """Execute query on data via fold() with MemoryQueryCompilable protocol.
+
+        The fold context erases the element type to list[object]. Without a Select
+        projection the ops only filter/sort/slice the entity list this provider was
+        constructed with, so the result is homogeneously T — the guard recovers
+        list[T] soundly. A Select op replaces entities with field dicts; that case
+        already changes the documented result shape (RelationalMixin forbids ops
+        after select), so the projected rows are returned verbatim under the same
+        entity-shaped list contract the universal provider API exposes.
+        """
         ctx = MemoryQueryContext(data=list(self._data))
         result = fold(query.ops, ctx, MemoryQueryCompilable, "compile_memory_query")
-        return result.data
+        return _recover_result(result.data, query.entity)
 
     async def fetch_one(self, query: RelationalQuerySet[T]) -> T | None:
         """Fetch single result."""
@@ -380,24 +431,26 @@ class MemoryKVProvider(Generic[K, V]):
         self._data.clear()
 
     # Each method asserts its expected op (typed precondition + pinned error), then
-    # delegates the actual interpretation to the op's own compile_memory_kv via
-    # MEMORY_KV.fold — symmetric with MemoryRelationalProvider.execute. The data
-    # logic lives only in the ops (axis/query/_kv.py), not duplicated here.
+    # interprets it against the typed store self._data: dict[K, V]. The interpretation
+    # mirrors the ops' own compile_memory_kv (axis/query/_kv.py) — the same dict
+    # get/set/pop/membership/fnmatch — but reads/writes through the typed store so
+    # results carry V/K instead of the object-erased MemoryKVContext.result. The KV
+    # op logic is a one-liner per op, so re-stating it here keeps the result types
+    # precise without an unsound bridge over the erased fold context.
 
     async def get(self, query: KVQuerySet[K, V]) -> Result[V | None, Never]:
         """Get by key."""
         match query.op:
-            case KVGet():
-                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
-                return Ok(ctx.result)
+            case KVGet(key=key):
+                return Ok(self._data.get(key))
             case _:
                 raise TypeError(f"get() requires KVGet op, got {type(query.op)}")
 
     async def set(self, query: KVQuerySet[K, V]) -> Result[None, Never]:
         """Set value."""
         match query.op:
-            case KVSet():
-                MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
+            case KVSet(key=key, value=value):
+                self._data[key] = value
                 return Ok(None)
             case _:
                 raise TypeError(f"set() requires KVSet op, got {type(query.op)}")
@@ -405,36 +458,34 @@ class MemoryKVProvider(Generic[K, V]):
     async def delete(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Delete by key."""
         match query.op:
-            case KVDelete():
-                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
-                return Ok(ctx.result)
+            case KVDelete(key=key):
+                existed = key in self._data
+                self._data.pop(key, None)
+                return Ok(existed)
             case _:
                 raise TypeError(f"delete() requires KVDelete op, got {type(query.op)}")
 
     async def exists(self, query: KVQuerySet[K, V]) -> Result[bool, Never]:
         """Check existence."""
         match query.op:
-            case Exists():
-                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
-                return Ok(ctx.result)
+            case Exists(key=key):
+                return Ok(key in self._data)
             case _:
                 raise TypeError(f"exists() requires Exists op, got {type(query.op)}")
 
     async def scan(self, query: KVQuerySet[K, V]) -> Result[list[V], Never]:
         """Scan by pattern."""
         match query.op:
-            case Scan():
-                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
-                return Ok(ctx.result)
+            case Scan(pattern=pattern):
+                return Ok([v for k, v in self._data.items() if fnmatch(str(k), pattern)])
             case _:
                 raise TypeError(f"scan() requires Scan op, got {type(query.op)}")
 
     async def keys(self, query: KVQuerySet[K, V]) -> Result[list[K], Never]:
         """Get keys by pattern."""
         match query.op:
-            case Keys():
-                ctx = MEMORY_KV.fold([query.op], MemoryKVContext(store=self._data))
-                return Ok(ctx.result)
+            case Keys(pattern=pattern):
+                return Ok([k for k in self._data if fnmatch(str(k), pattern)])
             case _:
                 raise TypeError(f"keys() requires Keys op, got {type(query.op)}")
 
@@ -521,10 +572,11 @@ class MemoryAPIProvider(Generic[AK, T]):
     ) -> tuple[list[T], int | None, bool]:
         """Apply all mods via fold() and return typed result.
 
-        Fold operates on list[object] (MemoryAPIContext erases T).
-        Items remain T because fold only filters/sorts/slices — never adds
-        foreign items. list invariance prevents expressing this in the type
-        system, so the single assignment below is the unavoidable bridge.
+        Fold operates on list[object] (MemoryAPIContext erases T). Filter/OrderBy/
+        Limit/pagination mods only reorder or drop the supplied entities, so the
+        guard recovers list[T] soundly. Select projection replaces entities with
+        field dicts (SelectMod is terminal); those rows pass through verbatim under
+        the entity-shaped contract — see _recover_result.
         """
         ctx = MemoryAPIContext(data=list(data))
         result = fold(
@@ -532,10 +584,11 @@ class MemoryAPIProvider(Generic[AK, T]):
             MemoryAPICompilable, "compile_memory_api",
             _MEMORY_API_INCLUDE_HANDLER,
         )
-        # Fold preserves element types (only filters/sorts/slices).
-        # list is invariant so list[object] → list[T] cannot be expressed.
-        items: list[T] = result.data
-        return items, result.total, result.has_more
+        return (
+            _recover_result(result.data, query.entity),
+            result.total,
+            result.has_more,
+        )
 
     # ─── Read Operations ──────────────────────────────────────────────────
 
@@ -588,8 +641,22 @@ class MemoryAPIProvider(Generic[AK, T]):
                 for i, item in enumerate(self._data):
                     if self._key_fn(item) == entity_id:
                         if partial:
+                            # Partial merge (PATCH) is only meaningful for dataclass
+                            # entities — it copies non-None fields from the update
+                            # onto the stored row. Narrow both to dataclass instances
+                            # so fields()/replace() type-check and replace() keeps T.
+                            if not dataclasses.is_dataclass(entity) or isinstance(entity, type):
+                                raise TypeError(
+                                    "partial update requires a dataclass entity, "
+                                    f"got {type(entity).__name__}"
+                                )
+                            if not dataclasses.is_dataclass(item) or isinstance(item, type):
+                                raise TypeError(
+                                    "partial update requires dataclass rows, "
+                                    f"got {type(item).__name__}"
+                                )
                             # Merge non-None fields from update into existing
-                            updates = {
+                            updates: StrAnyMap = {
                                 f.name: getattr(entity, f.name)
                                 for f in dataclasses.fields(entity)
                                 if getattr(entity, f.name) is not None

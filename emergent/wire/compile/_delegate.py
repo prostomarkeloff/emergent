@@ -174,9 +174,10 @@ async def _compose_node(
     composer = Composer.create(scope, agent_cls)
     # Composer.compose is generic: compose[T](node_type: type[T]) -> tuple[bool, T | str].
     # With bare `type` (no type param), T resolves to Unknown — unavoidable since the
-    # node_type is only known at runtime via reflection (get_type_hints).
-    # _extract_compose_result breaks the Unknown propagation chain.
-    raw = await composer.compose(node_type)
+    # node_type is only known at runtime via reflection (get_type_hints). The composed
+    # value is therefore genuinely Any; annotating `raw` pins the concrete shape so the
+    # Unknown does not propagate, and _extract_compose_result keeps the chain explicit.
+    raw: tuple[bool, Any] = await composer.compose(node_type)
     success, value = _extract_compose_result(raw)
     if success:
         return True, value

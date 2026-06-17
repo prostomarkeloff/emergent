@@ -130,6 +130,15 @@ class UnwrapStrategy(Protocol):
         ...
 
 
+@runtime_checkable
+class _HasWrapped(Protocol):
+    """A callable carrying functools.wraps' ``__wrapped__`` link."""
+
+    __wrapped__: Callable[..., Any]
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any: ...
+
+
 def _unwrap_via_wrapped(
     obj: Any,
 ) -> tuple[Callable[..., Any], tuple[DecoratorInfo, ...]]:
@@ -140,7 +149,7 @@ def _unwrap_via_wrapped(
     decorators: list[DecoratorInfo] = []
     current: Callable[..., Any] = obj
 
-    while hasattr(current, "__wrapped__"):
+    while isinstance(current, _HasWrapped):
         decorators.append(
             DecoratorInfo(
                 wrapper=current,

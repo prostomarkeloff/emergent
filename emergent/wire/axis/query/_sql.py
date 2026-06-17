@@ -23,7 +23,6 @@ Use .to_relational() to strip SQL ops for universal providers.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable, Generic, TypeVar
 
@@ -138,8 +137,8 @@ class WindowBuilder:
 
     def over(
         self,
-        partition_by: FieldProxy | tuple[FieldProxy, ...] | None = None,
-        order_by: OrderSpec | tuple[OrderSpec, ...] | FieldProxy | tuple[FieldProxy, ...] | None = None,
+        partition_by: FieldProxy | tuple[FieldProxy | OrderSpec, ...] | None = None,
+        order_by: OrderSpec | FieldProxy | tuple[OrderSpec | FieldProxy, ...] | None = None,
     ) -> WindowSpec:
         """Finalize window specification with OVER clause.
 
@@ -150,39 +149,46 @@ class WindowBuilder:
         Returns:
             WindowSpec ready for inclusion in Window op.
         """
-        # Resolve partition_by
+        # Resolve partition_by. ``match`` dispatch keeps the runtime guards
+        # (callers may pass invalid types via type: ignore — see tests) without
+        # pyright flagging them redundant: a ``case _`` default is always treated
+        # as reachable, unlike an isinstance chain over an exhaustive union.
         pb: tuple[str, ...] = ()
         if partition_by is not None:
-            if isinstance(partition_by, FieldProxy):
-                pb = (partition_by.name,)
-            else:
-                names: list[str] = []
-                for p in partition_by:
-                    if not isinstance(p, FieldProxy):
-                        raise TypeError(f"partition_by expects FieldProxy, got {type(p)}")
-                    names.append(p.name)
-                pb = tuple(names)
+            match partition_by:
+                case FieldProxy():
+                    pb = (partition_by.name,)
+                case tuple():
+                    names: list[str] = []
+                    for p in partition_by:
+                        if not isinstance(p, FieldProxy):
+                            raise TypeError(f"partition_by expects FieldProxy, got {type(p)}")
+                        names.append(p.name)
+                    pb = tuple(names)
+                case _:
+                    raise TypeError(f"partition_by expects FieldProxy or tuple, got {type(partition_by)}")
 
-        # Resolve order_by
+        # Resolve order_by — same match-based dispatch.
         ob: tuple[OrderSpec, ...] = ()
         if order_by is not None:
-            if isinstance(order_by, OrderSpec):
-                ob = (order_by,)
-            elif isinstance(order_by, FieldProxy):
-                ob = (OrderSpec(order_by.name, ascending=True),)
-            else:
-                # Runtime guard: callers may pass invalid types (e.g. str) despite type signature.
-                if not isinstance(order_by, Iterable) or isinstance(order_by, str):
+            match order_by:
+                case OrderSpec():
+                    ob = (order_by,)
+                case FieldProxy():
+                    ob = (OrderSpec(order_by.name, ascending=True),)
+                case tuple():
+                    resolved: list[OrderSpec] = []
+                    for o in order_by:
+                        match o:
+                            case OrderSpec():
+                                resolved.append(o)
+                            case FieldProxy():
+                                resolved.append(OrderSpec(o.name, ascending=True))
+                            case _:
+                                raise TypeError(f"order_by expects OrderSpec or FieldProxy, got {type(o)}")
+                    ob = tuple(resolved)
+                case _:
                     raise TypeError(f"order_by expects OrderSpec, FieldProxy, or tuple, got {type(order_by)}")
-                resolved: list[OrderSpec] = []
-                for o in order_by:
-                    if isinstance(o, OrderSpec):
-                        resolved.append(o)
-                    elif isinstance(o, FieldProxy):
-                        resolved.append(OrderSpec(o.name, ascending=True))
-                    else:
-                        raise TypeError(f"order_by expects OrderSpec or FieldProxy, got {type(o)}")
-                ob = tuple(resolved)
 
         # Alias will be set by SQLRelationalQuerySet.window()
         return WindowSpec(

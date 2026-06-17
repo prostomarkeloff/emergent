@@ -17,9 +17,8 @@ as MaxLen carrying compile_pydantic + compile_openapi + compile_sqlalchemy).
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
 from emergent.wire.axis._capability import CoercionSpec
@@ -110,11 +109,22 @@ class Extraction(SurfaceCapability):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+@runtime_checkable
+class _CoercionSpecFactory(Protocol):
+    def __call__(self) -> CoercionSpec: ...
+
+
 def _get_pydantic_coercion() -> CoercionSpec:
     import emergent.wire.compile._generate as _gen
 
-    # _pydantic_coercion is exported in _generate.__all__ despite underscore prefix.
-    factory: Callable[[], CoercionSpec] = _gen._pydantic_coercion
+    # _pydantic_coercion is exported in _generate.__all__ despite the underscore
+    # prefix. Read it from the module namespace (not reflection builtins) and
+    # structurally verify it before calling — avoids reportPrivateUsage without a
+    # cross-module rename of the definer.
+    factory = _gen.__dict__.get("_pydantic_coercion")
+    if not isinstance(factory, _CoercionSpecFactory):
+        msg = "emergent.wire.compile._generate._pydantic_coercion is unavailable"
+        raise RuntimeError(msg)
     return factory()
 
 

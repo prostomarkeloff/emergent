@@ -281,7 +281,9 @@ class FastAPIRoute:
     """
 
     endpoint: Any
-    response_model: type | types.UnionType | None = None
+    # Mirrors FastAPIWrapContext.response_type: a collection response is `list[item]`
+    # (a GenericAlias), so this must admit GenericAlias alongside plain types/unions.
+    response_model: type | types.UnionType | types.GenericAlias | None = None
     openapi_extra: JsonDict | None = None
 
 
@@ -337,9 +339,10 @@ async def _stateful_execute(
     async with key_scope:
         key_scope.inject(fastapi.Request, request)
         composer = Composer.create(key_scope, codec.agent_cls)
-        # codec.key_node is bare `type` (no type parameter), so compose()
-        # returns tuple[bool, Unknown | str]. We only need str conversion.
-        compose_result: tuple[bool, Any | str] = await composer.compose(
+        # codec.key_node is a bare `type` (no type parameter), so compose()'s generic
+        # T resolves to Unknown; pinning the concrete tuple shape (Any payload) stops
+        # the Unknown leaking. We only need str conversion of the result.
+        compose_result: tuple[bool, Any] = await composer.compose(
             codec.key_node,
         )
         success = compose_result[0]
@@ -466,12 +469,16 @@ def _response_model(
     """
     from emergent.wire.derive._codegen import CollectionResponseMarker
 
+    # Hold the unnarrowed value: returning the `issubclass`-narrowed `codec_response`
+    # on the fall-through would leave a `type[Unknown]` residual in the inferred
+    # return (a TypeGuard-narrowing artifact); the plain copy keeps it `type | None`.
+    plain: type | None = codec_response
     if (
         isinstance(codec_response, type)
         and issubclass(codec_response, CollectionResponseMarker)
     ):
         return list[codec_response.collection_item()]
-    return codec_response
+    return plain
 
 
 def rrc_from_codec(
@@ -1068,8 +1075,12 @@ def install_rfc7807_validation_handler(app: fastapi.FastAPI) -> None:
 
     async def _handler(
         request: fastapi.Request,
-        exc: RequestValidationError,
+        exc: Exception,
     ) -> JSONResponse:
+        # Starlette's ExceptionHandler protocol types `exc` as the base Exception;
+        # FastAPI only dispatches RequestValidationError to this registration, so the
+        # narrowing always holds at runtime.
+        assert isinstance(exc, RequestValidationError)
         errors = exc.errors()
         fields = [
             f"{'.'.join(str(loc) for loc in e.get('loc', ()))}: {e.get('msg', '')}"

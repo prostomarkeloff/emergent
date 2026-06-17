@@ -33,7 +33,7 @@ from nodnod.value import Value
 
 from emergent.graph.runtime._helpers import GraphInfo as _GraphInfo
 from emergent.graph.runtime._helpers import build_graph_info as _build_graph_info
-from emergent.graph.runtime._helpers import _is_result_node
+from emergent.graph.runtime._helpers import is_result_node
 
 if TYPE_CHECKING:
     from emergent.graph.runtime._policy import WorkStealingContext
@@ -67,7 +67,7 @@ def _get_either_members(node: type[Node]) -> tuple[type[Node], ...]:
 def _get_from_node(node: type[Node]) -> type[Node]:
     """Get __from_node__ from a ResultNode.
 
-    Assumes caller has verified node is a ResultNode via _is_result_node.
+    Assumes caller has verified node is a ResultNode via is_result_node.
     """
     from nodnod.interface.result_node import ResultNode
 
@@ -218,7 +218,7 @@ def _on_node_failed(
             run_state.pending[dependent] -= 1
             ready = run_state.pending[dependent] == 0
 
-        if _is_result_node(dependent):
+        if is_result_node(dependent):
             if ready:
                 node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
                 _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
@@ -381,7 +381,7 @@ async def _execute_task(
             await _execute_sequential_either(task, run_state, pool, graph_info)
             return
 
-        if _is_result_node(node):
+        if is_result_node(node):
             await _execute_result_node_task(task, run_state, pool, graph_info)
             return
 

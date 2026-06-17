@@ -51,7 +51,7 @@ def extract[R: RouteData](
     route_type: type[R] | None = None,
     *,
     extractors: Sequence[Extractor[RouteData]] | None = None,
-) -> list[Extracted[R]]:
+) -> Sequence[Extracted[Any]]:
     """Extract handlers from framework source.
 
     Symmetric to surface.scan():
@@ -96,16 +96,24 @@ def extract[R: RouteData](
     if not combined.can_extract(source):
         return []
 
-    # Extract all routes
-    results: list[Extracted[R]] = []
-    for extracted in combined.extract(source):
-        # Filter by route_type if specified
-        if route_type is not None:
-            if not isinstance(extracted.route, route_type):
-                continue
-        results.append(extracted)
-
-    return results
+    # Extract all routes, keeping only those matching route_type when given.
+    # Callers get precise per-overload element typing (Extracted[RouteData] when
+    # unfiltered, Extracted[R] when filtered) from the @overload signatures.
+    #
+    # REASON FOR Any in the impl return: Extracted is an invariant generic
+    # (its dataclass __init__ takes R in an input position) and `list` is also
+    # invariant, so neither overload return (list[Extracted[RouteData]] /
+    # list[Extracted[R]]) is assignable to a single concrete impl return type.
+    # Sequence[Extracted[Any]] is the only annotation both overloads satisfy;
+    # the Any never reaches callers.
+    all_extracted = combined.extract(source)
+    if route_type is None:
+        return list(all_extracted)
+    return [
+        extracted
+        for extracted in all_extracted
+        if isinstance(extracted.route, route_type)
+    ]
 
 
 def _detect_extractors(source: Any) -> Extractor[RouteData] | None:

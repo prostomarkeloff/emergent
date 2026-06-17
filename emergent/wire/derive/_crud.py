@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 
 from emergent.wire.axis.query import relational
 from emergent.wire.axis.schema._universal import SchemaCapability
+from emergent.wire.derive._codegen import AnnotationValue, make_annotation
 from emergent.wire.derive._query_strategy import ProviderInjection, RelationalStrategy
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.derive._ctx import DeriveCtx
@@ -80,21 +81,18 @@ READ_CRUD_OPS: tuple[OpLike, ...] = (LIST, GET)
 
 def provider_fields(
     provider_node: type,
-) -> tuple[tuple[str, type], tuple[str, type]]:
+) -> tuple[tuple[str, AnnotationValue], tuple[str, AnnotationValue]]:
     """Create provider field pair: (op_field, request_field).
 
     Op field is plain type. Request field has ComposeNode for runtime resolution.
     """
-    import typing
-
     from emergent.wire.axis.query import MutatingRelationalProvider
     from emergent.wire.axis.schema.dialects.compose import Node as ComposeNode
 
-    op_field: tuple[str, type] = ("provider", MutatingRelationalProvider)
-    annotated_getitem = typing.Annotated.__getitem__
-    request_field: tuple[str, type] = (
+    op_field: tuple[str, AnnotationValue] = ("provider", MutatingRelationalProvider)
+    request_field: tuple[str, AnnotationValue] = (
         "provider",
-        annotated_getitem((MutatingRelationalProvider, ComposeNode(provider_node))),
+        make_annotation(MutatingRelationalProvider, ComposeNode(provider_node)),
     )
     return op_field, request_field
 

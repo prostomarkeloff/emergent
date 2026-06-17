@@ -10,17 +10,28 @@ Three concerns:
 from __future__ import annotations
 
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, make_dataclass
-from typing import Any, TYPE_CHECKING, Callable, Protocol
+from typing import Annotated, Any, TYPE_CHECKING, Callable, Protocol
 
 from kungfu import Error, Ok, Result
 
+from emergent.wire.axis._capability import Capability
+
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import OperationHandler
+    from emergent.wire.derive._errors import DomainError
 
-# Annotation value: anything Python accepts in a type annotation context.
-type AnnotationValue = type | types.UnionType | types.GenericAlias
+# An ``Annotated[...]`` alias is a typing special form, not a concrete ``type`` /
+# ``UnionType`` / ``GenericAlias``. Pyright models its only nameable supertype as
+# this representative form, so it must be a member of the annotation-value union
+# for dynamically-built ``Annotated[base, *caps]`` values to type-check.
+_AnnotatedForm = Annotated[object, ...]
+
+# Annotation value: anything Python accepts in a type annotation context — a
+# concrete type, a runtime union, a parameterized generic alias, or an
+# ``Annotated[...]`` alias produced by ``make_annotation``.
+type AnnotationValue = type | types.UnionType | types.GenericAlias | _AnnotatedForm
 
 # Field spec for make_dataclass: (name, annotation) or (name, annotation, default).
 # Default may be any Python value — dataclasses accept arbitrary defaults.
@@ -28,6 +39,17 @@ type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, objec
 
 type AnnotationMap = dict[str, type]
 type ScalarFieldMap = Mapping[str, str | int | float | bool | None]
+
+# JSON-like value for collection-response rows: handlers return ``Ok([row, ...])``
+# where each row is splatted into the item dataclass. Values are recursively
+# JSON-ish, never raw ``object``.
+type CollectionValue = (
+    str | int | float | bool | None
+    | Sequence[CollectionValue]
+    | Mapping[str, CollectionValue]
+)
+type CollectionRow = Mapping[str, CollectionValue]
+
 type NamespaceMap = dict[str, Callable[..., HasAnnotations | str | int | float | bool | None]]
 
 
@@ -39,6 +61,23 @@ class HasAnnotations(Protocol):
 class FieldMapper(Protocol):
     """Protocol for custom field extraction from request to dict."""
     def __call__(self, request: HasAnnotations) -> ScalarFieldMap: ...
+
+
+# A collection ``from_domain`` yields either the mapped item instances or the
+# domain error (passed through for the error capabilities to render).
+type CollectionResult = list[HasAnnotations] | DomainError
+
+
+def make_annotation(base: AnnotationValue, *metas: Capability) -> AnnotationValue:
+    """Build ``Annotated[base, *metas]`` at runtime.
+
+    Pyright special-cases ``Annotated`` and does not model ``__getitem__`` on it,
+    so there is no static alternative for building annotation aliases
+    dynamically. The result is a legitimate annotation value (see
+    ``_AnnotatedForm`` / ``AnnotationValue``). ``metas`` are axis capabilities
+    (schema markers, compose ``Node``/``Retrieve``, ...) attached as metadata.
+    """
+    return Annotated[base, *metas]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -201,7 +240,10 @@ def create_collection_response_type(
         return item_cls
 
     @classmethod
-    def from_domain(cls: type, domain_result: HasAnnotations) -> object:
+    def from_domain(
+        cls: type,
+        domain_result: Result[Sequence[CollectionRow], DomainError],
+    ) -> CollectionResult:
         match domain_result:
             case Ok(values):
                 return [item_cls(**element) for element in values]
@@ -263,6 +305,7 @@ __all__ = (
     "FieldMapper",
     "DirectMapper",
     "ResultConversion",
+    "make_annotation",
     "create_dataclass",
     "set_type_name",
     "create_request_type",

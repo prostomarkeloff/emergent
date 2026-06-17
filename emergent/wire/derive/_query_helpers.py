@@ -8,11 +8,11 @@ Work for any relational entity with identity fields and a provider.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from typing import Any, TYPE_CHECKING
 
 from kungfu import Error
 
+from emergent.wire.derive._codegen import AnnotationValue, make_annotation
 from emergent.wire.derive._errors import DomainError, IdentityMap, NotFound
 
 if TYPE_CHECKING:
@@ -104,15 +104,12 @@ def serialize_op_fields(op: Any, field_names: tuple[str, ...] | list[str]) -> st
     return json.dumps(payload)
 
 
-def provider_field(node_type: type) -> type:
+def provider_field(node_type: type) -> AnnotationValue:
     """Annotated provider field for request types with ComposeNode."""
-    import typing
-
     from emergent.wire.axis.query import MutatingRelationalProvider as _MRP_rt
     from emergent.wire.axis.schema.dialects.compose import Node as ComposeNode
 
-    annotated_getitem: Callable[..., type] = typing.Annotated.__getitem__
-    return annotated_getitem((_MRP_rt, ComposeNode(node_type)))
+    return make_annotation(_MRP_rt, ComposeNode(node_type))
 
 
 def id_path(id_names: tuple[str, ...]) -> str:

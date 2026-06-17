@@ -37,7 +37,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Value types
@@ -134,16 +134,39 @@ def explain_nodes(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-@runtime_checkable
-class _Named(Protocol):
-    __name__: str
-
-
 def callable_name(fn: Callable[..., Any]) -> str:
-    """Name of a callable, falling back to repr when it has no ``__name__``."""
-    if isinstance(fn, _Named):
+    """Name of a callable, falling back to repr when it has no ``__name__``.
+
+    Most callables expose ``__name__`` (functions, lambdas, classes), but some —
+    notably ``functools.partial`` — do not, so guard the access at runtime.
+    """
+    try:
         return fn.__name__
-    return repr(fn)
+    except AttributeError:
+        return repr(fn)
+
+
+def runtime_type(value: Any) -> type:
+    """Concrete runtime class of a value as a plain ``type`` key.
+
+    ``type(x)`` over an ``Any`` value is ``type[Any]``, which pyright treats as
+    partially unknown when used as a Mapping key; reading ``__class__`` into a
+    ``type``-annotated local yields a clean key for per-type handler dispatch.
+    """
+    cls: type = value.__class__
+    return cls
+
+
+def _is_any_sequence(val: Any) -> TypeGuard[tuple[Any, ...] | list[Any]]:
+    """TypeGuard: narrow to a list/tuple without Unknown propagation."""
+    return isinstance(val, (tuple, list))
+
+
+def _is_str_sequence(val: Any) -> TypeGuard[tuple[str, ...] | list[str]]:
+    """TypeGuard: a tuple/list whose every element is a str."""
+    if not _is_any_sequence(val):
+        return False
+    return all(isinstance(x, str) for x in val)
 
 
 def _scalarize(val: Any) -> ExplainValue:
@@ -158,7 +181,7 @@ def _scalarize(val: Any) -> ExplainValue:
         return val.__name__
     if isinstance(val, bool | int | float | str) or val is None:
         return val
-    if isinstance(val, (tuple, list)) and all(isinstance(x, str) for x in val):
+    if _is_str_sequence(val):
         return [str(x) for x in val]
     return str(val)
 
@@ -237,4 +260,5 @@ __all__ = (
     "AutoExplain",
     "to_dict",
     "callable_name",
+    "runtime_type",
 )

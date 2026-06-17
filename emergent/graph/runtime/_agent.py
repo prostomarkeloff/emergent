@@ -27,16 +27,18 @@ from emergent.graph.runtime._spawnable import Spawnable
 type MappedScopes = Mapping[type[Node], Scope]
 
 
-# sys._is_gil_enabled exists only on free-threaded (3.13t+) builds. Probe it via
-# a runtime-checkable protocol instead of reflection; default to GIL-enabled.
+# sys._is_gil_enabled exists only on free-threaded (3.13t+) builds. Look it up in
+# the module namespace (not reflection builtins) and structurally verify it is a
+# zero-arg bool callable before calling; default to GIL-enabled otherwise.
 @runtime_checkable
-class _GilQueryable(Protocol):
-    def _is_gil_enabled(self) -> bool: ...
+class _GilProbe(Protocol):
+    def __call__(self) -> bool: ...
 
 
 def _is_gil_enabled() -> bool:
-    if isinstance(sys, _GilQueryable):
-        return sys._is_gil_enabled()
+    probe = sys.__dict__.get("_is_gil_enabled")
+    if isinstance(probe, _GilProbe):
+        return probe()
     return True
 
 
@@ -95,7 +97,9 @@ class RuntimeAgent(Agent):
         return cls(delegate)
 
     async def run(self, local_scope: Scope, mapped_scopes: MappedScopes) -> None:
-        await self._delegate.run(local_scope, mapped_scopes)
+        # nodnod's Agent.run requires a concrete dict; accept any Mapping at our
+        # boundary and materialize before delegating (delegates copy or only read).
+        await self._delegate.run(local_scope, dict(mapped_scopes))
 
     # --- Spawnable delegation ---
 
