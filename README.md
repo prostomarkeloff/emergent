@@ -4,6 +4,7 @@
 
 **Write meaning, not code.**
 
+[![PyPI](https://img.shields.io/pypi/v/emergent-py.svg)](https://pypi.org/project/emergent-py/)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Types: pyright strict](https://img.shields.io/badge/types-pyright%20strict-blue)](https://github.com/microsoft/pyright)
@@ -24,7 +25,17 @@ class User:
 5 REST endpoints. Pydantic models. OpenAPI spec. You write fields, `fold` writes everything else.
 
 ```bash
-uv add git+https://github.com/prostomarkeloff/emergent.git
+# distribution is "emergent-py"; you import it as "emergent"
+pip install emergent-py
+
+# add extras for the targets you compile to:
+pip install "emergent-py[fastapi]"   # HTTP + OpenAPI
+pip install "emergent-py[sa]"        # SQLAlchemy
+pip install "emergent-py[all]"       # everything (fastapi, sa, tg, cli)
+```
+
+```python
+import emergent
 ```
 
 ---
