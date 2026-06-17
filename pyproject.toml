@@ -110,7 +110,7 @@ url = "https://github.com/prostomarkeloff/find-dup-defs/releases/download/v0.7.5
 sha256 = "fef934f36d3efc57f554c49bfce4d22c22b5694e8119136e4b8fa38b13b8e0d6"
 [dependency-groups]
 dev = [
-    "emergent[all]",
+    "emergent-py[all]",
     "greenlet>=3.3.1",
     "httpx>=0.28.1",
     "hypothesis>=6.0",
