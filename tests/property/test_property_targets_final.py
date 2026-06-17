@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Self
 from unittest.mock import patch
@@ -26,6 +27,12 @@ from types import MappingProxyType
 import fastapi
 import pytest
 from kungfu import Ok, Result, Option, Some, Nothing
+
+
+requires_telegrinder = pytest.mark.skipif(
+    importlib.util.find_spec("telegrinder") is None,
+    reason="telegrinder is only installed on Python >= 3.14",
+)
 
 from nodnod import Scope
 
@@ -1005,6 +1012,7 @@ class TestCLICoerceValues:
 # =============================================================================
 
 
+@requires_telegrinder
 class TestTelegrindStatefulFromCodec:
     """Test stateful_from_codec_tg (lines 740-741)."""
 
@@ -1027,6 +1035,7 @@ class TestTelegrindStatefulFromCodec:
         assert len(ctx.rules) >= 1
 
 
+@requires_telegrinder
 class TestTelegrindStatefulExecute:
     """Test _stateful_execute_tg wrapper (line 780)."""
 
@@ -1046,6 +1055,7 @@ class TestTelegrindStatefulExecute:
         assert isinstance(result, TelegrindRoute)
 
 
+@requires_telegrinder
 class TestTelegrindAssembleTypeError:
     """Test assemble_telegrind_route TypeError guard (line 810)."""
 
@@ -1070,6 +1080,7 @@ class TestTelegrindAssembleTypeError:
             assemble_telegrind_route(ctx, handler, Axes.default())
 
 
+@requires_telegrinder
 class TestTelegrindCompileStateful:
     """Test telegrinder_compile with stateful codec handler."""
 
@@ -1093,6 +1104,7 @@ class TestTelegrindCompileStateful:
         assert dp is not None
 
 
+@requires_telegrinder
 class TestTelegrindCompileWithFamily:
     """Test telegrinder_compile with family parameter."""
 
@@ -1112,6 +1124,7 @@ class TestTelegrindCompileWithFamily:
         assert hasattr(dp, "_scope_app")
 
 
+@requires_telegrinder
 class TestTelegrindCommandArgGeneration:
     """Test generate_command_args and enhance_command_with_args."""
 
@@ -1160,6 +1173,7 @@ class TestTelegrindCommandArgGeneration:
         assert enhanced is trigger  # no change
 
 
+@requires_telegrinder
 class TestTelegrindHelpGeneration:
     """Test help text generation from command rules."""
 
@@ -1259,6 +1273,7 @@ class TestTelegrindHelpGeneration:
         assert help_text == ""
 
 
+@requires_telegrinder
 class TestTelegrindExtractCommandInfo:
     """Test extract_command_info."""
 
@@ -1287,6 +1302,7 @@ class TestTelegrindExtractCommandInfo:
         assert len(info.args) >= 1
 
 
+@requires_telegrinder
 class TestTelegrindResponseFormatting:
     """Test _format_tg_response with various types."""
 
@@ -1311,6 +1327,7 @@ class TestTelegrindResponseFormatting:
         assert _format_tg_response(False) is False
 
 
+@requires_telegrinder
 class TestTelegrindCreateStatefulRule:
     """Test create_stateful_rule."""
 
@@ -1356,6 +1373,7 @@ class TestTelegrindCreateStatefulRule:
         assert rule is not None
 
 
+@requires_telegrinder
 class TestTelegrindWrapImmediateAndDelegate:
     """Test wrap_immediate_telegrinder and wrap_delegate_telegrinder."""
 
@@ -1404,6 +1422,7 @@ class TestTelegrindWrapImmediateAndDelegate:
         assert isinstance(route, TelegrindRoute)
 
 
+@requires_telegrinder
 class TestTelegrindMultiCodecCompile:
     """Test compiling multiple codec types into a Dispatch."""
 
@@ -1433,6 +1452,7 @@ class TestTelegrindMultiCodecCompile:
         assert dp is not None
 
 
+@requires_telegrinder
 class TestTelegrindCallbackQueryView:
     """Test callback_query view handlers."""
 
@@ -1454,6 +1474,7 @@ class TestTelegrindCallbackQueryView:
         assert dp is not None
 
 
+@requires_telegrinder
 class TestTelegrindFoldTgHandlerCtx:
     """Test fold_tg_handler_ctx."""
 
@@ -1474,6 +1495,7 @@ class TestTelegrindFoldTgHandlerCtx:
         assert ctx.edit_message is True
 
 
+@requires_telegrinder
 class TestTelegrindGetCuteValue:
     """Test _get_cute_value helper."""
 
@@ -1513,6 +1535,7 @@ class TestTelegrindGetCuteValue:
         assert success is False
 
 
+@requires_telegrinder
 class TestTelegrindPipelineCompilable:
     """Test TelegrindPipelineCompilable protocol."""
 
@@ -1536,6 +1559,7 @@ class TestTelegrindPipelineCompilable:
         assert not isinstance(NotConforming(), TelegrindPipelineCompilable)
 
 
+@requires_telegrinder
 class TestTelegrindFromApplication:
     """Test backward-compat alias from_application."""
 
@@ -1552,6 +1576,7 @@ class TestTelegrindFromApplication:
 # =============================================================================
 
 
+@requires_telegrinder
 class TestCrossTargetSameApp:
     """Test same app compiled for multiple targets."""
 
@@ -1646,6 +1671,7 @@ class TestCLICompileAlias:
         assert cli_mod.compile_stack is cli_mod.cli_compile_stack
 
 
+@requires_telegrinder
 class TestTelegrindCompileAlias:
     """Test telegrinder module-level compile alias."""
 
