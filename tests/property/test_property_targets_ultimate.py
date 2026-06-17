@@ -31,6 +31,7 @@ Uses REAL telegrinder, REAL FastAPI, REAL argparse. All fixtures via emergent pi
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, Self, cast
 from unittest.mock import patch, MagicMock
@@ -38,6 +39,12 @@ from unittest.mock import patch, MagicMock
 import fastapi
 import pytest
 from kungfu import Ok, Result, Option, Some, Nothing
+
+
+requires_telegrinder = pytest.mark.skipif(
+    importlib.util.find_spec("telegrinder") is None,
+    reason="telegrinder is only installed on Python >= 3.14",
+)
 
 from nodnod import Scope
 
@@ -1306,6 +1313,7 @@ class TestCLIGetDelegateArgSpecsEdge:
 # =============================================================================
 
 
+@requires_telegrinder
 class TestTelegrindInjectContext:
     """Test _inject_tg_context merge vs parent branch."""
 
@@ -1327,6 +1335,7 @@ class TestTelegrindInjectContext:
         # It was injected if no error occurred
 
 
+@requires_telegrinder
 class TestTelegrindComposeParam:
     """Test compose_param with various compose_type scenarios."""
 
@@ -1377,6 +1386,7 @@ class TestTelegrindComposeParam:
         assert result is not None
 
 
+@requires_telegrinder
 class TestTelegrindGetCuteValueDeep:
     """Test _get_cute_value edge cases."""
 
@@ -1409,6 +1419,7 @@ class TestTelegrindGetCuteValueDeep:
         assert value == "correct"
 
 
+@requires_telegrinder
 class TestTelegrindIsCommandWithoutArgs:
     """Test _is_command_without_args helper."""
 
@@ -1437,6 +1448,7 @@ class TestTelegrindIsCommandWithoutArgs:
         assert _is_command_without_args(cmd) is True
 
 
+@requires_telegrinder
 class TestTelegrindRRCFromCodecTg:
     """Test rrc_from_codec_tg creates context with enhanced rules."""
 
@@ -1461,6 +1473,7 @@ class TestTelegrindRRCFromCodecTg:
         assert ctx.execute is not None
 
 
+@requires_telegrinder
 class TestTelegrindImmediateFromCodecTg:
     """Test immediate_from_codec_tg."""
 
@@ -1475,6 +1488,7 @@ class TestTelegrindImmediateFromCodecTg:
         assert ctx.trigger is trigger
 
 
+@requires_telegrinder
 class TestTelegrindDelegateFromCodecTg:
     """Test delegate_from_codec_tg."""
 
@@ -1492,6 +1506,7 @@ class TestTelegrindDelegateFromCodecTg:
         assert ctx.trigger is trigger
 
 
+@requires_telegrinder
 class TestTelegrindAssembleNoneExecute:
     """Test assemble_telegrind_route with None execute."""
 
@@ -1509,6 +1524,7 @@ class TestTelegrindAssembleNoneExecute:
             assemble_telegrind_route(ctx, handler, Axes.default())
 
 
+@requires_telegrinder
 class TestTelegrindHasActiveFlowState:
     """Test HasActiveFlowState rule."""
 
@@ -1544,6 +1560,7 @@ class TestTelegrindHasActiveFlowState:
         assert result is False
 
 
+@requires_telegrinder
 class TestTelegrindEnhanceCommandWithMultipleRules:
     """Test enhance_command_with_args with multiple rules."""
 
@@ -1563,6 +1580,7 @@ class TestTelegrindEnhanceCommandWithMultipleRules:
         assert len(enhanced.rules) == 2
 
 
+@requires_telegrinder
 class TestTelegrindCompileMultiView:
     """Test telegrinder_compile with different view types."""
 
@@ -1589,6 +1607,7 @@ class TestTelegrindCompileMultiView:
         assert dp is not None
 
 
+@requires_telegrinder
 class TestTelegrindWrapRRC:
     """Test wrap_rrc_telegrinder produces callable handler."""
 
@@ -1607,6 +1626,7 @@ class TestTelegrindWrapRRC:
         assert len(route.rules) >= 1
 
 
+@requires_telegrinder
 class TestTelegrindWrapStateful:
     """Test wrap_stateful_telegrinder produces callable handler."""
 
@@ -1628,6 +1648,7 @@ class TestTelegrindWrapStateful:
         assert len(route.rules) >= 1
 
 
+@requires_telegrinder
 class TestTelegrindRegisterHandler:
     """Test register_handler dispatches to correct view."""
 
@@ -1655,6 +1676,7 @@ class TestTelegrindRegisterHandler:
         mock_decorator.assert_called_once_with(handler)
 
 
+@requires_telegrinder
 class TestTelegrindFormatResponseEdge:
     """Test _format_tg_response with telegrinder-module types."""
 
@@ -1888,6 +1910,7 @@ class TestCLIWrapForStackNoBinding:
             _wrap_for_stack(handler, trigger, Axes.default(), CLI_COMPILER)
 
 
+@requires_telegrinder
 class TestTelegrindCompileEmpty:
     """Test telegrinder_compile with empty app."""
 

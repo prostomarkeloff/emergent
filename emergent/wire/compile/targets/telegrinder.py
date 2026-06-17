@@ -26,7 +26,7 @@ Command rules with generated Arguments.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, TYPE_CHECKING, Protocol as TypingProtocol, runtime_checkable as _runtime_checkable
+from typing import Any, Callable, TYPE_CHECKING, Protocol as TypingProtocol, TypeGuard, runtime_checkable as _runtime_checkable
 
 from kungfu import Ok, Some, Nothing
 from nodnod import Scope
@@ -77,6 +77,40 @@ from emergent.wire.axis._capability import (
 )
 
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type StrAnyMap = dict[str, Any]
+type CuteValue = tuple[StrAnyMap, bool]
+type NodeCompose = tuple[Callable[..., Any], StrAnyMap] | None
+
+
+@_runtime_checkable
+class _HasArguments(TypingProtocol):
+    """Structural guard: a rule exposing ``arguments`` (telegrinder Command)."""
+
+    @property
+    def arguments(self) -> tuple[ArgumentProto, ...]: ...
+
+
+@_runtime_checkable
+class _HasNames(TypingProtocol):
+    """Structural guard: a rule exposing ``names`` (telegrinder Command).
+
+    Used at runtime to feature-detect Command rules when the fallback
+    ``_tg_Command = ABCRule`` would otherwise match non-Command rules.
+    """
+
+    @property
+    def names(self) -> frozenset[str]: ...
+
+
+@_runtime_checkable
+class _HasIncomingUpdate(TypingProtocol):
+    """Structural guard: an update wrapper exposing ``incoming_update``."""
+
+    @property
+    def incoming_update(self) -> Any: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Runtime telegrinder imports — hidden from pyright via TYPE_CHECKING guard.
 #
@@ -87,18 +121,29 @@ from emergent.wire.axis._capability import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if TYPE_CHECKING:
-    # Stubs for runtime-only names — pyright sees these Protocol types.
-    # Actual runtime values are set in the try/except else branch.
-    # Typed as type[Protocol] so constructors and isinstance narrowing
-    # work correctly in static analysis.
-    _tg_ABCRule: type[ABCRule] = ABCRule  # type: ignore[assignment]  # Protocol at static time, real class at runtime; unavoidable mismatch
-    _tg_AndRule: type[AndRule] = AndRule  # type: ignore[assignment]  # same — Protocol vs class
-    _tg_OrRule: type[OrRule] = OrRule  # type: ignore[assignment]  # same — Protocol vs class
-    _tg_Command: type[CommandProto] = CommandProto  # type: ignore[assignment]  # Command is used for isinstance + instantiation; Protocol vs class
-    _tg_Argument: type[ArgumentProto] = ArgumentProto  # type: ignore[assignment]  # same — Protocol vs class
-    _tg_Dispatch: type[Dispatch] = Dispatch  # type: ignore[assignment]  # same — Protocol vs class
-    _tg_BaseCute: type[BaseCute] = BaseCute  # type: ignore[assignment]  # same — Protocol vs class
-    _tg_Context: type[Context] = Context  # type: ignore[assignment]  # same — Protocol vs class
+    # Stubs for runtime-only names — pyright sees these as the compat Protocol
+    # *classes*. Declared (not assigned): a Protocol object is not assignable to
+    # `type[Protocol]`, but a bare `type[Proto]` annotation still gives constructors
+    # and isinstance/issubclass narrowing the right static shape. Actual runtime
+    # values come from the try/except else branch.
+    #
+    # _tg_ABCRule is the one name used as a *base class* (HasActiveFlowState below);
+    # a bare declaration would read as unbound there, so it gets a concrete Protocol
+    # impl as its static value — assignable to type[ABCRule] and subclassable.
+    class _ABCRuleStatic(ABCRule): ...
+    _tg_ABCRule: type[ABCRule] = _ABCRuleStatic
+    _tg_AndRule: type[AndRule]
+    _tg_OrRule: type[OrRule]
+    # For isinstance: a Command rule is statically only known to be an ABCRule —
+    # narrowing to CommandProto would make the structural `_HasNames`/`_HasArguments`
+    # feature-detection (and the fallback path where `_tg_Command = ABCRule`) appear
+    # redundant. `_tg_Command_ctor` carries the constructor signature separately.
+    _tg_Command: type[ABCRule]
+    _tg_Command_ctor: type[CommandProto]
+    _tg_Argument: type[ArgumentProto]
+    _tg_Dispatch: type[Dispatch]
+    _tg_BaseCute: type[BaseCute]
+    _tg_Context: type[Context]
 else:
     try:
         from telegrinder.bot.rules.abc import ABCRule as _tg_ABCRule, AndRule as _tg_AndRule, OrRule as _tg_OrRule
@@ -106,6 +151,9 @@ else:
         from telegrinder.bot.dispatch import Dispatch as _tg_Dispatch
         from telegrinder.bot.dispatch.context import Context as _tg_Context
         from telegrinder.bot.cute_types.base import BaseCute as _tg_BaseCute
+        # Same runtime Command class; the second binding only differs in static type
+        # (constructor signature) so enhance_command_with_args can build a Command.
+        _tg_Command_ctor = _tg_Command
     except ImportError:
         # Fallback stubs if telegrinder not installed — module will fail
         # at actual use but at least won't crash on import.
@@ -113,6 +161,7 @@ else:
         _tg_AndRule = AndRule
         _tg_OrRule = OrRule
         _tg_Command = ABCRule
+        _tg_Command_ctor = ABCRule
         _tg_Argument = type
         _tg_Dispatch = Dispatch
         _tg_BaseCute = BaseCute
@@ -127,7 +176,12 @@ else:
 _PASSTHROUGH_TYPES = (str, int, float, bool, bytes, dict, list, tuple, type(None))
 
 
-def _format_tg_response(response: object) -> object:
+def _runtime_type[T](obj: T) -> type[T]:
+    """The runtime class of ``obj`` as ``type[T]`` (resolves type[Any]→concrete)."""
+    return type(obj)
+
+
+def _format_tg_response(response: Any) -> Any:
     """Convert response to str for telegrinder's return manager.
 
     Only converts types that:
@@ -135,10 +189,12 @@ def _format_tg_response(response: object) -> object:
     2. Are NOT from telegrinder itself (HTML etc. have dedicated managers)
     3. Define a custom __str__ (not the default object.__str__)
     """
-    tp = type(response)
+    # `response` is Any, so `type(response)` is type[Any]; route through `object`
+    # to collapse it to a concrete `type` (no Unknown leaking into the checks).
+    tp = _runtime_type(response)
     if tp in _PASSTHROUGH_TYPES:
         return response
-    if getattr(tp, "__module__", "").startswith("telegrinder"):
+    if tp.__module__.startswith("telegrinder"):
         return response
     if tp.__str__ is not object.__str__:
         return str(response)
@@ -225,13 +281,25 @@ def generate_command_args(request_cls: type) -> tuple[list[ArgumentProto], bool]
     return args, has_greedy
 
 
-def _is_command_without_args(rule: ABCRule) -> bool:
+def _is_command(rule: ABCRule) -> TypeGuard[CommandProto]:
+    """Whether ``rule`` is a telegrinder Command rule.
+
+    `isinstance(rule, _tg_Command)` is the coarse class filter; the structural
+    `_HasNames` check is the real feature-detection (`_tg_Command` may be the
+    ABCRule fallback). A matching rule carries the full Command interface.
+    """
+    return isinstance(rule, _tg_Command) and isinstance(rule, _HasNames)
+
+
+def _is_command_without_args(rule: ABCRule) -> TypeGuard[CommandProto]:
     """Check if rule is a Command without arguments.
 
-    Uses runtime _tg_Command for isinstance check. Separated to avoid
-    pyright narrowing rule to ABCRule (which lacks Command attributes).
+    Runtime: `isinstance(rule, _tg_Command)` is the coarse class filter and the
+    structural `_HasArguments` check confirms it carries the Command interface
+    (this is the real feature-detection — `_tg_Command` may be the ABCRule fallback).
+    A matching rule IS a Command, so we narrow callers to CommandProto.
     """
-    return isinstance(rule, _tg_Command) and not getattr(rule, "arguments", True)
+    return isinstance(rule, _tg_Command) and isinstance(rule, _HasArguments) and not rule.arguments
 
 
 def enhance_command_with_args(
@@ -257,13 +325,13 @@ def enhance_command_with_args(
     # Find Command rule and enhance it
     new_rules: list[ABCRule] = []
     for rule in trigger.rules:
-        # isinstance narrows to ABCRule (static), but at runtime it's Command.
-        # Use _is_command helper + cast via CommandProto for attribute access.
+        # The TypeGuard narrows `rule` to CommandProto, exposing the Command
+        # attributes; _tg_Command_ctor carries the Command constructor signature.
         if _is_command_without_args(rule):
-            cmd: CommandProto = rule  # type: ignore[assignment]  # isinstance verified this is Command at runtime; ABCRule -> CommandProto is safe after isinstance(_tg_Command)
+            cmd = rule
             # Create new Command with generated arguments
             # Use lazy=True if any argument is greedy (captures rest of line)
-            enhanced: ABCRule = _tg_Command(  # type: ignore[call-arg]  # _tg_Command is Protocol at static time; real Command.__init__ accepts these args at runtime
+            enhanced: ABCRule = _tg_Command_ctor(
                 cmd.names,
                 *args,
                 prefixes=cmd.prefixes,
@@ -320,7 +388,7 @@ async def compose_store_key(
 
     # key_node is bare `type` — annotate as type[object] so Composer.compose[T]
     # resolves T=object instead of T=Unknown.
-    typed_key: type[object] = key_node
+    typed_key: type[Any] = key_node
 
     if scope is not None:
         composer = Composer.create(scope, agent_cls)
@@ -341,12 +409,12 @@ async def compose_store_key(
         raise RuntimeError(f"Failed to compose key_node: {key_node.__name__}")
 
 
-def _get_cute_value(compose_type: type, update_cute: object) -> tuple[bool, object]:
+def _get_cute_value(compose_type: type, update_cute: Any) -> tuple[bool, Any]:
     """Extract cute type value from update_cute via incoming_update."""
     if update_cute is None:
         return False, "no update_cute"
 
-    incoming: object = getattr(update_cute, "incoming_update", None)
+    incoming: Any = update_cute.incoming_update if isinstance(update_cute, _HasIncomingUpdate) else None
     if incoming is not None and isinstance(incoming, compose_type):
         return True, incoming
     return False, f"update is {type(update_cute).__name__}, not {compose_type.__name__}"
@@ -359,7 +427,7 @@ async def _compose_node(
     *,
     scope: Scope | None = None,
     scope_layer: ScopeLayer | None = None,
-) -> tuple[bool, object]:
+) -> tuple[bool, Any]:
     """Compose nodnod node with Context and Update injected.
 
     When *scope* is provided, reuses it instead of creating a new one.
@@ -369,7 +437,7 @@ async def _compose_node(
 
     # compose_type is bare `type` — annotate as type[object] so Composer.compose[T]
     # resolves T=object instead of T=Unknown.
-    typed_compose: type[object] = compose_type
+    typed_compose: type[Any] = compose_type
 
     if scope is not None:
         composer = Composer.create(scope, agent_cls)
@@ -391,10 +459,10 @@ async def compose_param(
     compose_type: type,
     agent_cls: type[Agent],
     ctx: Context,
-    update_cute: object,
+    update_cute: Any,
     *,
     scope: Scope | None = None,
-) -> object:
+) -> Any:
     """Compose single __transition__ parameter.
 
     Handles Scope, Context, Cute types, and nodnod nodes.
@@ -434,12 +502,12 @@ async def compose_param(
 
 
 async def try_compose_transition(
-    method: Callable[..., object],
+    method: Callable[..., Any],
     agent_cls: type[Agent],
     ctx: Context,
     *,
     scope: Scope | None = None,
-) -> tuple[dict[str, object], bool]:
+) -> CuteValue:
     """Try to compose params for transition. Returns (composed, all_satisfied).
 
     When *scope* is provided, threads it to compose_param for nodnod
@@ -450,7 +518,7 @@ async def try_compose_transition(
 
     params = get_method_params(method)
     update_cute = ctx.get("update_cute")
-    composed: dict[str, object] = {}
+    composed: StrAnyMap = {}
     all_satisfied = True
 
     for name, (original_type, compose_type) in params.items():
@@ -475,12 +543,12 @@ async def try_compose_transition(
 
 
 async def resolve_transition(
-    transitions: list[Callable[..., object]],
+    transitions: list[Callable[..., Any]],
     agent_cls: type[Agent],
     ctx: Context,
     *,
     scope: Scope | None = None,
-) -> tuple[Callable[..., object], dict[str, object]] | None:
+) -> NodeCompose:
     """Resolve first transition whose deps are satisfiable.
 
     When *scope* is provided, threads it through to transitions.
@@ -523,7 +591,7 @@ def wrap_rrc_telegrinder(
 ) -> TelegrindRoute:
     """Wrap RRC handler for telegrinder. Pure codec adapter."""
 
-    async def _handler(ctx: Context) -> object:
+    async def _handler(ctx: Context) -> Any:
         def inject_scope(scope: Scope) -> None:
             _inject_tg_context(scope, ctx)
 
@@ -546,7 +614,7 @@ def wrap_rrc_telegrinder(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class HasActiveFlowState(_tg_ABCRule):  # type: ignore[misc]  # _tg_ABCRule is Protocol at static time, real telegrinder ABCRule at runtime; unavoidable mismatch for subclassing
+class HasActiveFlowState(_tg_ABCRule):
     """Rule that matches if user has active flow state."""
 
     def __init__(
@@ -602,7 +670,7 @@ def wrap_stateful_telegrinder(
     agent_cls = codec.agent_cls
     transitions = get_transitions(codec.flow)
 
-    async def _handler(ctx: Context) -> object:
+    async def _handler(ctx: Context) -> Any:
         # Single scope for the entire handler — no duplicates.
         # Transitions that declare ``scope: Scope`` receive this scope,
         # and nodnod node composition reuses it instead of creating ad-hoc ones.
@@ -619,7 +687,7 @@ def wrap_stateful_telegrinder(
             def inject_done_scope(done_scope: Scope) -> None:
                 _inject_tg_context(done_scope, ctx)
 
-            async def _resolve() -> tuple[Callable[..., object], dict[str, object]] | None:
+            async def _resolve() -> NodeCompose:
                 return await resolve_transition(
                     transitions, agent_cls, ctx, scope=scope,
                 )
@@ -653,7 +721,7 @@ def wrap_immediate_telegrinder(
 ) -> TelegrindRoute:
     """Wrap Immediate codecs for telegrinder."""
 
-    async def _handler(ctx: Context) -> object:
+    async def _handler(ctx: Context) -> Any:
         return execute_immediate_unified(handler, format_response=_format_tg_response)
 
     return TelegrindRoute(handler=_handler, rules=tuple(trigger.rules))
@@ -676,7 +744,7 @@ def wrap_delegate_telegrinder(
     """Wrap DelegateCodec handler for telegrinder. Pure codec adapter."""
     from emergent.wire.compile._execute import execute_delegate_unified
 
-    async def _handler(ctx: Context) -> object:
+    async def _handler(ctx: Context) -> Any:
         def inject_scope(scope: Scope) -> None:
             _inject_tg_context(scope, ctx)
 
@@ -705,7 +773,7 @@ def register_handler(
 
     Reads ONLY from TelegrindRoute — zero codec sniffing.
     """
-    view: Callable[..., Callable[..., object]] = getattr(dp, trigger.view)
+    view: Callable[..., Callable[..., Any]] = getattr(dp, trigger.view)
     view(*route.rules)(route.handler)
 
 
@@ -861,8 +929,13 @@ def telegrinder_compile(
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
-        dp._scope_app = app_scope  # type: ignore[attr-defined]  # telegrinder Dispatch has dynamic attrs for scope; no Protocol field possible
-        dp._scope_app_types = family.types_for(App)  # type: ignore[attr-defined]  # same — dynamic attrs on Dispatch
+        # Stash the app-scope state on the dispatch for the runtime lifespan to read.
+        # telegrinder's Dispatch is a third-party object the compat Protocol can't
+        # declare extra attributes on, so we write through its __dict__ (same erasure
+        # pattern as _ns_get for argparse) instead of dynamic attribute assignment.
+        dispatch_state = vars(dp)
+        dispatch_state["_scope_app"] = app_scope
+        dispatch_state["_scope_app_types"] = family.types_for(App)
 
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(dp, trigger, handler, route)
@@ -897,10 +970,9 @@ def extract_command_info[C](
 
     cmd_rule: CommandProto | None = None
     for rule in trigger.rules:
-        # _tg_Command is bare `type` at static time — isinstance narrows to ABCRule,
-        # not CommandProto. Runtime Command satisfies CommandProto structurally.
-        if isinstance(rule, _tg_Command) and hasattr(rule, "names"):
-            cmd_rule = rule  # type: ignore[assignment]  # ABCRule ≠ CommandProto statically
+        # _is_command narrows to CommandProto via the structural _HasNames check.
+        if _is_command(rule):
+            cmd_rule = rule
             break
 
     if cmd_rule is None:

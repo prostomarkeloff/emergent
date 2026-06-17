@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, TypeGuard
 
 from sqlalchemy import (
     delete,
@@ -61,7 +61,6 @@ from emergent.wire.compile.targets.sqlalchemy import (
 from emergent.wire.axis.query._expr import Expr
 
 if TYPE_CHECKING:
-    from sqlalchemy.engine import CursorResult
     from sqlalchemy.sql.elements import ColumnElement
 
 
@@ -176,22 +175,32 @@ class BoundSQLAlchemyStore[T]:
         return name
 
     @staticmethod
-    def _as_where(clause: object) -> ColumnElement[bool]:
-        """Convert compile_expr result (typed as object) to SA ColumnElement[bool].
+    def _is_bool_column(clause: Any) -> TypeGuard[ColumnElement[bool]]:
+        """TypeGuard: a SQL WHERE clause is a boolean ColumnElement.
 
-        compile_expr returns `object` to avoid coupling the compilation module to SA.
-        At runtime this is always a ColumnElement[bool] — safe to narrow via isinstance.
+        SQLAlchemy parametrizes boolean predicates as ColumnElement[bool]; the
+        runtime class is just ColumnElement, so the isinstance check carries the
+        static [bool] contract without a cast.
         """
         from sqlalchemy.sql.elements import ColumnElement as CE
 
-        if not isinstance(clause, CE):
+        return isinstance(clause, CE)
+
+    @classmethod
+    def _as_where(cls, clause: Any) -> ColumnElement[bool]:
+        """Convert compile_expr result (typed as object) to SA ColumnElement[bool].
+
+        compile_expr returns `object` to avoid coupling the compilation module to SA.
+        At runtime this is always a ColumnElement[bool] — safe to narrow via TypeGuard.
+        """
+        if not cls._is_bool_column(clause):
             msg = f"Expected ColumnElement, got {type(clause)}"
             raise TypeError(msg)
-        return clause  # type: ignore[return-value]  # ColumnElement → ColumnElement[bool]: isinstance narrows to raw ColumnElement, not generic form
+        return clause
 
     # ─── KV Operations ────────────────────────────────────────────────────────
 
-    async def get(self, key: object) -> Result[Option[T], StorageError]:
+    async def get(self, key: Any) -> Result[Option[T], StorageError]:
         """Get entity by primary key."""
         try:
             id_field = self._identity_field_name()
@@ -220,7 +229,7 @@ class BoundSQLAlchemyStore[T]:
         except Exception as e:
             return Error(StorageError(f"Failed to set: {e}", e))
 
-    async def delete(self, key: object) -> Result[bool, StorageError]:
+    async def delete(self, key: Any) -> Result[bool, StorageError]:
         """Delete entity by primary key. Returns True if existed."""
         try:
             id_field = self._identity_field_name()
@@ -239,7 +248,7 @@ class BoundSQLAlchemyStore[T]:
         except Exception as e:
             return Error(StorageError(f"Failed to delete: {e}", e))
 
-    async def exists(self, key: object) -> Result[bool, StorageError]:
+    async def exists(self, key: Any) -> Result[bool, StorageError]:
         """Check if entity exists by primary key."""
         try:
             id_field = self._identity_field_name()
@@ -324,9 +333,16 @@ class BoundSQLAlchemyStore[T]:
             expr = build_expr(self._compiled.entity, predicate)
             where_clause = self._as_where(compile_expr(expr, self._compiled))
 
+            from sqlalchemy.engine import CursorResult as _CursorResult
+
             stmt = delete(self._compiled.model).where(where_clause)
-            cursor: CursorResult[tuple[object, ...]] = await self._session.execute(stmt)  # type: ignore[assignment]
-            return Ok(cursor.rowcount)
+            # AsyncSession.execute is typed to return the base Result; a DELETE
+            # always yields a CursorResult (which carries .rowcount) — narrow it.
+            executed = await self._session.execute(stmt)
+            if not isinstance(executed, _CursorResult):
+                msg = f"Expected CursorResult from DELETE, got {type(executed)}"
+                raise TypeError(msg)
+            return Ok(executed.rowcount)
 
         except Exception as e:
             return Error(StorageError(f"Failed to delete_where: {e}", e))

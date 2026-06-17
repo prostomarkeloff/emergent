@@ -24,6 +24,10 @@ from typing import Sequence
 
 import pytest
 
+# These tests reload modules and mutate sys.modules; isolate so they can't leak
+# into siblings (a popped module would break a later importlib.reload).
+pytestmark = pytest.mark.usefixtures("isolate_sys_modules")
+
 
 @contextmanager
 def _hide_packages(package_names: Sequence[str]) -> Iterator[None]:

@@ -25,7 +25,7 @@ class PickleCodec(Generic[T]):
         return pickle.dumps(value)
 
     def decode(self, data: bytes) -> T:
-        return pickle.loads(data)  # type: ignore[return-value]
+        return pickle.loads(data)
 
 
 class JsonCodec(Generic[T]):
@@ -39,7 +39,7 @@ class JsonCodec(Generic[T]):
         return json.dumps(value).encode("utf-8")
 
     def decode(self, data: bytes) -> T:
-        return json.loads(data.decode("utf-8"))  # type: ignore[return-value]
+        return json.loads(data.decode("utf-8"))
 
 
 class IdentityCodec:

@@ -27,6 +27,9 @@ from emergent.wire.axis.schema._universal import (
     get_schema_meta,
 )
 
+type ExplainDict = dict[str, Any]
+type DialectBases = Mapping[str, type[SchemaAxisCapability]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -54,9 +57,9 @@ def _cap_repr(cap: SchemaAxisCapability) -> str:
     return name
 
 
-def _cap_dict(cap: SchemaAxisCapability) -> dict[str, Any]:
+def _cap_dict(cap: SchemaAxisCapability) -> ExplainDict:
     """Capability → structured dict."""
-    d: dict[str, Any] = {"type": type(cap).__name__}
+    d: ExplainDict = {"type": type(cap).__name__}
     if dataclasses.is_dataclass(cap) and not isinstance(cap, type):
         for f in dataclasses.fields(cap):
             val = getattr(cap, f.name)
@@ -69,7 +72,7 @@ def _cap_dict(cap: SchemaAxisCapability) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _build_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
+def _build_dialect_bases() -> DialectBases:
     """Lazy-build dialect bases to avoid import errors for optional deps."""
     from emergent.wire.axis.schema.dialects.cli import CLICapability
     from emergent.wire.axis.schema.dialects.openapi import OpenAPICapability
@@ -92,10 +95,10 @@ def _build_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
     }
 
 
-_dialect_bases_cache: Mapping[str, type[SchemaAxisCapability]] | None = None
+_dialect_bases_cache: DialectBases | None = None
 
 
-def _get_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
+def _get_dialect_bases() -> DialectBases:
     global _dialect_bases_cache
     if _dialect_bases_cache is None:
         _dialect_bases_cache = _build_dialect_bases()
@@ -109,8 +112,8 @@ def _get_dialect_bases() -> Mapping[str, type[SchemaAxisCapability]]:
 
 def field_info_dict(
     info: FieldInfo,
-    dialects: Mapping[str, type[SchemaAxisCapability]] | None = None,
-) -> dict[str, Any]:
+    dialects: DialectBases | None = None,
+) -> ExplainDict:
     """One field's schema info as structured dict.
 
     Args:
@@ -123,7 +126,7 @@ def field_info_dict(
     if dialects is None:
         dialects = _get_dialect_bases()
 
-    d: dict[str, Any] = {
+    d: ExplainDict = {
         "name": info.name,
         "type": info.base_type.__name__,
         "optional": info.is_optional,
@@ -146,8 +149,8 @@ def field_info_dict(
 
 def schema_dict(
     cls: type,
-    dialects: Mapping[str, type[SchemaAxisCapability]] | None = None,
-) -> dict[str, Any]:
+    dialects: DialectBases | None = None,
+) -> ExplainDict:
     """Full schema type as structured dict.
 
     Args:
@@ -169,7 +172,7 @@ def schema_dict(
     fields = inspect_type(cls)
     meta = get_schema_meta(cls)
 
-    d: dict[str, Any] = {"name": cls.__name__}
+    d: ExplainDict = {"name": cls.__name__}
 
     if meta:
         d["meta"] = [_cap_dict(c) for c in meta]
@@ -186,7 +189,7 @@ def schema_dict(
 
 def explain_schema(
     cls: type,
-    dialects: Mapping[str, type[SchemaAxisCapability]] | None = None,
+    dialects: DialectBases | None = None,
 ) -> str:
     """Human-readable explanation of a schema type. Formats from schema_dict().
 
@@ -209,7 +212,7 @@ def explain_schema(
 def explain_field(
     cls: type,
     field_name: str,
-    dialects: Mapping[str, type[SchemaAxisCapability]] | None = None,
+    dialects: DialectBases | None = None,
 ) -> str:
     """Human-readable explanation of a single field. Formats from field_info_dict().
 
@@ -236,7 +239,7 @@ def explain_field(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _format_cap_short(cap_dict: dict[str, Any]) -> str:
+def _format_cap_short(cap_dict: ExplainDict) -> str:
     """Format a capability dict as short human-readable string."""
     name = cap_dict["type"]
     fields = {k: v for k, v in cap_dict.items() if k != "type"}
@@ -246,7 +249,7 @@ def _format_cap_short(cap_dict: dict[str, Any]) -> str:
     return f"{name}({parts})"
 
 
-def _format_schema(data: dict[str, Any]) -> str:
+def _format_schema(data: ExplainDict) -> str:
     lines: list[str] = [f"=== {data['name']} ==="]
 
     # Schema-level meta
@@ -263,7 +266,7 @@ def _format_schema(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_field(fd: dict[str, Any]) -> str:
+def _format_field(fd: ExplainDict) -> str:
     lines: list[str] = []
 
     # Header: name (type) with optional/default markers

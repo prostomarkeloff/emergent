@@ -13,6 +13,8 @@ from nodnod import Scope, Value
 
 from emergent.graph._compose import Composer
 
+type InjectedMap = dict[type[Any], Any]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TypedScope
@@ -26,7 +28,7 @@ class TypedScope:
 
     def __init__(self, scope: Scope | None = None, detail: str = "scope") -> None:
         self._scope = scope if scope is not None else Scope(detail=detail)
-        self._injected: dict[type[Any], Any] = {}
+        self._injected: InjectedMap = {}
 
     @property
     def inner(self) -> Scope:
@@ -37,7 +39,7 @@ class TypedScope:
         self._injected[typ] = value
         return self
 
-    def all_injected(self) -> dict[type[Any], Any]:
+    def all_injected(self) -> InjectedMap:
         """Return all injected values."""
         return self._injected
 
@@ -94,7 +96,7 @@ class Run[T]:
     _target: type[T]
     _injections: tuple[tuple[type[Any], Any], ...]
 
-    def inject(self, value: object) -> Run[T]:
+    def inject(self, value: Any) -> Run[T]:
         """
         Inject a value. Type is inferred from runtime type.
 
@@ -118,7 +120,7 @@ class Run[T]:
             _injections=(*self._injections, typed_tuple),
         )
 
-    def given(self, *values: object) -> Run[T]:
+    def given(self, *values: Any) -> Run[T]:
         """
         Inject multiple values at once.
 
@@ -163,7 +165,7 @@ def run[T](target: type[T]) -> Run[T]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-async def compose[T](target: type[T], *inputs: object) -> T:
+async def compose[T](target: type[T], *inputs: Any) -> T:
     """
     One-shot composition. Shortest API.
 

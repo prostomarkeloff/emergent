@@ -13,7 +13,7 @@ inspectable frozen data. No traversal of Step tuples needed.
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
@@ -31,8 +31,23 @@ type ExplainDict = dict[str, ExplainValue]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def trigger_dict(trigger: object) -> ExplainDict:
-    """Trigger -> explain dict."""
+def _scalar_fields(instance: Any) -> ExplainDict:
+    """Extract scalar (str/int/float/bool/None) fields from a dataclass instance.
+
+    Uses dataclasses.asdict() which is typed; non-scalar fields (nested
+    dataclasses, lists, dicts) are filtered out by the isinstance check.
+    """
+    if not dataclasses.is_dataclass(instance) or isinstance(instance, type):
+        return {}
+    out: ExplainDict = {}
+    for name, val in dataclasses.asdict(instance).items():
+        if isinstance(val, str | int | float | bool | None):
+            out[name] = val
+    return out
+
+
+def trigger_dict(trigger: Any) -> ExplainDict:
+    """Trigger -> explain dict. Open-world: any user dialect trigger dispatches by isinstance."""
     if isinstance(trigger, HTTPRouteTrigger):
         return {"type": "http", "method": trigger.method, "path": trigger.path}
     if isinstance(trigger, CLITrigger):
@@ -40,30 +55,22 @@ def trigger_dict(trigger: object) -> ExplainDict:
     return {"type": type(trigger).__name__}
 
 
-def effect_dict(effect: object) -> ExplainDict:
-    """Effect -> explain dict."""
+def effect_dict(effect: Any) -> ExplainDict:
+    """Effect -> explain dict. DerivationEffect is an open union, reflected via dataclass fields."""
     d: ExplainDict = {"type": type(effect).__name__}
-    if dataclasses.is_dataclass(effect):
-        for f in dataclasses.fields(effect):
-            val = getattr(effect, f.name)
-            if isinstance(val, str | int | float | bool | None):
-                d[f.name] = val
+    d.update(_scalar_fields(effect))
     return d
 
 
-def capability_dict(cap: object) -> ExplainDict:
-    """Capability -> explain dict."""
+def capability_dict(cap: Any) -> ExplainDict:
+    """Capability -> explain dict. Capability is open, same reflection pattern as effect_dict."""
     d: ExplainDict = {"type": type(cap).__name__}
-    if dataclasses.is_dataclass(cap):
-        for f in dataclasses.fields(cap):
-            val = getattr(cap, f.name)
-            if isinstance(val, str | int | float | bool | None):
-                d[f.name] = val
+    d.update(_scalar_fields(cap))
     return d
 
 
-def _handler_info(template: object) -> ExplainValue:
-    """Handler template -> explain value (str or dict with steps)."""
+def _handler_info(template: Any) -> ExplainValue:
+    """Handler template -> explain value. Open union dispatch by isinstance."""
     from emergent.wire.derive._handler import WrappedTemplate
     from emergent.wire.derive._pipeline import Pipeline
 
@@ -115,7 +122,7 @@ def derive_dict[T](ctx: DeriveCtx[T]) -> ExplainDict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _trigger_short(trigger: object) -> str:
+def _trigger_short(trigger: Any) -> str:
     if isinstance(trigger, HTTPRouteTrigger):
         return f"{trigger.method} {trigger.path}"
     if isinstance(trigger, CLITrigger):
@@ -123,7 +130,7 @@ def _trigger_short(trigger: object) -> str:
     return type(trigger).__name__
 
 
-def _effects_short(effects: tuple[object, ...]) -> str:
+def _effects_short(effects: tuple[Any, ...]) -> str:
     if not effects:
         return ""
     names = [type(e).__name__ for e in effects]

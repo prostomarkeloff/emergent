@@ -25,9 +25,13 @@ from emergent.wire.derive._materialize import materialize
 from emergent.wire.derive._metadata import DerivedMetadata
 from emergent.wire.derive._project import (
     ComposedResponseSpec,
+    CustomResponse,
+    EnvelopeResponse,
     ResponseConverterProto,
     ResponseProjection,
     composed_response,
+    custom_response,
+    envelope_response,
 )
 from emergent.wire.derive._protocols import (
     DeriveAugmentable,
@@ -72,7 +76,7 @@ from emergent.wire.derive._trigger import (
 
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.axis.schema._universal import SchemaCapability
 
@@ -152,7 +156,7 @@ def build_application_from_decorated(*entities: type) -> Application:
 
     endpoints: list[Endpoint] = []
     for entity in entities:
-        derive_ctxs: list[DeriveCtx[object]] = compile_derive(entity)
+        derive_ctxs: list[DeriveCtx[Any]] = compile_derive(entity)
         for ctx in derive_ctxs:
             endpoints.append(materialize(ctx))
     app = application()
@@ -202,7 +206,11 @@ __all__ = (
     "ResponseProjection",
     "ResponseConverterProto",
     "ComposedResponseSpec",
+    "CustomResponse",
+    "EnvelopeResponse",
     "composed_response",
+    "custom_response",
+    "envelope_response",
     # Pipeline
     "Pipeline",
     "PipelineStep",

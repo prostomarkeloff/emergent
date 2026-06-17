@@ -17,6 +17,8 @@
 Requires: sqlalchemy[asyncio]
 """
 
+
+from typing import Any
 try:
     from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
         # Model compiler
@@ -54,14 +56,14 @@ try:
 except ImportError as e:
     _msg = f"sqlalchemy is required for SQLAlchemy storage: {e}"
 
-    def _raise_import_error(*_args: object, **_kwargs: object) -> None:
+    def _raise_import_error(*_args: Any, **_kwargs: Any) -> None:
         raise ImportError(_msg)
 
     # Stubs that raise on use
-    compile_model = _raise_import_error  # type: ignore[assignment]
-    compile_expr = _raise_import_error  # type: ignore[assignment]
-    entity_to_model = _raise_import_error  # type: ignore[assignment]
-    model_to_entity = _raise_import_error  # type: ignore[assignment]
-    sqlalchemy = _raise_import_error  # type: ignore[assignment]
+    compile_model = _raise_import_error
+    compile_expr = _raise_import_error
+    entity_to_model = _raise_import_error
+    model_to_entity = _raise_import_error
+    sqlalchemy = _raise_import_error
 
     __all__ = ("sqlalchemy",)

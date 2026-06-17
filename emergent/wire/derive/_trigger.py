@@ -28,8 +28,9 @@ class TriggerGen(Protocol):
 # Route spec: (method, suffix)
 # True -> "/{id}" (auto from Identity fields), False -> "" (no suffix), str -> literal
 type RouteSpec = tuple[Method, bool | str]
+type RouteMap = dict[str, RouteSpec]
 
-DEFAULT_REST_ROUTES: dict[str, RouteSpec] = {
+DEFAULT_REST_ROUTES: RouteMap = {
     "List": ("GET", False),
     "Get": ("GET", True),
     "Create": ("POST", False),
@@ -52,7 +53,7 @@ class HTTPTriggers:
     """
 
     base_path: str
-    routes: dict[str, RouteSpec] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
+    routes: RouteMap = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
 
     def __call__(self, entity: type, op: Op) -> Trigger:
         path = self.base_path.rstrip("/")
@@ -89,7 +90,7 @@ class NestedHTTPTriggers:
     parent_path: str
     scope_fields: tuple[str, ...]
     child_segment: str
-    routes: dict[str, RouteSpec] = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
+    routes: RouteMap = field(default_factory=lambda: dict(DEFAULT_REST_ROUTES))
 
     def __call__(self, entity: type, op: Op) -> Trigger:
         prefix = self.parent_path.rstrip("/")

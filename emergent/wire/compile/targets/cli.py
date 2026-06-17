@@ -16,9 +16,24 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import types
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
+
+type StrAnyMap = dict[str, Any]
+
+
+def _ns_get(ns: argparse.Namespace | None, name: str) -> Any:
+    """Read an argparse.Namespace attribute by name, returning None if absent.
+
+    Centralises the type erasure: argparse populates Namespace dynamically,
+    so pyright has no way to type the attributes — vars() returns dict[str, Any]
+    which gets widened to Unknown under strict mode. We narrow once here.
+    """
+    if ns is None:
+        return None
+    return vars(ns).get(name)
 
 from nodnod import Scope
 from nodnod.agent.base import Agent
@@ -36,7 +51,11 @@ from emergent.wire.axis.surface.codecs.resolve import get_method_params, TypeFor
 from emergent.wire.axis.surface.triggers.cli import CLITrigger
 
 from emergent.wire.compile._core import Axes, fold
-from emergent.wire.compile._target import CodecBinding, TargetCompiler
+from emergent.wire.compile._target import (
+    CodecBinding,
+    TargetCompiler,
+    wrap_for_stack as _wrap_for_stack,
+)
 from emergent.wire.compile._capabilities import apply_response_capabilities
 from emergent.wire.compile._execute import execute_rrc_unified, execute_immediate_unified
 from emergent.wire.compile._stateful import execute_stateful_turn, execute_stateful_done
@@ -98,15 +117,15 @@ class CLIRoute:
 async def _rrc_execute_cli(
     handler: Handler[RequestResponseCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """RRC execution for CLI."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else None
     return await execute_rrc_unified(
         handler=handler,
         axes=Axes.default(),
-        get_value=get_value or (lambda name: getattr(ns, name, None) if ns else None),
+        get_value=get_value or (lambda name: _ns_get(ns, name)),
         inject_scope=lambda s: s.inject(argparse.Namespace, ns) if ns else None,
         target="cli",
     )
@@ -115,8 +134,8 @@ async def _rrc_execute_cli(
 async def _stateful_execute_cli(
     handler: Handler[StatefulCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Stateful execution for CLI (interactive)."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
@@ -135,7 +154,7 @@ async def _stateful_execute_cli(
         inner_scope = scope.create_child("cli-stateful")
         async with inner_scope:
             inner_scope.inject(argparse.Namespace, ns)
-            composed: dict[str, Any] = {}
+            composed: StrAnyMap = {}
             for name, (orig, comp) in params.items():
                 composed[name] = await _compose_cli_param(
                     name, orig, comp, cli_args, inner_scope, EventLoopAgent
@@ -164,8 +183,8 @@ async def _stateful_execute_cli(
 async def _immediate_execute_cli(
     handler: Handler[Any],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Immediate execution for CLI."""
     return str(execute_immediate_unified(handler))
 
@@ -173,8 +192,8 @@ async def _immediate_execute_cli(
 async def _delegate_execute_cli(
     handler: Handler[DelegateCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Delegate execution for CLI."""
     ns_wrapper = scope.get(argparse.Namespace)
     ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
@@ -183,7 +202,7 @@ async def _delegate_execute_cli(
     args = _build_delegate_args(delegate_handler, ns)
 
     result = delegate_handler(**args)
-    if hasattr(result, "__await__"):
+    if inspect.isawaitable(result):
         result = await result
 
     result = apply_response_capabilities(result, handler.capabilities)
@@ -216,7 +235,7 @@ async def _compose_cli_param(
     name: str,
     original_type: TypeForm,
     compose_type: type,
-    cli_args: dict[str, Any],
+    cli_args: StrAnyMap,
     scope: Scope,
     agent_cls: type[Agent],
 ) -> Any:
@@ -228,9 +247,10 @@ async def _compose_cli_param(
 
     if is_node:
         composer = Composer.create(scope, agent_cls)
-        # compose_type is bare `type` (no parameter), so compose returns Unknown;
-        # we widen to object | str which is all wrap() needs
-        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # unparameterized type
+        # compose_type is a bare `type` (no type parameter), so Composer.compose's
+        # generic T resolves to Unknown; the composed value is genuinely runtime-typed,
+        # so we pin the concrete tuple shape (Any payload) to stop the Unknown leaking.
+        compose_result: tuple[bool, Any] = await composer.compose(
             compose_type,
         )
         success, value = compose_result
@@ -283,7 +303,7 @@ def _get_delegate_arg_specs(handler: Any, axes: Axes) -> list[ArgSpec]:
             specs.extend(to_argparse_args(param_type, axes))
         except TypeError:
             cli_name = f"--{name.replace('_', '-')}"
-            kwargs: dict[str, Any] = {}
+            kwargs: StrAnyMap = {}
 
             if param_type in (str, int, float):
                 kwargs["type"] = param_type
@@ -302,24 +322,24 @@ def _get_delegate_arg_specs(handler: Any, axes: Axes) -> list[ArgSpec]:
     return specs
 
 
-def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> dict[str, Any]:
+def _build_delegate_args(handler: Any, ns: argparse.Namespace) -> StrAnyMap:
     """Build handler arguments from parsed namespace."""
     from emergent.wire.axis.schema._inspect import inspect_dataclass
 
-    result: dict[str, Any] = {}
+    result: StrAnyMap = {}
     params = _inspect_handler_params(handler)
 
     for name, param_type, _has_default in params:
         try:
             fields = inspect_dataclass(param_type)
             kwargs = {
-                field_name: getattr(ns, field_name, None)
+                field_name: _ns_get(ns, field_name)
                 for field_name in fields
-                if getattr(ns, field_name, None) is not None
+                if _ns_get(ns, field_name) is not None
             }
             result[name] = param_type(**kwargs)
         except TypeError:
-            value = getattr(ns, name, None)
+            value = _ns_get(ns, name)
             if value is not None:
                 result[name] = value
 
@@ -401,7 +421,7 @@ def assemble_cli_route(
         scope = layer.parent.create_child("cli") if layer else Scope()
         async with scope:
             scope.inject(argparse.Namespace, ns)
-            get_value: Callable[[str], object] = lambda name: getattr(ns, name, None)
+            get_value: Callable[[str], Any] = lambda name: _ns_get(ns, name)
             result = await execute_fn(handler, scope, get_value)
         return str(result) if result is not None else ""
 
@@ -470,6 +490,31 @@ CLI_COMPILER: TargetCompiler[CLITrigger] = TargetCompiler(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+class _ScopedArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that carries the optional app-scope state for cli_run.
+
+    When compiled with a ``family``, the app-level scope and its provided types
+    are stashed on the parser so ``cli_run`` can open an app-scope lifespan.
+    Declaring them as typed attributes (with absent-by-default sentinels) keeps
+    the read/write paths type-safe — no dynamic attribute assignment. The public
+    accessors let cli_compile/cli_run cross the module boundary without tripping
+    the protected-member check while keeping the ``_scope_app`` attribute names.
+    """
+
+    _scope_app: Scope | None = None
+    _scope_app_types: frozenset[type] = frozenset()
+
+    def set_app_scope(self, scope: Scope, types: frozenset[type]) -> None:
+        self._scope_app = scope
+        self._scope_app_types = types
+
+    def app_scope(self) -> Scope | None:
+        return self._scope_app
+
+    def app_scope_types(self) -> frozenset[type]:
+        return self._scope_app_types
+
+
 def cli_compile(
     app: Application,
     axes: Axes | None = None,
@@ -482,7 +527,7 @@ def cli_compile(
     _compiler = compiler or CLI_COMPILER
     request_axes = base_axes
 
-    parser = argparse.ArgumentParser(prog=prog)
+    parser = _ScopedArgumentParser(prog=prog)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     if family is not None:
@@ -495,34 +540,12 @@ def cli_compile(
             leaf=Request,
         )
         request_axes = base_axes.with_scope_layer(layer)
-        parser._scope_app = app_scope  # type: ignore[attr-defined]
-        parser._scope_app_types = family.types_for(App)  # type: ignore[attr-defined]
+        parser.set_app_scope(app_scope, family.types_for(App))
 
     for trigger, handler, route in _compiler.scan_and_wrap(app, request_axes):
         register_handler(subparsers, trigger, handler, route, request_axes)
 
     return parser
-
-
-def _wrap_for_stack(
-    handler: Handler[Any],
-    trigger: CLITrigger,
-    axes: Axes,
-    compiler: TargetCompiler[CLITrigger],
-) -> CLIRoute:
-    """Find the right binding and wrap handler for stack compilation."""
-    if compiler.assemble is None:
-        raise ValueError("Compiler has no assemble function")
-    for binding in compiler.bindings:
-        if isinstance(handler.codec, binding.codec_type):
-            ctx = binding.from_codec(handler.codec, trigger)
-            ctx = fold(
-                handler.capabilities, ctx,
-                compiler.pipeline_protocol, compiler.pipeline_method,
-                trace=axes.trace,
-            )
-            return compiler.assemble(ctx, handler, axes)
-    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 def cli_compile_stack(
@@ -572,14 +595,20 @@ def cli_run(parser: argparse.ArgumentParser, args: list[str] | None = None) -> i
     import sys
 
     parsed = parser.parse_args(args)
-    handler = getattr(parsed, "_handler", None)
+    handler = _ns_get(parsed, "_handler")
 
     if handler is None:
         parser.print_help()
         return 1
 
-    app_scope: Scope | None = getattr(parser, "_scope_app", None)
-    app_types: frozenset[type] = getattr(parser, "_scope_app_types", frozenset[type]())
+    # Scope state is present only on parsers built by cli_compile/_stack (the
+    # subclass); a plain ArgumentParser (e.g. caller-supplied) has no app scope.
+    if isinstance(parser, _ScopedArgumentParser):
+        app_scope: Scope | None = parser.app_scope()
+        app_types: frozenset[type] = parser.app_scope_types()
+    else:
+        app_scope = None
+        app_types = frozenset()
 
     async def _run() -> str:
         if app_scope is not None:
@@ -631,13 +660,13 @@ def typed_rrc_from_codec_cli(
     async def _typed_execute(
         handler: Handler[RequestResponseCodec],
         scope: Scope,
-        get_value: Callable[[str], object] | None,
-    ) -> object:
+        get_value: Callable[[str], Any] | None,
+    ) -> Any:
         ns_wrapper = scope.get(argparse.Namespace)
         ns = ns_wrapper.value if ns_wrapper is not None else argparse.Namespace()
         typed_get = coerce_cli_values(
             codec.request, Axes.default(),
-            get_value or (lambda name: getattr(ns, name, None)),
+            get_value or (lambda name: _ns_get(ns, name)),
         )
         return await execute_rrc_unified(
             handler=handler,

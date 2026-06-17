@@ -59,6 +59,11 @@ from typing import (
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 
+def is_tuple(value: Any) -> TypeGuard[tuple[Any, ...]]:
+    """TypeGuard: narrow a value to tuple[Any, ...] (annotation patterns)."""
+    return isinstance(value, tuple)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Type Alias
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -66,6 +71,13 @@ from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 # Inspector: pure function that inspects a type, returns None if can't handle
 type Inspector = Callable[[type], dict[str, FieldInfo] | None]
+
+# Mapping aliases (avoid inline dict[...] annotations)
+type FieldMap = dict[str, "FieldInfo"]
+type FieldMapOpt = dict[str, "FieldInfo"] | None
+type StrAnyMap = dict[str, Any]
+type StrObjectMap = dict[str, object]
+type StrTypeMap = dict[str, type]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -182,8 +194,10 @@ def with_field_capability[T](cls: type[T], field_name: str, *caps: Any) -> type[
 
         ReloadSA = with_field_capability(Reload, "capabilities", PickleCoerce)
     """
-    from dataclasses import fields as dc_fields, make_dataclass, MISSING
+    from dataclasses import fields as dc_fields, is_dataclass, make_dataclass, MISSING
 
+    if not is_dataclass(cls):
+        raise TypeError(f"{cls.__name__} is not a dataclass")
     if field_name not in cls.__annotations__:
         raise ValueError(f"{cls.__name__} has no field {field_name!r}")
 
@@ -216,7 +230,7 @@ def unwrap_annotated(type_hint: Any) -> tuple[Any, list[Any]]:
     return type_hint, []
 
 
-def _to_capability(ann: object) -> SchemaAxisCapability | None:
+def _to_capability(ann: Any) -> SchemaAxisCapability | None:
     """Convert annotation to capability instance.
 
     Supports both:
@@ -231,13 +245,8 @@ def _to_capability(ann: object) -> SchemaAxisCapability | None:
     return None
 
 
-def _is_tuple(ann: object) -> TypeGuard[tuple[object, ...]]:
-    """Check if annotation is a tuple (pattern of capabilities)."""
-    return isinstance(ann, tuple)
-
-
 def _extract_from_pattern(
-    pattern: tuple[object, ...], out: list[SchemaAxisCapability]
+    pattern: tuple[Any, ...], out: list[SchemaAxisCapability]
 ) -> None:
     """Extract capabilities from a pattern tuple into the output list."""
     for item in pattern:
@@ -246,7 +255,7 @@ def _extract_from_pattern(
             out.append(cap)
 
 
-def extract_capabilities(annotations: Sequence[object]) -> tuple[SchemaAxisCapability, ...]:
+def extract_capabilities(annotations: Sequence[Any]) -> tuple[SchemaAxisCapability, ...]:
     """Extract SchemaAxisCapability instances from annotations.
 
     Supports both class and instance forms:
@@ -260,7 +269,7 @@ def extract_capabilities(annotations: Sequence[object]) -> tuple[SchemaAxisCapab
         cap = _to_capability(ann)
         if cap is not None:
             capabilities.append(cap)
-        elif _is_tuple(ann):
+        elif is_tuple(ann):
             # Pattern — tuple of capabilities
             _extract_from_pattern(ann, capabilities)
 
@@ -309,7 +318,7 @@ def inspect_field(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def first_match(*inspectors: Inspector) -> Callable[[type], dict[str, FieldInfo]]:
+def first_match(*inspectors: Inspector) -> Callable[[type], FieldMap]:
     """Compose inspectors — first non-None result wins.
 
     Pure combinator. Creates a new function from inspector functions.
@@ -335,7 +344,7 @@ def first_match(*inspectors: Inspector) -> Callable[[type], dict[str, FieldInfo]
         )
     """
 
-    def combined(cls: type) -> dict[str, FieldInfo]:
+    def combined(cls: type) -> FieldMap:
         for inspector in inspectors:
             result = inspector(cls)
             if result is not None:
@@ -353,13 +362,13 @@ def first_match(*inspectors: Inspector) -> Callable[[type], dict[str, FieldInfo]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def dataclass_inspector(cls: type) -> dict[str, FieldInfo] | None:
+def dataclass_inspector(cls: type) -> FieldMapOpt:
     """Inspect standard dataclass. Returns None if not a dataclass."""
     if not dataclasses.is_dataclass(cls):
         return None
 
     hints = get_type_hints(cls, include_extras=True)
-    result: dict[str, FieldInfo] = {}
+    result: FieldMap = {}
 
     for field in dataclasses.fields(cls):
         type_hint = hints.get(field.name, field.type)
@@ -379,13 +388,13 @@ def dataclass_inspector(cls: type) -> dict[str, FieldInfo] | None:
     return result
 
 
-def pydantic_inspector(cls: type) -> dict[str, FieldInfo] | None:
+def pydantic_inspector(cls: type) -> FieldMapOpt:
     """Inspect Pydantic v2 model. Returns None if not a Pydantic model."""
     if not hasattr(cls, "model_fields"):
         return None
 
-    result: dict[str, FieldInfo] = {}
-    model_fields: dict[str, Any] = getattr(cls, "model_fields", {})
+    result: FieldMap = {}
+    model_fields: StrAnyMap = getattr(cls, "model_fields", {})
 
     # Use get_type_hints to preserve Annotated metadata that pydantic strips
     try:
@@ -435,7 +444,7 @@ def pydantic_inspector(cls: type) -> dict[str, FieldInfo] | None:
     return result
 
 
-def typeddict_inspector(cls: type) -> dict[str, FieldInfo] | None:
+def typeddict_inspector(cls: type) -> FieldMapOpt:
     """Inspect TypedDict. Returns None if not a TypedDict."""
     # TypedDict has __required_keys__ and __optional_keys__
     if not (hasattr(cls, "__required_keys__") and hasattr(cls, "__optional_keys__")):
@@ -445,7 +454,7 @@ def typeddict_inspector(cls: type) -> dict[str, FieldInfo] | None:
     if not hasattr(cls, "__annotations__"):
         return None
 
-    result: dict[str, FieldInfo] = {}
+    result: FieldMap = {}
     required_keys: frozenset[str] = getattr(cls, "__required_keys__", frozenset())
     hints = get_type_hints(cls, include_extras=True)
 
@@ -470,7 +479,7 @@ def typeddict_inspector(cls: type) -> dict[str, FieldInfo] | None:
     return result
 
 
-def namedtuple_inspector(cls: type) -> dict[str, FieldInfo] | None:
+def namedtuple_inspector(cls: type) -> FieldMapOpt:
     """Inspect NamedTuple. Returns None if not a NamedTuple."""
     # NamedTuple has _fields tuple and __annotations__
     if not (hasattr(cls, "_fields") and hasattr(cls, "__annotations__")):
@@ -486,9 +495,9 @@ def namedtuple_inspector(cls: type) -> dict[str, FieldInfo] | None:
     if not field_names:
         return None
 
-    result: dict[str, FieldInfo] = {}
+    result: FieldMap = {}
     hints = get_type_hints(cls, include_extras=True)
-    defaults: dict[str, object] = getattr(cls, "_field_defaults", {})
+    defaults: StrAnyMap = getattr(cls, "_field_defaults", {})
 
     for field_name in field_names:
         type_hint = hints.get(field_name, str)
@@ -536,7 +545,7 @@ inspect_dataclass = inspect_type
 class PydanticModel(Protocol):
     """Protocol for Pydantic v2 models."""
 
-    model_fields: dict[str, object]
+    model_fields: StrObjectMap
 
 
 @runtime_checkable
@@ -552,7 +561,7 @@ class NamedTupleType(Protocol):
     """Protocol for NamedTuple types."""
 
     _fields: tuple[str, ...]
-    __annotations__: dict[str, type]
+    __annotations__: StrTypeMap
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -619,7 +628,7 @@ def unwrap_collection(tp: type) -> type:
     return tp
 
 
-def get_nested_info(field_info: FieldInfo) -> dict[str, FieldInfo] | None:
+def get_nested_info(field_info: FieldInfo) -> FieldMapOpt:
     """If field's base_type is a structured type, return its fields. Otherwise None.
 
     Handles collections (list[User] -> User fields).

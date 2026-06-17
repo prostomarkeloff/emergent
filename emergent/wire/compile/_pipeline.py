@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Callable, Protocol, TYPE_CHECKING, runtime_checkable
 
 from nodnod import Scope
 
@@ -31,6 +31,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("emergent.compile.pipeline")
 
 
+type StrAnyMap = dict[str, Any]
+type TypeScopeMap = dict[type, Scope]
+
+
+@runtime_checkable
+class _HasErrors(Protocol):
+    """An exception exposing a pydantic-style ``errors()`` accessor."""
+
+    def errors(self) -> Any: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Extractor Protocol — extract raw dict from framework request
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -39,7 +50,7 @@ logger = logging.getLogger("emergent.compile.pipeline")
 class Extractor(Protocol):
     """Extract raw dict from framework request object."""
 
-    async def extract(self, request: object) -> dict[str, object]: ...
+    async def extract(self, request: Any) -> StrAnyMap: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +87,7 @@ class CompiledPipeline:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def compile_pipeline(ctx: object, axes: Axes) -> CompiledPipeline:
+def compile_pipeline(ctx: Any, axes: Axes) -> CompiledPipeline:
     """Build CompiledPipeline from WrapContext at compile time.
 
     Reads fields from ctx via getattr (WrapContext is target-specific).
@@ -121,7 +132,7 @@ def _make_scope(layer: ScopeLayer | None, detail: str = "handler") -> Scope:
     return Scope()
 
 
-def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> dict[type, Scope]:
+def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> TypeScopeMap:
     """Compute mapped_scopes from layer's family."""
     if layer is None:
         return {}
@@ -137,9 +148,9 @@ async def execute_with_pipeline(
     compiled: CompiledPipeline,
     handler: Handler[Any],
     axes: Axes,
-    raw_request: object,
+    raw_request: Any,
     target: str | None = None,
-) -> object:
+) -> Any:
     """Shared: scope → inject → extract → coerce → enrichers → execute.
 
     Used by ALL assemblers. The assembler just wraps this in a route closure.
@@ -173,7 +184,7 @@ async def execute_with_pipeline(
                 await composer.compose_batch(set(layer.compose))
 
             # 3. Extract raw dict
-            get_value: Callable[[str], object] | None = None
+            get_value: Callable[[str], Any] | None = None
             if compiled.extractor is not None:
                 raw = await compiled.extractor.extract(raw_request)
 
@@ -183,18 +194,22 @@ async def execute_with_pipeline(
                         coerced = compiled.coercion.validate(compiled.coerce_model, raw)
                     except Exception as e:
                         if compiled.error_type is not None:
-                            errors_fn = getattr(e, "errors", lambda: [{"msg": str(e)}])
-                            raise compiled.error_type(errors_fn()) from e
+                            details = (
+                                e.errors()
+                                if isinstance(e, _HasErrors)
+                                else [{"msg": str(e)}]
+                            )
+                            raise compiled.error_type(details) from e
                         raise
                 else:
                     coerced = raw
 
-                get_value = coerced.get  # type: ignore[union-attr]
+                get_value = coerced.get
 
             # 5. Execute with enrichers
             rt_ctx = fold_handler_runtime(handler.capabilities)
 
-            async def core(s: Scope) -> object:
+            async def core(s: Scope) -> Any:
                 return await compiled.execute(handler, s, get_value)
 
             if rt_ctx.enrichers:

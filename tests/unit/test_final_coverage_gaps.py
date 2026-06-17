@@ -19,6 +19,9 @@ from kungfu import Ok, Nothing
 
 from emergent.wire.axis.schema.dialects import compose as compose_dialect
 
+# Some tests here reload modules / mutate sys.modules — isolate per test.
+pytestmark = pytest.mark.usefixtures("isolate_sys_modules")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. emergent/wire/compile/_generate.py

@@ -13,7 +13,7 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from kungfu import Error, Ok, Result
 
@@ -25,11 +25,12 @@ from emergent.wire.derive._effects import Creates
 from emergent.wire.derive._handler import HandlerSpec, HasProvider
 from emergent.wire.derive._opspec import Op
 from emergent.wire.derive._project import CustomResponse, SelectFields
-from emergent.wire.derive._trigger import HTTPTriggers, RouteSpec  # noqa: TC001
+from emergent.wire.derive._trigger import HTTPTriggers
 
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx, OperationHandler
     from emergent.wire.derive._errors import DomainError
+    from emergent.wire.derive._trigger import RouteSpec
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def token_converter[T, E](cls: type, result: Result[T, E]) -> object:
+def token_converter[T, E](cls: type, result: Result[T, E]) -> Any:
     """Standard converter for login response: {token, error}."""
     match result:
         case Ok(val):
@@ -87,7 +88,18 @@ class IssueToken[V]:
         token_fn: Callable[..., str] = (
             self.token_fn if self.token_fn is not None else _default_token
         )
-        identity_fn = self.identity_fn
+
+        def _store_entity(value: V) -> V:
+            # No custom identity_fn: the session value IS the fetched entity, so
+            # the caller's V is the entity type. Identity producer keeps the
+            # store typed as V without widening.
+            return value
+
+        # Single V-producer for the session value: the custom identity_fn, or
+        # identity (stores the entity itself).
+        to_session_value: Callable[..., V] = (
+            self.identity_fn if self.identity_fn is not None else _store_entity
+        )
 
         async def handler(op: HasProvider[EntityT]) -> Result[str, DomainError]:
             match_value = getattr(op, match_field)
@@ -101,10 +113,7 @@ class IssueToken[V]:
                     NotFound(entity=entity_name, id={match_field: match_value})
                 )
             token: str = token_fn(entity)
-            if identity_fn is not None:
-                await sessions.set(qs.set(token, identity_fn(entity)))
-            else:
-                await sessions.set(qs.set(token, entity))  # type: ignore[arg-type]
+            await sessions.set(qs.set(token, to_session_value(entity)))
             return Ok(token)
 
         return handler
@@ -115,7 +124,9 @@ class IssueToken[V]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-LOGIN_ROUTES: dict[str, RouteSpec] = {"Login": ("POST", False)}
+type RouteSpecMap = dict[str, RouteSpec]
+
+LOGIN_ROUTES: RouteSpecMap = {"Login": ("POST", False)}
 
 
 @dataclass(frozen=True, slots=True)

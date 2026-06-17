@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from kungfu import Result
 
@@ -25,6 +25,10 @@ if TYPE_CHECKING:
     from emergent.wire.derive._ctx import DeriveCtx
 
 
+type FieldMap = Mapping[str, AnnotationValue]
+type PaginationData = Mapping[str, Any] | Sequence[Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FieldProjection — entity fields → field subset
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -34,14 +38,14 @@ if TYPE_CHECKING:
 class FieldProjection(Protocol):
     """Project entity fields → field subset for derived types."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]: ...
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap: ...
 
 
 @dataclass(frozen=True, slots=True)
 class AllFields:
     """All entity fields."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return ctx.field_types()
 
 
@@ -49,7 +53,7 @@ class AllFields:
 class IdOnly:
     """All identity fields (supports composite keys)."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {name: info.base_type for name, info in ctx.identity_fields.items()}
 
 
@@ -57,7 +61,7 @@ class IdOnly:
 class NonId:
     """All fields except identity."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -69,7 +73,7 @@ class NonId:
 class NoFields:
     """Empty — no fields."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {}
 
 
@@ -77,7 +81,7 @@ class NoFields:
 class RequiredNonId:
     """Non-identity fields without defaults — user-provided input."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -92,7 +96,7 @@ class ExcludeFromProjection:
     inner: FieldProjection
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         result = self.inner.project(ctx)
         return {k: v for k, v in result.items() if k not in self.names}
 
@@ -103,7 +107,7 @@ class SelectFields:
 
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -117,7 +121,7 @@ class ExcludeFields:
 
     names: tuple[str, ...]
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type
             for name, info in ctx.fields.items()
@@ -129,7 +133,7 @@ class ExcludeFields:
 class OptionalNonId:
     """Non-identity fields, all wrapped in Optional[type]. For PATCH endpoints."""
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {
             name: info.base_type | None
             for name, info in ctx.fields.items()
@@ -144,7 +148,7 @@ class MergeProjection:
     left: FieldProjection
     right: FieldProjection
 
-    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> Mapping[str, AnnotationValue]:
+    def project[EntityT](self, ctx: DeriveCtx[EntityT]) -> FieldMap:
         return {**self.left.project(ctx), **self.right.project(ctx)}
 
 
@@ -308,7 +312,7 @@ class PaginatedResponse:
             ("page_size", int),
         ]
 
-        def _paginated_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
+        def _paginated_ok(cls: type, data: PaginationData) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -376,7 +380,7 @@ class CursorPaginatedResponse:
             ("has_more", bool),
         ]
 
-        def _cursor_ok(cls: type, data: Mapping[str, object] | Sequence[object]) -> HasAnnotations:
+        def _cursor_ok(cls: type, data: PaginationData) -> HasAnnotations:
             if isinstance(data, Mapping):
                 return cls(
                     items=data.get("items", []),
@@ -396,6 +400,21 @@ class CursorPaginatedResponse:
         return field_specs, converter
 
 
+def _dataclass_field_names(cls: type) -> list[str]:
+    """Field names of ``cls`` if it is a dataclass, else ``[]``.
+
+    Isolates the ``is_dataclass`` ``TypeGuard`` so it does not persistently
+    narrow the caller's ``cls`` to ``type[DataclassInstance]``.
+    """
+    # Local import: module-level `fields` is shadowed by the projection
+    # helper below, so reach the real dataclasses helpers here.
+    from dataclasses import fields as dataclass_fields, is_dataclass
+
+    if is_dataclass(cls):
+        return [f.name for f in dataclass_fields(cls)]
+    return []
+
+
 def dict_converter[T, E](cls: type, result: Result[T, E]) -> HasAnnotations:
     """Convert Result[dict|obj, E] -> response dataclass."""
     from kungfu import Error as Err, Ok
@@ -404,8 +423,8 @@ def dict_converter[T, E](cls: type, result: Result[T, E]) -> HasAnnotations:
         case Ok(val):
             if isinstance(val, dict):
                 return cls(**val)
-            dc_fields: dict[str, type] = getattr(cls, "__dataclass_fields__", {})
-            return cls(**{f: getattr(val, f, None) for f in dc_fields})
+            field_names = _dataclass_field_names(cls)
+            return cls(**{f: getattr(val, f, None) for f in field_names})
         case Err(err):
             return err
         case _:
@@ -421,6 +440,43 @@ class CustomResponse:
 
     def resolve[EntityT](self, ctx: DeriveCtx[EntityT]) -> ResolvedResponse:
         return list(self.field_specs), self.converter
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeResponse:
+    """Response shape declared as a plain envelope dataclass — no hand-written specs.
+
+    `field_specs` are read from the envelope's dataclass fields; the `data_field`
+    (the list-of-entities slot) is retyped to ``list[ctx.entity]`` at compile time.
+    The converter is the generic dict/obj → dataclass mapper. Lets a caller write::
+
+        @dataclass
+        class ListEnvelope:
+            data: list          # retyped to list[entity]
+            total: int
+            next_cursor: str | None
+
+        response_spec = EnvelopeResponse(ListEnvelope)
+
+    instead of hand-writing a `resolve()` with field_specs + a bespoke converter.
+    """
+
+    envelope: type
+    data_field: str = "data"
+
+    def resolve[EntityT](self, ctx: DeriveCtx[EntityT]) -> ResolvedResponse:
+        from dataclasses import fields as dataclass_fields
+        from typing import get_type_hints
+
+        entity = ctx.entity
+        hints = get_type_hints(self.envelope)
+        specs: list[FieldSpec] = []
+        for f in dataclass_fields(self.envelope):
+            if f.name == self.data_field:
+                specs.append((f.name, list[entity]))
+            else:
+                specs.append((f.name, hints[f.name]))
+        return specs, dict_converter
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -488,6 +544,9 @@ def custom_response(
 ) -> CustomResponse:
     return CustomResponse(field_specs=field_specs, converter=converter)
 
+def envelope_response(envelope: type, data_field: str = "data") -> EnvelopeResponse:
+    return EnvelopeResponse(envelope=envelope, data_field=data_field)
+
 def composed_response(
     projection: ResponseProjection,
     converter: ResponseConverterProto,
@@ -506,7 +565,7 @@ __all__ = (
     "response_fields", "response_converter",
     "EntityResponse", "ListResponse", "OkResponse",
     "PaginatedResponse", "CountResponse", "BoolResponse",
-    "EmptyResponse", "CursorPaginatedResponse", "CustomResponse",
+    "EmptyResponse", "CursorPaginatedResponse", "CustomResponse", "EnvelopeResponse",
     "dict_converter",
     "all_fields", "id_only", "non_id", "required_non_id", "no_fields",
     "exclude_from", "fields", "exclude", "optional_non_id", "merge",

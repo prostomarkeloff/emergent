@@ -28,6 +28,8 @@ from combinators.concurrency import RateLimitPolicy
 from ._base import ScopeEnricher, EnricherNext
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from nodnod import Scope
     from emergent.ops._graph import Runner, Op
     from emergent.cache import CacheExecutor
@@ -257,7 +259,7 @@ class Provide(ScopeEnricher, Generic[T, E]):
     op: Callable[[Scope], Op[T, E]]
     on_error: Callable[[Result[T, E]], object]
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | object:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | Any:
         built_op = self.op(scope)
         result: Result[T, E] = await self.runner.run(built_op)
 
@@ -294,6 +296,29 @@ class Inject(ScopeEnricher, Generic[T]):
         return await call(scope)
 
 
+@dataclass(frozen=True, slots=True)
+class ScopedResource(ScopeEnricher, Generic[T]):
+    """Provide a request-scoped async resource — open, inject, close on exit.
+
+    The resource (DB session, HTTP client, …) is created from ``factory()`` — an async
+    context manager — injected into the scope so nodes/handlers resolve it by type, then
+    closed when the handler completes (success OR error). Gives proper request-scoped
+    resource lifecycle without the scope needing its own cleanup support.
+
+    Example::
+
+        ScopedResource(type=AsyncSession, factory=lambda: db.session())
+    """
+
+    type: type[T]
+    factory: Callable[[], AbstractAsyncContextManager[T]]
+
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R:
+        async with self.factory() as resource:
+            scope.inject(self.type, resource)
+            return await call(scope)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Validation Enrichers
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -316,7 +341,7 @@ class Validate(ScopeEnricher, Generic[T]):
     predicate: Callable[[T], bool]
     on_invalid: Callable[[T], object]
 
-    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | object:
+    async def enrich[R](self, call: EnricherNext[R], scope: Scope) -> R | Any:
         value = self.extract(scope)
         if not self.predicate(value):
             return self.on_invalid(value)

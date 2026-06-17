@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Generic, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import Any, Callable, Generic, Literal, TYPE_CHECKING, Mapping, Protocol, Sequence, TypeGuard, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -82,6 +82,22 @@ ArgparseKwargValue = (
     | Sequence[str] | Sequence[int] | Sequence[str | int | float | bool | None]
 )
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type ArgparseKwargs = dict[str, ArgparseKwargValue]
+type ArgparseKwargMap = Mapping[str, ArgparseKwargValue]
+type ColumnKwargValue = str | int | bool | None
+type ColumnKwargs = dict[str, ColumnKwargValue]
+type ColumnKwargMap = Mapping[str, ColumnKwargValue]
+type TypeMap = Mapping[type, type]
+type SecurityRequirement = dict[str, list[str]]
+type SecuritySpec = tuple[SecurityRequirement, ...]
+type OpenAPIExtra = dict[str, Any]
+type JsonSchemaExtra = dict[str, JsonSchemaValue]
+type StrAnyMap = dict[str, Any]
+type MiddlewareSpec = tuple[tuple[type, Mapping[str, Any]], ...]
+type MiddlewareSpecObj = tuple[tuple[type, Mapping[str, object]], ...]
+type ValidateFn = Callable[[type, dict[str, object]], dict[str, object]]
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Schema Axis Contexts (field-level)
@@ -92,11 +108,45 @@ def _empty_schema() -> JsonSchemaDict:
     return {}
 
 
-def _empty_argparse_kwargs() -> dict[str, ArgparseKwargValue]:
+def _is_any_dict(value: Any) -> TypeGuard[StrAnyMap]:
+    """TypeGuard: narrow to dict[str, Any] without Unknown propagation."""
+    return isinstance(value, dict)
+
+
+def _is_any_list(value: Any) -> TypeGuard[list[Any]]:
+    """TypeGuard: narrow to list[Any] without Unknown propagation."""
+    return isinstance(value, list)
+
+
+def _is_any_tuple(value: Any) -> TypeGuard[tuple[Any, ...]]:
+    """TypeGuard: narrow to tuple[Any, ...] without Unknown propagation."""
+    return isinstance(value, tuple)
+
+
+def _as_json_schema_value(value: Any) -> JsonSchemaValue:
+    """Recursively re-type an arbitrary JSON-shaped value as JsonSchemaValue.
+
+    Pydantic types ``json_schema_extra`` with an unresolvable recursive
+    forward-ref, so its narrowed values arrive as Any. This walks the structure
+    and re-asserts the typed JSON union explicitly.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if _is_any_dict(value):
+        result: JsonSchemaDict = {}
+        for k, v in value.items():
+            result[str(k)] = _as_json_schema_value(v)
+        return result
+    if _is_any_list(value) or _is_any_tuple(value):
+        return [_as_json_schema_value(item) for item in value]
+    raise TypeError(f"non-JSON value in json_schema_extra: {type(value).__name__}")
+
+
+def _empty_argparse_kwargs() -> ArgparseKwargs:
     return {}
 
 
-def _empty_column_kwargs() -> dict[str, str | int | bool | None]:
+def _empty_column_kwargs() -> ColumnKwargs:
     return {}
 
 
@@ -121,7 +171,7 @@ class ArgparseContext:
     """Argparse compilation context — holds add_argument kwargs."""
     field_name: str
     field_type: type
-    kwargs: Mapping[str, ArgparseKwargValue] = field(default_factory=_empty_argparse_kwargs)
+    kwargs: ArgparseKwargMap = field(default_factory=_empty_argparse_kwargs)
     is_positional: bool = False
     arg_names: tuple[str, ...] | None = None
 
@@ -132,8 +182,8 @@ class SQLAlchemyContext:
     field_name: str
     field_type: type
     column_type: type | None = None
-    column_kwargs: Mapping[str, str | int | bool | None] = field(default_factory=_empty_column_kwargs)
-    type_map: Mapping[type, type] = field(default_factory=lambda: dict[type, type]())
+    column_kwargs: ColumnKwargMap = field(default_factory=_empty_column_kwargs)
+    type_map: TypeMap = field(default_factory=lambda: dict[type, type]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -146,7 +196,7 @@ class DeltaContext:
     """Delta dialect compilation context — accumulates delta field metadata."""
     field_name: str
     field_type: type
-    delta_kind: str | None = None  # "numeric" | "string" | "collection"
+    delta_kind: Literal["numeric", "string", "collection"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,14 +316,64 @@ class OpenAPISchemaContext:
     schema: JsonSchemaDict = field(default_factory=_empty_schema)
 
 
+# An index element is either a column name (str) or a SQL expression
+# (`text("lower(x)")`, `col.desc()`, …) — functional indexes need the latter.
+type IndexElement = str | ClauseElement
+
+# Literal SQLAlchemy `Index(...)` dialect kwargs, chosen by a dialect-specific
+# capability (e.g. `{"postgresql_using": "gin"}`). The assembler passes them
+# through verbatim — it does NOT invent or fan out across dialects.
+type IndexDialectKwargValue = str | list[str] | ClauseElement
+type IndexDialectKwargs = Mapping[str, IndexDialectKwargValue]
+type IndexDialectKwargsMut = dict[str, IndexDialectKwargValue]
+
+
+def _empty_index_dialect_kwargs() -> IndexDialectKwargsMut:
+    return {}
+
+
+@dataclass(frozen=True, slots=True)
+class TableIndexSpec:
+    """A table-level index: elements + name + uniqueness (+ opaque dialect kwargs).
+
+    - `fields` may mix column names and SQL expressions (functional indexes).
+    - `name`/`unique` are plain ANSI SQL — the generic capability sets these.
+    - `dialect_kwargs` are literal `Index(...)` kwargs a *dialect-specific*
+      capability chose (access method / partial WHERE / covering INCLUDE). Kept
+      opaque so dialect knowledge lives in the capability, not the assembler.
+
+    Carrying this through compilation lets the assembler emit a faithful
+    ``Index(...)``; column-level ``index=True`` can express none of it.
+    """
+    fields: tuple[IndexElement, ...]
+    name: str | None = None
+    unique: bool = False
+    dialect_kwargs: IndexDialectKwargs = field(default_factory=_empty_index_dialect_kwargs)
+
+
+@dataclass(frozen=True, slots=True)
+class TableConstraintSpec:
+    """A table-level unique constraint: columns + optional name."""
+    fields: tuple[str, ...]
+    name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TableCheckSpec:
+    """A table-level CHECK constraint: a SQL boolean expression + optional name."""
+    expression: str
+    name: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class SQLAlchemyTableContext:
     """SQLAlchemy table-level compilation context."""
     class_name: str
     table_name: str | None = None
     is_abstract: bool = False
-    constraints: tuple[tuple[str, ...], ...] = ()
-    indexes: tuple[tuple[str, ...], ...] = ()
+    constraints: tuple[TableConstraintSpec, ...] = ()
+    indexes: tuple[TableIndexSpec, ...] = ()
+    checks: tuple[TableCheckSpec, ...] = ()
     extra_columns: tuple[ExtraColumnSpec[Any], ...] = ()
 
 
@@ -292,8 +392,8 @@ class FastAPIRouteContext:
     description: str | None = None
     deprecated: bool = False
     operation_id: str | None = None
-    security: tuple[dict[str, list[str]], ...] = ()
-    openapi_extra: dict[str, Any] | None = None
+    security: SecuritySpec = ()
+    openapi_extra: OpenAPIExtra | None = None
     status_code: int | None = None
 
 
@@ -403,17 +503,17 @@ def argparse_arg(
     **kwargs: ArgparseKwargValue,
 ) -> ArgparseContext:
     """Add argparse kwargs — direct dict merge."""
-    merged: dict[str, ArgparseKwargValue] = {**ctx.kwargs, **kwargs}
+    merged: ArgparseKwargs = {**ctx.kwargs, **kwargs}
     return replace(ctx, kwargs=merged)
 
 
 def sqlalchemy_column(ctx: SQLAlchemyContext, **kwargs: str | int | bool | None) -> SQLAlchemyContext:
     """Add Column kwargs — direct dict merge."""
-    merged: dict[str, str | int | bool | None] = {**ctx.column_kwargs, **kwargs}
+    merged: ColumnKwargs = {**ctx.column_kwargs, **kwargs}
     return replace(ctx, column_kwargs=merged)
 
 
-def pydantic_metadata(ctx: PydanticContext, *items: object) -> PydanticContext:
+def pydantic_metadata(ctx: PydanticContext, *items: Any) -> PydanticContext:
     """Append items to Pydantic FieldInfo.metadata — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
     fi.metadata.extend(items)
@@ -423,13 +523,13 @@ def pydantic_metadata(ctx: PydanticContext, *items: object) -> PydanticContext:
 def pydantic_extra(ctx: PydanticContext, **extra: JsonSchemaValue) -> PydanticContext:
     """Merge into Pydantic FieldInfo.json_schema_extra — immutable context update."""
     fi = copy.deepcopy(ctx.field_info)
-    current = fi.json_schema_extra
-    existing: dict[str, JsonSchemaValue] = {}
-    if isinstance(current, dict):
-        # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref
-        # that pyright cannot fully resolve, producing dict[str | Unknown, ...].
-        # Structurally identical to our JsonSchemaDict — safe to copy directly.
-        existing = dict(current)  # type: ignore[arg-type]  # Pydantic JsonDict → our JsonSchemaDict: structurally identical, forward-ref makes pyright lose str key type
+    # Pydantic's JsonDict = dict[str, JsonValue] uses a recursive forward-ref that
+    # pyright cannot resolve, so json_schema_extra arrives partially Unknown. Erase
+    # to Any, then re-assert the JSON shape via _as_json_schema_value.
+    current: Any = fi.json_schema_extra
+    existing: JsonSchemaExtra = {}
+    if _is_any_dict(current):
+        existing = {str(k): _as_json_schema_value(v) for k, v in current.items()}
     existing.update(extra)
     fi.json_schema_extra = existing
     return replace(ctx, field_info=fi)
@@ -476,8 +576,9 @@ def sqlalchemy_table(
     *,
     table_name: str | None = None,
     is_abstract: bool | None = None,
-    add_constraint: tuple[str, ...] | None = None,
-    add_index: tuple[str, ...] | None = None,
+    add_constraint: TableConstraintSpec | None = None,
+    add_index: TableIndexSpec | None = None,
+    add_check: TableCheckSpec | None = None,
     add_column: ExtraColumnSpec[Any] | None = None,
 ) -> SQLAlchemyTableContext:
     """Modify SQLAlchemy table context."""
@@ -487,6 +588,7 @@ def sqlalchemy_table(
         is_abstract=is_abstract if is_abstract is not None else ctx.is_abstract,
         constraints=(*ctx.constraints, add_constraint) if add_constraint else ctx.constraints,
         indexes=(*ctx.indexes, add_index) if add_index else ctx.indexes,
+        checks=(*ctx.checks, add_check) if add_check else ctx.checks,
         extra_columns=(*ctx.extra_columns, add_column) if add_column else ctx.extra_columns,
     )
 
@@ -504,9 +606,9 @@ def fastapi_route(
     description: str | None = None,
     deprecated: bool | None = None,
     operation_id: str | None = None,
-    security: tuple[dict[str, list[str]], ...] | None = None,
+    security: SecuritySpec | None = None,
     status_code: int | None = None,
-    openapi_extra: dict[str, Any] | None = None,
+    openapi_extra: OpenAPIExtra | None = None,
 ) -> FastAPIRouteContext:
     """Modify FastAPI route configuration."""
     merged_extra = ctx.openapi_extra
@@ -749,7 +851,7 @@ class TelegrinderRenderCompilable(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_middleware() -> tuple[tuple[type, Mapping[str, object]], ...]:
+def _empty_middleware() -> MiddlewareSpec:
     return ()
 
 
@@ -775,7 +877,7 @@ class FastAPIAppContext:
                 )
     """
 
-    middleware: tuple[tuple[type, Mapping[str, object]], ...] = field(
+    middleware: MiddlewareSpecObj = field(
         default_factory=_empty_middleware
     )
     # FastAPI APIRouter objects stored as ``object`` to avoid fastapi import
@@ -864,7 +966,7 @@ class HandlerRuntimeCompilable(Protocol):
 def fastapi_app_middleware(
     ctx: FastAPIAppContext,
     middleware_cls: type,
-    **kwargs: object,
+    **kwargs: Any,
 ) -> FastAPIAppContext:
     """Add middleware to FastAPI app context.
 
@@ -929,7 +1031,7 @@ class CoercionSpec:
     # Build the validation model from compiled fields: (type, EntityCompilation) → model class
     assemble: Callable[[type, object], type]
     # Validate raw dict against model: (model_class, raw_dict) → typed_dict
-    validate: Callable[[type, dict[str, object]], dict[str, object]]
+    validate: ValidateFn
 
 
 __all__ = (

@@ -12,6 +12,10 @@ from __future__ import annotations
 import inspect
 from typing import Literal, Any, get_type_hints
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type DepGraph = dict[type[Any], list[type[Any]]]
+type DepthMap = dict[type[Any], int]
+
 
 def get_dependencies(node_type: type[Any]) -> list[type[Any]]:
     """Extract dependencies from __compose__ signature."""
@@ -36,9 +40,9 @@ def get_dependencies(node_type: type[Any]) -> list[type[Any]]:
     return deps
 
 
-def get_all_nodes(target: type[Any]) -> dict[type[Any], list[type[Any]]]:
+def get_all_nodes(target: type[Any]) -> DepGraph:
     """Build full dependency graph."""
-    graph: dict[type[Any], list[type[Any]]] = {}
+    graph: DepGraph = {}
 
     def traverse(node: type[Any]) -> None:
         if node in graph:
@@ -64,7 +68,7 @@ def get_layers(target: type[Any]) -> list[list[type[Any]]]:
     graph = get_all_nodes(target)
 
     # Calculate depth for each node
-    depths: dict[type[Any], int] = {}
+    depths: DepthMap = {}
 
     def get_depth(node: type[Any]) -> int:
         if node in depths:

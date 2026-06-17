@@ -13,6 +13,7 @@ from typing import Protocol
 
 from kungfu import Result, Option
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage._codec import Codec
 from emergent.wire.axis.storage._result import map_option
 from emergent.wire.axis.storage._capabilities import (
@@ -73,6 +74,17 @@ class KV[T, E]:
     backend: KVBackend[E]
     codec: Codec[T]
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "KV",
+                (
+                    ("codec", type(self.codec).__name__),
+                    ("backend", type(self.backend).__name__),
+                ),
+            )
+        )
+
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get typed value by key."""
         return map_option(await self.backend.get(key), self.codec.decode)
@@ -95,6 +107,17 @@ class KVNX[T, E]:
 
     backend: KVBackendNX[E]
     codec: Codec[T]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "KVNX",
+                (
+                    ("codec", type(self.codec).__name__),
+                    ("backend", type(self.backend).__name__),
+                ),
+            )
+        )
 
     async def get(self, key: str) -> Result[Option[T], E]:
         """Get typed value by key."""

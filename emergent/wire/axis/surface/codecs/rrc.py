@@ -6,6 +6,7 @@ from typing import Any, Protocol, Self, TypeVar, runtime_checkable
 from kungfu import Result
 
 from emergent.ops._graph import Op
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.surface._handler import Handler
 
 
@@ -61,6 +62,17 @@ class RequestResponseCodec:
 
     request: type[ToDomain[Op[Any, Any]]]
     response: type[FromDomain[Result[Any, Any]]]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "RequestResponseCodec",
+                (
+                    ("request", self.request.__name__),
+                    ("response", self.response.__name__),
+                ),
+            )
+        )
 
 
 async def execute(

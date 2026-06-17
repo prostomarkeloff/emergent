@@ -223,16 +223,30 @@ def chain_purifiers[**P, R](
     return result
 
 
-type BridgeCapabilityHandler = Callable[
-    [BridgeCapability, BridgeContext[object, ..., object]],
-    BridgeContext[object, ..., object],
-]
+@runtime_checkable
+class BridgeCapabilityHandler(Protocol):
+    """Custom per-type bridge handler.
+
+    The handler transforms a BridgeContext structurally (metadata/wire fields),
+    preserving its T/P/R shape. The generic ``__call__`` keeps those type
+    parameters bound through the fold instead of erasing them to ``object``.
+    """
+
+    def __call__[T, **P, R](
+        self, cap: BridgeCapability, ctx: BridgeContext[T, P, R]
+    ) -> BridgeContext[T, P, R]: ...
+
+
+type BridgeCapabilityHandlers = Mapping[type[BridgeCapability], BridgeCapabilityHandler]
+
+type NameTypeMap = dict[str, type]
+type NameCodecMap = dict[str, object]
 
 
 def fold_bridge[T, **P, R](
     ctx: BridgeContext[T, P, R],
     capabilities: Sequence[BridgeCapability],
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeCapabilityHandlers | None = None,
 ) -> BridgeContext[T, P, R]:
     """Universal bridge-level capability fold — THE bridge primitive.
 
@@ -252,10 +266,9 @@ def fold_bridge[T, **P, R](
     for cap in capabilities:
         cap_type = type(cap)
         if handlers and cap_type in handlers:
-            # BridgeCapabilityHandler is type-erased to BridgeContext[object, ..., object]
-            # because heterogeneous handler mappings can't preserve per-key generics.
-            # The handler contract guarantees it returns the same BridgeContext shape.
-            current = handlers[cap_type](cap, current)  # type: ignore[assignment]
+            # BridgeCapabilityHandler.__call__ is generic over T/P/R, so the
+            # handler preserves the BridgeContext shape through the fold.
+            current = handlers[cap_type](cap, current)
         elif isinstance(cap, BridgeCompilable):
             current = cap.compile_bridge(current)
         if current.skip:
@@ -266,7 +279,7 @@ def fold_bridge[T, **P, R](
 def apply_bridge_capabilities[T, **P, R](
     ctx: BridgeContext[T, P, R],
     capabilities: Sequence[BridgeCapability],
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeCapabilityHandlers | None = None,
 ) -> BridgeContext[T, P, R]:
     """Apply BridgeCompilable capabilities to context.
 
@@ -409,7 +422,7 @@ class AddCapability(BridgeCapability):
 class SetRequestTypeByName(BridgeCapability):
     """Set request type by handler name."""
 
-    type_map: dict[str, type]
+    type_map: NameTypeMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]
@@ -425,7 +438,7 @@ class SetRequestTypeByName(BridgeCapability):
 class SetResponseTypeByName(BridgeCapability):
     """Set response type by handler name."""
 
-    type_map: dict[str, type]
+    type_map: NameTypeMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]
@@ -451,7 +464,7 @@ class SetCodecByName(BridgeCapability):
         })
     """
 
-    codec_map: dict[str, object]
+    codec_map: NameCodecMap
 
     def compile_bridge[T, **P, R](
         self, ctx: BridgeContext[T, P, R]

@@ -19,8 +19,16 @@ from sqlalchemy.orm import DeclarativeBase
 
 from kungfu import Error
 
-from emergent.wire.axis.schema._universal import Identity, MaxLen, Unique
-from emergent.wire.axis.schema.dialects.sql import PrimaryKey
+from emergent.wire.axis.schema._universal import Identity, MaxLen, Unique, schema_meta
+from sqlalchemy import inspect as sa_inspect
+
+from emergent.wire.axis.schema.dialects.sql import (
+    Check,
+    CompositeIndex,
+    CompositeUnique,
+    PostgresIndex,
+    PrimaryKey,
+)
 from emergent.wire.axis.storage.contrib._impls._sqlalchemy import (
     BoundSQLAlchemyStore,
     SQLAlchemyStorage,
@@ -445,6 +453,75 @@ class TestCompileModelSchemaParameter:
         table_args = getattr(model, "__table_args__", None)
         if table_args is not None:
             assert "schema" not in table_args
+
+
+class TestCompileModelTableLevelIndexesConstraints:
+    """Table-level CompositeIndex/CompositeUnique materialize as named DDL.
+
+    Regression guard: previously these capabilities populated the table context
+    but were dropped by the assembler (name/unique/access-method silently lost),
+    so a generated model diverged from a hand-written schema.
+    """
+
+    def test_named_unique_index_and_constraint_materialize(self) -> None:
+        @schema_meta(
+            CompositeUnique("email", "tenant_id", name="uq_email_tenant"),
+            PostgresIndex("status", "created_at", name="ix_status_created", unique=True, using="btree"),
+        )
+        @dataclass
+        class Account:
+            id: Annotated[int, Identity]
+            email: str
+            tenant_id: int
+            status: str
+            created_at: str
+
+        class TableArgsBase(DeclarativeBase):
+            pass
+
+        model = compile_sa(Account, "accounts", base=TableArgsBase).model
+        table = model.__table__  # type: ignore[attr-defined]
+
+        index_by_name = {ix.name: ix for ix in table.indexes}
+        assert "ix_status_created" in index_by_name
+        ix = index_by_name["ix_status_created"]
+        assert ix.unique is True
+        assert [c.name for c in ix.columns] == ["status", "created_at"]
+        # access method carried through, dialect-neutral (applied to dialects that have one)
+        assert ix.dialect_options["postgresql"]["using"] == "btree"
+
+        unique_constraint_names = {
+            c.name for c in table.constraints if type(c).__name__ == "UniqueConstraint"
+        }
+        assert "uq_email_tenant" in unique_constraint_names
+
+    def test_named_check_constraint_materializes(self) -> None:
+        """Table-level sql.Check materializes as a named CHECK constraint.
+
+        Regression guard: Check was a defined-but-unwired primitive — it populated
+        no table context, so a generated model silently lost CHECK constraints that
+        a hand-written schema had.
+        """
+
+        @schema_meta(Check("weight BETWEEN 1 AND 10", name="ck_weight_range"))
+        @dataclass
+        class Rating:
+            id: Annotated[int, Identity]
+            weight: int
+
+        class CheckBase(DeclarativeBase):
+            pass
+
+        model = compile_sa(Rating, "ratings", base=CheckBase).model
+        table = sa_inspect(model).local_table
+
+        checks = {
+            c.name: str(c.sqltext)
+            for c in table.constraints
+            if type(c).__name__ == "CheckConstraint"
+        }
+        assert "ck_weight_range" in checks
+        assert checks["ck_weight_range"] == "weight BETWEEN 1 AND 10"
 
 
 class TestBoundSQLAlchemyStoreProperties:

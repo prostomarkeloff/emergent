@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, cast
 
 import fastapi
 from kungfu import Some, Nothing
@@ -39,7 +39,11 @@ from emergent.wire.axis.surface.codecs.resolve import (
 from emergent.wire.axis.surface.triggers.http import HTTPRouteTrigger
 
 from emergent.wire.compile._core import Axes, fold
-from emergent.wire.compile._target import CodecBinding, TargetCompiler
+from emergent.wire.compile._target import (
+    CodecBinding,
+    TargetCompiler,
+    wrap_for_stack as _wrap_for_stack,
+)
 from emergent.wire.compile._pipeline import (
     compile_pipeline,
     execute_with_pipeline,
@@ -75,6 +79,10 @@ from emergent.wire.compile.targets.pure import (
 )
 
 
+type JsonDict = dict[str, Any]
+type JsonDictList = list[JsonDict]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI Extractors
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -83,7 +91,7 @@ from emergent.wire.compile.targets.pure import (
 class FastAPIExtractor(Protocol):
     """Extract raw dict from FastAPI request."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]: ...
+    async def extract(self, request: fastapi.Request) -> JsonDict: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,21 +100,20 @@ class FastAPIJsonExtractor:
 
     include_path_params: bool = True
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         content_type = request.headers.get("content-type", "")
         if (
             "application/x-www-form-urlencoded" in content_type
             or "multipart/form-data" in content_type
         ):
-            body: dict[str, object] = dict(await request.form())
+            body: JsonDict = dict(await request.form())
         else:
             try:
-                raw_json: object = await request.json()
+                raw_json: Any = await request.json()
             except ValueError:
                 raw_json = {}
-            from typing import cast as _cast
             # request.json() returns Any; isinstance narrows to dict[Unknown, Unknown]
-            body: dict[str, object] = _cast(dict[str, object], raw_json) if isinstance(raw_json, dict) else {}
+            body: JsonDict = cast(JsonDict, raw_json) if isinstance(raw_json, dict) else {}
         if self.include_path_params:
             return {**body, **dict(request.path_params)}
         return body
@@ -116,7 +123,7 @@ class FastAPIJsonExtractor:
 class FastAPIQueryExtractor:
     """Extract from query params + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         return {**dict(request.query_params), **dict(request.path_params)}
 
 
@@ -124,7 +131,7 @@ class FastAPIQueryExtractor:
 class FastAPIFormExtractor:
     """Extract from form data + path params."""
 
-    async def extract(self, request: fastapi.Request) -> dict[str, object]:
+    async def extract(self, request: fastapi.Request) -> JsonDict:
         return {**dict(await request.form()), **dict(request.path_params)}
 
 
@@ -180,7 +187,8 @@ class FastAPIWrapContext:
 
     # From codec (via from_codec):
     request_type: type | None = None
-    response_type: type | types.UnionType | None = None
+    # GenericAlias covers ``list[item]`` for collection (bare-array) responses.
+    response_type: type | types.UnionType | types.GenericAlias | None = None
     execute: Callable[..., Any] | None = None
 
     # From trigger/framework defaults (via from_codec):
@@ -273,8 +281,10 @@ class FastAPIRoute:
     """
 
     endpoint: Any
-    response_model: type | types.UnionType | None = None
-    openapi_extra: dict[str, Any] | None = None
+    # Mirrors FastAPIWrapContext.response_type: a collection response is `list[item]`
+    # (a GenericAlias), so this must admit GenericAlias alongside plain types/unions.
+    response_model: type | types.UnionType | types.GenericAlias | None = None
+    openapi_extra: JsonDict | None = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -285,8 +295,8 @@ class FastAPIRoute:
 async def _rrc_execute(
     handler: Handler[RequestResponseCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """RRC execution: build request → run op → map response."""
     from emergent.graph._compose import Composer
     from emergent.wire.compile._rrc import execute_rrc
@@ -309,8 +319,8 @@ async def _rrc_execute(
 async def _stateful_execute(
     handler: Handler[StatefulCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Stateful execution: compose key → load state → transition → done."""
     from emergent.graph._compose import Composer
 
@@ -329,9 +339,10 @@ async def _stateful_execute(
     async with key_scope:
         key_scope.inject(fastapi.Request, request)
         composer = Composer.create(key_scope, codec.agent_cls)
-        # codec.key_node is bare `type` (no type parameter), so compose()
-        # returns tuple[bool, Unknown | str]. We only need str conversion.
-        compose_result: tuple[bool, object | str] = await composer.compose(  # type: ignore[assignment]  # key_node is unparameterized type; we widen Unknown to object
+        # codec.key_node is a bare `type` (no type parameter), so compose()'s generic
+        # T resolves to Unknown; pinning the concrete tuple shape (Any payload) stops
+        # the Unknown leaking. We only need str conversion of the result.
+        compose_result: tuple[bool, Any] = await composer.compose(
             codec.key_node,
         )
         success = compose_result[0]
@@ -379,8 +390,8 @@ async def _stateful_execute(
 async def _immediate_execute(
     handler: Handler[Any],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Immediate execution: produce response directly."""
     return execute_immediate_unified(handler)
 
@@ -388,8 +399,8 @@ async def _immediate_execute(
 async def _delegate_execute(
     handler: Handler[DelegateCodec],
     scope: Scope,
-    get_value: Callable[[str], object] | None,
-) -> object:
+    get_value: Callable[[str], Any] | None,
+) -> Any:
     """Delegate execution: compose params → call handler."""
     from emergent.wire.compile._execute import execute_delegate_unified
 
@@ -427,11 +438,11 @@ def _default_coercion() -> CoercionSpec:
     from emergent.wire.compile._phase import SchemaCompiler, PYDANTIC_PHASE, EntityCompilation
     from emergent.wire.compile._generate import assemble_pydantic
 
-    def _pydantic_validate(model: type, raw: dict[str, object]) -> dict[str, object]:
+    def _pydantic_validate(model: type, raw: JsonDict) -> JsonDict:
         instance = model(**raw)
-        return instance.model_dump()  # type: ignore[no-any-return] # Pydantic BaseModel.model_dump has no stub returning dict
+        return instance.model_dump()
 
-    def _assemble(cls: type, ec: object) -> type:
+    def _assemble(cls: type, ec: Any) -> type:
         assert isinstance(ec, EntityCompilation)
         return assemble_pydantic(cls, ec)
 
@@ -448,6 +459,28 @@ def _validation_error_type() -> type:
     return RequestValidationError
 
 
+def _response_model(
+    codec_response: type | None,
+) -> type | types.UnionType | types.GenericAlias | None:
+    """Response model for the route.
+
+    A collection response (top-level JSON array) maps to ``list[item]`` so the
+    body is a bare array; any other response is its own type.
+    """
+    from emergent.wire.derive._codegen import CollectionResponseMarker
+
+    # Hold the unnarrowed value: returning the `issubclass`-narrowed `codec_response`
+    # on the fall-through would leave a `type[Unknown]` residual in the inferred
+    # return (a TypeGuard-narrowing artifact); the plain copy keeps it `type | None`.
+    plain: type | None = codec_response
+    if (
+        isinstance(codec_response, type)
+        and issubclass(codec_response, CollectionResponseMarker)
+    ):
+        return list[codec_response.collection_item()]
+    return plain
+
+
 def rrc_from_codec(
     codec: RequestResponseCodec,
     trigger: HTTPRouteTrigger,
@@ -455,7 +488,7 @@ def rrc_from_codec(
     """Seed WrapContext from RRC codec — request/response types + extraction."""
     return FastAPIWrapContext(
         request_type=codec.request,
-        response_type=codec.response,
+        response_type=_response_model(codec.response),
         execute=_rrc_execute,
         trigger=trigger,
         extractor=_default_extractor(trigger),
@@ -534,7 +567,7 @@ def assemble_fastapi_route(
         endpoint = _simple_route
 
     # OpenAPI extra for RRC
-    openapi_extra: dict[str, Any] | None = None
+    openapi_extra: JsonDict | None = None
     if ctx.request_type is not None and ctx.trigger is not None:
         openapi_extra = build_rrc_openapi_extra(handler.codec, ctx.trigger, axes)
 
@@ -554,7 +587,7 @@ def build_rrc_openapi_extra(
     codec: RequestResponseCodec,
     trigger: HTTPRouteTrigger,
     axes: Axes,
-) -> dict[str, Any] | None:
+) -> JsonDict | None:
     """Build openapi_extra for RRC codec using schema axis."""
     import re
     from emergent.wire.compile._schema import to_openapi_schema
@@ -563,7 +596,7 @@ def build_rrc_openapi_extra(
     request_schema = to_openapi_schema(req_cls, axes)
     path_param_names = set(re.findall(r"\{(\w+)\}", trigger.path))
 
-    path_parameters: list[dict[str, Any]] = []
+    path_parameters: JsonDictList = []
     if path_param_names and "properties" in request_schema:
         for name in path_param_names:
             if name in request_schema["properties"]:
@@ -575,7 +608,7 @@ def build_rrc_openapi_extra(
                     "schema": prop,
                 })
 
-    result: dict[str, Any] = {}
+    result: JsonDict = {}
 
     if path_parameters:
         result["parameters"] = path_parameters
@@ -604,7 +637,7 @@ def build_rrc_openapi_extra(
                 },
             }
     else:
-        query_parameters: list[dict[str, Any]] = []
+        query_parameters: JsonDictList = []
         if "properties" in request_schema:
             required_fields = set(request_schema.get("required", []))
             for name, prop in request_schema["properties"].items():
@@ -691,7 +724,7 @@ def register_handler(
                 else:
                     openapi_extra[key] = value
 
-    kwargs: dict[str, Any] = {
+    kwargs: JsonDict = {
         "tags": list(route_ctx.tags) if route_ctx.tags else None,
         "summary": route_ctx.summary,
         "description": route_ctx.description,
@@ -826,8 +859,7 @@ def fastapi_compile(
     )
 
     @asynccontextmanager
-    async def lifespan(fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
-        del fastapi_app
+    async def lifespan(_fastapi_app: fastapi.FastAPI) -> AsyncIterator[None]:
         app_types = list(_family.types_for(App)) if _family else []
         if app_scope is not None:
             async with app_scope_lifespan(app_scope, app_types):
@@ -894,27 +926,6 @@ def fastapi_compile(
         register_handler(fapi, trigger, handler, route, request_axes, mounted)
 
     return fapi
-
-
-def _wrap_for_stack(
-    handler: Handler[Any],
-    trigger: HTTPRouteTrigger,
-    axes: Axes,
-    compiler: TargetCompiler[HTTPRouteTrigger],
-) -> FastAPIRoute:
-    """Find the right binding and wrap handler for stack compilation."""
-    if compiler.assemble is None:
-        raise ValueError("Compiler has no assemble function")
-    for binding in compiler.bindings:
-        if isinstance(handler.codec, binding.codec_type):
-            ctx = binding.from_codec(handler.codec, trigger)
-            ctx = fold(
-                handler.capabilities, ctx,
-                compiler.pipeline_protocol, compiler.pipeline_method,
-                trace=axes.trace,
-            )
-            return compiler.assemble(ctx, handler, axes)
-    raise ValueError(f"No adapter for codec type: {type(handler.codec)}")
 
 
 def fastapi_compile_stack(
@@ -1064,8 +1075,12 @@ def install_rfc7807_validation_handler(app: fastapi.FastAPI) -> None:
 
     async def _handler(
         request: fastapi.Request,
-        exc: RequestValidationError,
+        exc: Exception,
     ) -> JSONResponse:
+        # Starlette's ExceptionHandler protocol types `exc` as the base Exception;
+        # FastAPI only dispatches RequestValidationError to this registration, so the
+        # narrowing always holds at runtime.
+        assert isinstance(exc, RequestValidationError)
         errors = exc.errors()
         fields = [
             f"{'.'.join(str(loc) for loc in e.get('loc', ()))}: {e.get('msg', '')}"
@@ -1083,7 +1098,7 @@ def install_rfc7807_validation_handler(app: fastapi.FastAPI) -> None:
             media_type="application/problem+json",
         )
 
-    app.add_exception_handler(RequestValidationError, _handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, _handler)
 
 
 # Alias for cleaner API

@@ -54,12 +54,18 @@ from emergent.wire.axis.query._relational import (
 
 
 type OpHandler[Ctx] = Callable[[Any, Ctx], Ctx]
+type HandlerMap[Ctx] = Mapping[type, OpHandler[Ctx]]
+
+# An op is an arbitrary value dispatched by exact type. The alias keeps
+# ``type(op)`` a known ``type[object]`` (not ``type[Unknown]`` as ``Any`` gives)
+# without using the banned bare-``object`` parameter annotation.
+type OpValue = object
 
 
 def fold_query[Ctx](
-    ops: Sequence[object],
+    ops: Sequence[OpValue],
     initial: Ctx,
-    handlers: Mapping[type, OpHandler[Ctx]],
+    handlers: HandlerMap[Ctx],
 ) -> Ctx:
     """Universal query-level op fold — THE query primitive.
 
@@ -108,9 +114,9 @@ class QueryDialect[Ctx]:
     """
 
     context_type: type[Ctx]
-    handlers: Mapping[type, OpHandler[Ctx]]
+    handlers: HandlerMap[Ctx]
 
-    def fold(self, ops: Sequence[object], initial: Ctx) -> Ctx:
+    def fold(self, ops: Sequence[Any], initial: Ctx) -> Ctx:
         """Run fold_query with this dialect's handlers."""
         return fold_query(ops, initial, self.handlers)
 
@@ -179,7 +185,7 @@ def _handle_distinct(op: Distinct, data: list[Hashable]) -> list[Hashable]:
 
 def _handle_select(op: Select, data: list[Any]) -> list[Any]:
     """Select projection — return dicts with specified fields only."""
-    return [{f: getattr(item, f) for f in op.fields} for item in data]  # type: ignore[misc]
+    return [{f: getattr(item, f) for f in op.fields} for item in data]
 
 
 def _unsupported(name: str) -> OpHandler[list[Any]]:
@@ -192,7 +198,7 @@ def _unsupported(name: str) -> OpHandler[list[Any]]:
     return handler
 
 
-MEMORY_HANDLERS: Mapping[type, OpHandler[list[Any]]] = {
+MEMORY_HANDLERS: HandlerMap[list[Any]] = {
     Filter: _handle_filter,
     OrderBy: _handle_order_by,
     Offset: _handle_offset,

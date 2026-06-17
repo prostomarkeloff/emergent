@@ -14,7 +14,6 @@ Pure functions for expression tree optimization.
 from __future__ import annotations
 
 import dataclasses as _dc
-from typing import Any, cast
 
 from emergent.wire.axis.query._expr import (
     Expr,
@@ -23,6 +22,9 @@ from emergent.wire.axis.query._expr import (
     Or,
     Not,
 )
+
+# Field-name → replacement Expr, splatted into dataclasses.replace().
+type ExprChanges = dict[str, Expr]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -193,8 +195,13 @@ def _simplify_children(expr: Expr) -> Expr:
     Uses dataclass fields introspection to find Expr children,
     simplifies them, and reconstructs the node only if something changed.
     """
-    changes: dict[str, Expr] = {}
-    for f in _dc.fields(expr):  # type: ignore[arg-type]
+    # Every concrete Expr subclass is a frozen dataclass; the abstract base is
+    # never instantiated. The is_dataclass + "not a type" guard narrows `expr`
+    # to a DataclassInstance for fields()/replace() (matches the codebase pattern).
+    if not _dc.is_dataclass(expr) or isinstance(expr, type):
+        return expr
+    changes: ExprChanges = {}
+    for f in _dc.fields(expr):
         val = getattr(expr, f.name)
         if isinstance(val, Expr):
             simplified = simplify_expr(val)
@@ -202,23 +209,19 @@ def _simplify_children(expr: Expr) -> Expr:
                 changes[f.name] = simplified
     if not changes:
         return expr
-    return _dc.replace(expr, **changes)  # type: ignore[type-var]
+    replaced = _dc.replace(expr, **changes)
+    assert isinstance(replaced, Expr)
+    return replaced
 
 
 def _is_true(expr: Expr) -> bool:
     """Check if expression is Const(True)."""
-    if isinstance(expr, Const):
-        val: Any = cast(Const[Any], expr).value
-        return val is True
-    return False
+    return isinstance(expr, Const) and expr.value is True
 
 
 def _is_false(expr: Expr) -> bool:
     """Check if expression is Const(False)."""
-    if isinstance(expr, Const):
-        val: Any = cast(Const[Any], expr).value
-        return val is False
-    return False
+    return isinstance(expr, Const) and expr.value is False
 
 
 

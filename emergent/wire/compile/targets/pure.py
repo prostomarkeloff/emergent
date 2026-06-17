@@ -99,7 +99,7 @@ from typing import runtime_checkable
 class PurePipelineCompilable(Protocol):
     """No-op pipeline protocol for pure targets."""
 
-    def compile_pure_pipeline(self, ctx: object) -> object: ...
+    def compile_pure_pipeline(self, ctx: Any) -> Any: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

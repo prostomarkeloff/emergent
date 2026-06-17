@@ -36,6 +36,8 @@ from emergent.wire.axis.query._provider import (
 
 AK = TypeVar("AK")  # API key type
 
+type StrAnyMap = dict[str, Any]
+
 
 T = TypeVar("T")
 Other = TypeVar("Other")
@@ -252,7 +254,7 @@ class BoundRelationalQuerySet(Generic[T]):
         """Fetch first result."""
         return await self.limit(1).fetch_one()
 
-    async def fetch_aggregates(self) -> dict[str, Any]:
+    async def fetch_aggregates(self) -> StrAnyMap:
         """Execute aggregate query.
 
         Usage:

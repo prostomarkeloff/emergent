@@ -20,6 +20,8 @@ from kungfu import Result, Ok, Option, Some, Nothing
 K = TypeVar("K")
 V = TypeVar("V")
 
+type TTLData[TK, TV] = dict[TK, tuple[TV, datetime | None]]
+
 
 class BaseTTLStorage(Generic[K, V]):
     """Base storage with TTL support and (value, expires_at) tuples.
@@ -27,7 +29,7 @@ class BaseTTLStorage(Generic[K, V]):
     Subclasses override `_persist()` to add durability.
     """
 
-    _data: dict[K, tuple[V, datetime | None]]
+    _data: TTLData[K, V]
 
     def _is_expired(self, expires_at: datetime | None) -> bool:
         """Check if entry is expired."""
@@ -98,7 +100,7 @@ class BaseTTLStorage(Generic[K, V]):
             k for k in self._data.keys()
             if isinstance(k, str) and fnmatch.fnmatch(k, pattern)
         ]
-        return Ok(matching)  # type: ignore[return-value]
+        return Ok(matching)
 
 
 class MemoryStorage(BaseTTLStorage[K, V]):
@@ -110,7 +112,7 @@ class MemoryStorage(BaseTTLStorage[K, V]):
     """
 
     def __init__(self) -> None:
-        self._data: dict[K, tuple[V, datetime | None]] = {}
+        self._data: TTLData[K, V] = {}
 
 
 __all__ = ("BaseTTLStorage", "MemoryStorage")

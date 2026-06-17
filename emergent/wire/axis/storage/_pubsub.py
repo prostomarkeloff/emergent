@@ -14,6 +14,7 @@ from typing import Protocol, AsyncIterator
 
 from kungfu import Result
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.storage._codec import Codec
 from emergent.wire.axis.storage._result import map_result
 from emergent.wire.axis.storage._capabilities import (
@@ -60,6 +61,17 @@ class PubSub[T, E]:
 
     backend: PubSubBackend[E]
     codec: Codec[T]
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "PubSub",
+                (
+                    ("codec", type(self.codec).__name__),
+                    ("backend", type(self.backend).__name__),
+                ),
+            )
+        )
 
     async def publish(self, channel: str, value: T) -> Result[None, E]:
         """Publish typed value to channel."""

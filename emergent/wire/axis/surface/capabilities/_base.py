@@ -35,6 +35,12 @@ class SurfaceCapability(RootCapability, Protocol):
     ...
 
 
+def empty_caps() -> tuple[SurfaceCapability, ...]:
+    """Empty tuple of surface capabilities — shared default_factory."""
+    return ()
+
+
 __all__ = (
     "SurfaceCapability",
+    "empty_caps",
 )

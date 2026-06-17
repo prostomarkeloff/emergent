@@ -1105,15 +1105,20 @@ class TestSchemaInspectLine361:
     def test_typeddict_no_annotations(self) -> None:
         from emergent.wire.axis.schema._inspect import typeddict_inspector
 
-        # A class with required/optional keys but no annotations
-        mock_cls = MagicMock(spec=[])
-        mock_cls.__required_keys__ = frozenset()
-        mock_cls.__optional_keys__ = frozenset()
-        # Remove __annotations__ attribute
-        del mock_cls.__annotations__
+        # An object with the TypedDict key-sets but no __annotations__. A
+        # SimpleNamespace instance never exposes __annotations__ (that descriptor
+        # lives on the `type` metaclass and is not visible through instance lookup),
+        # so hasattr(..., "__annotations__") is False on every Python version —
+        # unlike a MagicMock, whose __annotations__ visibility differs across 3.13/3.14.
+        from types import SimpleNamespace
 
-        result = typeddict_inspector(mock_cls)
-        # Should return None since hasattr check fails
+        fake_cls = SimpleNamespace(
+            __required_keys__=frozenset(),
+            __optional_keys__=frozenset(),
+        )
+
+        result = typeddict_inspector(fake_cls)
+        # Should return None since the __annotations__ hasattr check fails
         assert result is None
 
 

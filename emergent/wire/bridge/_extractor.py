@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from emergent.wire.bridge._types import Extracted, RouteData
 
@@ -46,14 +46,14 @@ class Extractor[R_co: RouteData](Protocol):
     - etc.
     """
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """Check if this extractor can handle this source.
 
         Return True if source has the expected structure.
         """
         ...
 
-    def extract(self, source: object) -> Iterator[Extracted[R_co]]:
+    def extract(self, source: Any) -> Iterator[Extracted[R_co]]:
         """Yield extracted handlers from source.
 
         Each Extracted contains route data + handler + metadata.
@@ -72,11 +72,11 @@ class ComposedExtractor:
 
     extractors: tuple[Extractor[RouteData], ...]
 
-    def can_extract(self, source: object) -> bool:
+    def can_extract(self, source: Any) -> bool:
         """True if any inner extractor can handle source."""
         return any(e.can_extract(source) for e in self.extractors)
 
-    def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+    def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
         """Yield from all applicable extractors."""
         for extractor in self.extractors:
             if extractor.can_extract(source):
@@ -123,10 +123,10 @@ def first_extractor(*extractors: Extractor[RouteData]) -> Extractor[RouteData]:
     class FirstExtractor:
         extractors: tuple[Extractor[RouteData], ...]
 
-        def can_extract(self, source: object) -> bool:
+        def can_extract(self, source: Any) -> bool:
             return any(e.can_extract(source) for e in self.extractors)
 
-        def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+        def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
             for extractor in self.extractors:
                 if extractor.can_extract(source):
                     yield from extractor.extract(source)
@@ -155,10 +155,10 @@ def filter_extractor(
         inner: Extractor[RouteData]
         predicate: Callable[[Extracted[RouteData]], bool]
 
-        def can_extract(self, source: object) -> bool:
+        def can_extract(self, source: Any) -> bool:
             return self.inner.can_extract(source)
 
-        def extract(self, source: object) -> Iterator[Extracted[RouteData]]:
+        def extract(self, source: Any) -> Iterator[Extracted[RouteData]]:
             for extracted in self.inner.extract(source):
                 if self.predicate(extracted):
                     yield extracted

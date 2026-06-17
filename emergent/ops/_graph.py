@@ -34,7 +34,7 @@ Example:
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import (
     Any,
     TypeVar,
@@ -62,6 +62,14 @@ E_co = TypeVar("E_co", covariant=True)
 
 HandlerFunc = Callable[..., Awaitable[Result[Any, Any]]]
 
+type NodeRegistry = dict[type[Op[Any, Any]], type[Node[Any, Any]]]
+type OpParamNames = dict[type[Op[Any, Any]], set[str]]
+type OpHandlers = dict[type[Op[Any, Any]], HandlerFunc]
+type OpRegistrations = dict[type[Op[Any, Any]], _OpReg]
+type ComposeAnnotations = dict[str, Any]
+type WrappedKwargs = dict[str, Any]
+type ScopeExtras = dict[type, Any]
+
 
 class AgentFactory(Protocol):
     """Anything with ``.build(nodes) -> Agent``: a class (EventLoopAgent) or a custom factory."""
@@ -87,7 +95,7 @@ class Op(ABC, Generic[T_co, E_co]):
         return self.get().__await__()
 
 
-def _is_op_type(typ: object) -> bool:
+def _is_op_type(typ: Any) -> bool:
     """Check if type is an Op subclass."""
     try:
         return isinstance(typ, type) and issubclass(typ, Op)
@@ -113,12 +121,14 @@ class _CachedOp(Generic[T_co, E_co]):
 
     __slots__ = ("_result",)
 
+    _result: Result[T_co, E_co]
+
     def __init__(self, result: Result[T_co, E_co]) -> None:
-        object.__setattr__(self, "_result", result)
+        self._result = result
 
     def get(self) -> LazyCoroResult[T_co, E_co]:
         """Return cached result instantly."""
-        result: Result[T_co, E_co] = object.__getattribute__(self, "_result")
+        result: Result[T_co, E_co] = self._result
 
         async def instant() -> Result[T_co, E_co]:
             return result
@@ -132,8 +142,8 @@ class _CachedOp(Generic[T_co, E_co]):
 def _create_node_for_handler(
     op_type: type[Op[Any, Any]],
     handler: HandlerFunc,
-    registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]],
-    op_param_names: dict[type[Op[Any, Any]], set[str]],
+    registry: NodeRegistry,
+    op_param_names: OpParamNames,
 ) -> type[Node[Any, Any]]:
     """
     Create nodnod Node from handler function.
@@ -150,7 +160,7 @@ def _create_node_for_handler(
     op_dep_params: set[str] = set()
 
     # Build __compose__ annotations
-    compose_annotations: dict[str, Any] = {}
+    compose_annotations: ComposeAnnotations = {}
     compose_params: list[inspect.Parameter] = []
 
     for pname, p in sig.parameters.items():
@@ -176,7 +186,7 @@ def _create_node_for_handler(
     # Create __compose__ function that wraps Op deps in _CachedOp
     async def compose_fn(**kwargs: Any) -> Result[Any, Any]:
         # Wrap Op dependency results in _CachedOp so handler can await them
-        wrapped_kwargs: dict[str, Any] = {}
+        wrapped_kwargs: WrappedKwargs = {}
         for k, v in kwargs.items():
             if k in op_dep_params and isinstance(v, (Ok, Error)):
                 # Wrap Result in _CachedOp
@@ -186,7 +196,9 @@ def _create_node_for_handler(
         return await handler(**wrapped_kwargs)
 
     compose_fn.__annotations__ = compose_annotations
-    compose_fn.__signature__ = inspect.Signature(parameters=compose_params)  # type: ignore[attr-defined]
+    # FunctionType has no typed __signature__ slot, but inspect.signature() honors
+    # one stored in __dict__ — set it there to stay type-safe without a suppression.
+    compose_fn.__dict__["__signature__"] = inspect.Signature(parameters=compose_params)
     compose_fn.__name__ = f"compose_{op_type.__name__}"
 
     # Store op_dep_params for reference
@@ -225,7 +237,7 @@ class OpsBuilder:
         others = tuple(i for i in self._items if i[0] is not op_type)
         return OpsBuilder(_items=(*others, (op_type, handler)))
 
-    def inject(self, typ: type[object], impl: object) -> OpsBuilder:
+    def inject(self, typ: type[Any], impl: Any) -> OpsBuilder:
         """Inject shared dependency."""
         self._precompile_scope.inject(typ, impl)
         return self
@@ -237,14 +249,14 @@ class OpsBuilder:
         Creates nodnod nodes for all handlers with proper dependency wiring.
         """
         # First pass: collect all op types
-        op_handlers: dict[type[Op[Any, Any]], HandlerFunc] = {}
+        op_handlers: OpHandlers = {}
         for op_type, handler in self._items:
             op_handlers[op_type] = handler
 
         # Second pass: create nodes (need to handle dependencies)
-        node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]] = {}
-        registrations: dict[type[Op[Any, Any]], _OpReg] = {}
-        op_param_names: dict[type[Op[Any, Any]], set[str]] = {}
+        node_registry: NodeRegistry = {}
+        registrations: OpRegistrations = {}
+        op_param_names: OpParamNames = {}
 
         # Build in dependency order (simple: just iterate, nodes reference by type)
         for op_type, handler in op_handlers.items():
@@ -279,13 +291,13 @@ class Runner:
     """
 
     _agent: AgentFactory
-    _registry: dict[type[Op[Any, Any]], _OpReg]
-    _node_registry: dict[type[Op[Any, Any]], type[Node[Any, Any]]]
+    _registry: OpRegistrations
+    _node_registry: NodeRegistry
     _global_scope: G.TypedScope = field(
         default_factory=lambda: G.TypedScope(detail="ops:global")
     )
 
-    def inject(self, typ: type[object], impl: object) -> Runner:
+    def inject(self, typ: type[Any], impl: Any) -> Runner:
         """Inject shared dependency."""
         self._global_scope.inject(typ, impl)
         return self
@@ -305,11 +317,11 @@ class Runner:
                 return
             visited.add(op_id)
 
-            if not hasattr(op, "__dataclass_fields__"):
+            if not is_dataclass(op):
                 return
 
-            for f in fields(op):  # type: ignore[arg-type]
-                val: object = getattr(op, f.name)
+            for f in fields(op):
+                val: Any = getattr(op, f.name)
                 if isinstance(val, Op):
                     val_typed = cast(Op[Any, Any], val)
                     val_type = type(val_typed)
@@ -324,7 +336,7 @@ class Runner:
     async def run(
         self,
         req: Op[T, E],
-        scope_extras: dict[type, object] | None = None,
+        scope_extras: ScopeExtras | None = None,
     ) -> Result[T, E]:
         """
         Execute operation with automatic parallelization.
@@ -370,7 +382,7 @@ class Runner:
                 scope.inject(dep_type, dep_val)
 
             # Run agent — nodnod parallelizes automatically
-            await agent.run(local_scope=scope.inner, mapped_scopes={})  # type: ignore[misc]
+            await agent.run(local_scope=scope.inner, mapped_scopes={})
 
             # Get result from scope
             result_opt = scope.inner.retrieve(reg.node_cls)

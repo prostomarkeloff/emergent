@@ -12,7 +12,9 @@ Target compilation via WrapPhase — same pattern as schema compilation.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from types import TracebackType
 from typing import Any, Protocol
 
 from nodnod import Scope
@@ -33,6 +35,21 @@ from emergent.wire.compile._lifetime import ScopeLayer, Tier, App, Request
 from emergent.wire.compile.targets.pure import app_scope_lifespan
 
 from emergent.graph._family import ScopeFamily
+
+
+type EventRouteMap = Mapping[type, tuple["EventRoute", ...]]
+type EventRouteGroups = dict[type, list["EventRoute"]]
+
+
+def _runtime_type[T](obj: T) -> type[T]:
+    """The runtime class of ``obj`` as ``type[T]``.
+
+    The dispatched event is typed ``Any`` (its concrete type is only known at
+    runtime), so calling ``type(event)`` directly yields a partially-unknown
+    ``type[Unknown]``. Going through this generic resolves the call to a concrete
+    ``type[T]`` for the lookup against ``EventRouteMap`` — no Unknown leaks in.
+    """
+    return type(obj)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +93,7 @@ def _chain_injectors(
 
     def combined(scope: Scope) -> None:
         event_inject(scope)
-        user_inject(scope)  # type: ignore[arg-type]
+        user_inject(scope)
 
     return combined
 
@@ -96,9 +113,9 @@ class EventRoute:
 
     async def call(
         self,
-        event: object,
+        event: Any,
         inject: ScopeInjector | None = None,
-    ) -> object:
+    ) -> Any:
         return await self._invoke(event, inject)
 
 
@@ -109,7 +126,7 @@ class EventRoute:
 
 def rrc_from_codec_event(
     codec: RequestResponseCodec,
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
 ) -> EventWrapContext:
     """Seed EventWrapContext from RRC codec."""
     return EventWrapContext(
@@ -121,7 +138,7 @@ def rrc_from_codec_event(
 
 def delegate_from_codec_event(
     codec: DelegateCodec,
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
 ) -> EventWrapContext:
     """Seed EventWrapContext from DelegateCodec."""
     return EventWrapContext(
@@ -138,10 +155,10 @@ def delegate_from_codec_event(
 
 async def _rrc_execute_event(
     handler: Handler[RequestResponseCodec],
-    event: object,
+    event: Any,
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     """RRC execution for events."""
     def event_inject(scope: Scope) -> None:
         scope.inject(type(event), event)
@@ -156,10 +173,10 @@ async def _rrc_execute_event(
 
 async def _delegate_execute_event(
     handler: Handler[DelegateCodec],
-    event: object,
+    event: Any,
     inject: ScopeInjector | None,
     axes: Axes,
-) -> object:
+) -> Any:
     """Delegate execution for events."""
     def event_inject(scope: Scope) -> None:
         scope.inject(type(event), event)
@@ -190,7 +207,7 @@ def assemble_event_route(
     if ctx.trigger is None:
         raise ValueError("EventWrapContext.trigger must be set before assembly")
 
-    async def invoke(event: object, inject: ScopeInjector | None) -> object:
+    async def invoke(event: Any, inject: ScopeInjector | None) -> Any:
         return await execute_fn(handler, event, inject, axes)
 
     return EventRoute(
@@ -226,17 +243,18 @@ EVENT_COMPILER: TargetCompiler[EventTrigger[object]] = TargetCompiler(
 class EventDispatcher:
     """Compiled event dispatcher — routes events to handlers by type."""
 
-    routes: Mapping[type, tuple[EventRoute, ...]]
+    routes: EventRouteMap
     _app_scope: Scope | None = field(default=None, repr=False)
     _app_compose: frozenset[type] = field(default_factory=lambda: frozenset[type](), repr=False)
+    _lifespan_cm: AbstractAsyncContextManager[Scope] | None = field(default=None, repr=False)
 
     async def dispatch(
         self,
-        event: object,
+        event: Any,
         inject: ScopeInjector | None = None,
-    ) -> tuple[object, ...]:
+    ) -> tuple[Any, ...]:
         """Dispatch event to all matching handlers."""
-        handlers = self.routes.get(type(event), ())
+        handlers = self.routes.get(_runtime_type(event), ())
         return tuple([await r.call(event, inject) for r in handlers])
 
     async def __aenter__(self) -> EventDispatcher:
@@ -251,9 +269,9 @@ class EventDispatcher:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: object,
+        exc_tb: TracebackType | None,
     ) -> None:
-        cm = getattr(self, "_lifespan_cm", None)
+        cm = self._lifespan_cm
         if cm is not None:
             await cm.__aexit__(exc_type, exc_val, exc_tb)
 
@@ -266,7 +284,7 @@ class EventDispatcher:
 def event_compile(
     app: Application,
     axes: Axes | None = None,
-    compiler: TargetCompiler[EventTrigger[object]] | None = None,
+    compiler: TargetCompiler[EventTrigger[Any]] | None = None,
     family: ScopeFamily[Tier] | None = None,
 ) -> EventDispatcher:
     """Compile wire Application to EventDispatcher."""
@@ -287,11 +305,11 @@ def event_compile(
         )
         request_axes = base_axes.with_scope_layer(layer)
 
-    grouped: dict[type, list[EventRoute]] = {}
+    grouped: EventRouteGroups = {}
     for _trigger, _handler, route in _compiler.scan_and_wrap(app, request_axes):
         grouped.setdefault(route.event_type, []).append(route)
 
-    routes: Mapping[type, tuple[EventRoute, ...]] = {
+    routes: EventRouteMap = {
         ev_type: tuple(route_list) for ev_type, route_list in grouped.items()
     }
 
@@ -323,7 +341,7 @@ __all__ = (
 
 def wrap_rrc_event(
     handler: Handler[RequestResponseCodec],
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
     axes: Axes,
 ) -> EventRoute:
     ctx = rrc_from_codec_event(handler.codec, trigger)
@@ -333,7 +351,7 @@ def wrap_rrc_event(
 
 def wrap_delegate_event(
     handler: Handler[DelegateCodec],
-    trigger: EventTrigger[object],
+    trigger: EventTrigger[Any],
     axes: Axes,
 ) -> EventRoute:
     ctx = delegate_from_codec_event(handler.codec, trigger)

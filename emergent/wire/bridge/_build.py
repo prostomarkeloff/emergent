@@ -27,7 +27,7 @@ Symmetric to compile:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from emergent.wire.bridge._axes import BridgeAxes
 from emergent.wire.bridge._capabilities import (
@@ -46,6 +46,9 @@ if TYPE_CHECKING:
     from emergent.wire.axis.surface._endpoint import Endpoint
 
 
+type BridgeHandlerMap = Mapping[type[BridgeCapability], BridgeCapabilityHandler]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # BridgeContext Builder
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -53,7 +56,7 @@ if TYPE_CHECKING:
 
 def _extracted_to_context[R: RouteData](
     extracted: Extracted[R],
-) -> BridgeContext[R, ..., object]:
+) -> BridgeContext[R, ..., Any]:
     """Convert Extracted to BridgeContext for capability processing."""
     return BridgeContext(
         trigger_data=extracted.route,
@@ -73,12 +76,12 @@ def _extracted_to_context[R: RouteData](
 
 
 def build_application(
-    source: object,
+    source: Any,
     capabilities: Sequence[BridgeCapability] = (),
     *,
     axes: BridgeAxes | None = None,
     registry: BridgeRegistry | None = None,
-    handlers: Mapping[type[BridgeCapability], BridgeCapabilityHandler] | None = None,
+    handlers: BridgeHandlerMap | None = None,
 ) -> Application:
     """Convert framework source to wire Application.
 

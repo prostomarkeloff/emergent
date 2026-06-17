@@ -103,6 +103,10 @@ class WorkStealingCompilable(Protocol):
     def compile_work_stealing(self, ctx: WorkStealingContext) -> WorkStealingContext: ...
 
 
+# ── Named type alias (house style: alias instead of inline dict[...]) ──
+type NodeTraitMap = dict[type[Node], WorkStealingContext]
+
+
 @dataclass(frozen=True, slots=True)
 class WorkStealing:
     """N OS threads with work-stealing deques. Requires free-threaded Python.
@@ -125,7 +129,7 @@ class WorkStealing:
 
         graph_info = build_graph_info(nodes)
 
-        traits: dict[type[Node], WorkStealingContext] = {}
+        traits: NodeTraitMap = {}
         for node in graph_info.all_nodes:
             ctx = fold_schema(
                 node, WorkStealingContext(), WorkStealingCompilable, "compile_work_stealing"

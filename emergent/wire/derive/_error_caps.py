@@ -12,7 +12,7 @@ Not CRUD-specific. Any pattern producing DomainError can use these.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.axis.surface.transforms import ResponseTransform
@@ -23,14 +23,27 @@ if TYPE_CHECKING:
     from emergent.wire.axis._capability import FastAPIRouteContext
 
 
+@runtime_checkable
+class _HasToProblem(Protocol):
+    # Any — return is a domain-specific problem envelope, structurally opaque here.
+    def to_problem(self) -> Any: ...
+
+
+@runtime_checkable
+class _ProblemLike(Protocol):
+    # Any — status_code / to_dict() values are framework-opaque at this boundary.
+    status_code: Any
+
+    def to_dict(self) -> Any: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ErrorTransform(ResponseTransform):
     """Calls response.to_problem() if available, passes through otherwise."""
 
-    def apply_response(self, response: object) -> object:
-        to_problem = getattr(response, "to_problem", None)
-        if callable(to_problem):
-            return to_problem()
+    def apply_response(self, response: Any) -> Any:
+        if isinstance(response, _HasToProblem) and callable(response.to_problem):
+            return response.to_problem()
         return response
 
 
@@ -44,18 +57,20 @@ class ProblemResponse(ResponseTransform):
 
     media_type: str = "application/problem+json"
 
-    def apply_response(self, response: object) -> object:
-        to_dict = getattr(response, "to_dict", None)
-        status_code = getattr(response, "status_code", None)
-        if callable(to_dict) and status_code is not None:
+    def apply_response(self, response: Any) -> Any:
+        if (
+            isinstance(response, _ProblemLike)
+            and callable(response.to_dict)
+            and response.status_code is not None
+        ):
             try:
                 from starlette.responses import JSONResponse
             except ImportError:
                 return response
 
             return JSONResponse(
-                status_code=status_code,
-                content=to_dict(),
+                status_code=response.status_code,
+                content=response.to_dict(),
                 media_type=self.media_type,
             )
         return response

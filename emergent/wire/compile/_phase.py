@@ -38,6 +38,8 @@ compile_entity() wraps compile_fields() and adds entity-level folds.
 
 from __future__ import annotations
 
+import inspect
+
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, TYPE_CHECKING
@@ -72,6 +74,19 @@ from emergent.wire.axis._capability import (
 )
 from emergent.wire.axis.schema import FieldInfo
 from emergent.wire.compile._core import Axes, CapabilityHandler, fold_field, fold_schema, traced_fold
+
+# Capability-type → handler, keyed by phase context type Ctx.
+type HandlerMap[Ctx] = Mapping[type[Capability], CapabilityHandler[Ctx]]
+# Mutable accumulator while merging handler maps.
+type HandlerDict[Ctx] = dict[type[Capability], CapabilityHandler[Ctx]]
+# Heterogeneous context store keyed by context type (values erased to object).
+type ContextStore = dict[type, object]
+# Same store while accumulating folds (values not yet narrowed).
+type ContextAcc = dict[type, Any]
+# Storage row: field name → (possibly coerced) value.
+type StorageRow = dict[str, Any]
+# Field name → value coercion function for query rewriting.
+type CoercionMap = dict[str, Callable[[Any], Any]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -137,7 +152,7 @@ class CompilationPhase[Ctx]:
     context_type: type[Ctx]
     protocol: type
     initial: Callable[[str, type], Ctx]
-    handlers: Mapping[type[Capability], CapabilityHandler[Ctx]] | None = None
+    handlers: HandlerMap[Ctx] | None = None
     # Any — heterogeneous entity fold (EntityFold[PydanticModelContext],
     # EntityFold[OpenAPISchemaContext], etc.). Python has no existential types;
     # Any is the correct erasure for heterogeneous generic storage.
@@ -157,12 +172,12 @@ class CompilationPhase[Ctx]:
 
     def with_handlers(
         self,
-        handlers: Mapping[type[Capability], CapabilityHandler[Ctx]] | None,
+        handlers: HandlerMap[Ctx] | None,
     ) -> CompilationPhase[Ctx]:
         """Return new phase with handlers merged. Immutable."""
         if handlers is None:
             return self
-        merged: dict[type[Capability], CapabilityHandler[Ctx]] = {
+        merged: HandlerDict[Ctx] = {
             **(self.handlers or {}),
             **handlers,
         }
@@ -211,7 +226,7 @@ class FieldCompilation:
 
     name: str
     info: FieldInfo
-    _contexts: dict[type, object]
+    _contexts: ContextStore
 
     def __getitem__[Ctx](self, phase: CompilationPhase[Ctx]) -> Ctx:
         result = self._contexts[phase.context_type]
@@ -247,7 +262,7 @@ class EntityCompilation:
     """
 
     fields: tuple[FieldCompilation, ...]
-    _entity_contexts: dict[type, object]
+    _entity_contexts: ContextStore
 
     def __getitem__[EntityCtx](self, fold: EntityFold[EntityCtx]) -> EntityCtx:
         """Get typed entity-level context by EntityFold key."""
@@ -256,17 +271,23 @@ class EntityCompilation:
             raise KeyError(
                 f"No entity context for {fold.context_type.__name__}"
             )
-        # dict stores heterogeneous contexts as object; generic EntityCtx
-        # on EntityFold provides correct static type at call site.
-        # Same pattern as FieldCompilation.__getitem__.
-        return ctx  # type: ignore[return-value]
+        # The store is heterogeneous (object-valued); narrow via the fold's
+        # context_type — same isinstance bridge as FieldCompilation.__getitem__.
+        if not isinstance(ctx, fold.context_type):
+            raise TypeError(f"Expected {fold.context_type}, got {type(ctx)}")
+        return ctx
 
     def get[EntityCtx](self, fold: EntityFold[EntityCtx]) -> EntityCtx | None:
         """Get typed entity context, or None if not present."""
-        # Same heterogeneous dict → typed return bridge as __getitem__
-        return self._entity_contexts.get(fold.context_type)  # type: ignore[return-value]
+        # Same heterogeneous dict → typed return bridge as __getitem__.
+        ctx = self._entity_contexts.get(fold.context_type)
+        if ctx is None:
+            return None
+        if not isinstance(ctx, fold.context_type):
+            raise TypeError(f"Expected {fold.context_type}, got {type(ctx)}")
+        return ctx
 
-    def has_entity(self, fold: EntityFold[object]) -> bool:
+    def has_entity(self, fold: EntityFold[Any]) -> bool:
         """Check if entity context exists for this fold."""
         return fold.context_type in self._entity_contexts
 
@@ -319,7 +340,7 @@ def compile_fields(
     field_traces: list[Any] = [] if trace is not None else []
 
     for name, info in fields.items():
-        contexts: dict[type, object] = {}
+        contexts: ContextAcc = {}
         phase_traces: list[Any] = [] if trace is not None else []
 
         for phase in phases:
@@ -399,7 +420,7 @@ def compile_entity(
     field_compilations = compile_fields(cls, axes, phases)
 
     # 2. Entity-level folds (new)
-    entity_contexts: dict[type, object] = {}
+    entity_contexts: ContextAcc = {}
     trace = axes.trace
 
     for phase in phases:
@@ -536,13 +557,26 @@ class Compilation[T, Model]:
     fields: tuple[FieldCompilation, ...]
 
     @property
+    def identity_fields(self) -> tuple[str, ...]:
+        """All identity (primary-key) field names, in declaration order.
+
+        A composite primary key (e.g. an association table) declares more than
+        one Identity field; this returns every one. Stores use it to handle
+        composite keys correctly (placeholder stripping, lookup, deletion).
+        """
+        return tuple(
+            fc.name for fc in self.fields if fc[STORAGE_FIELD_PHASE].is_identity
+        )
+
+    @property
     def identity_field(self) -> str | None:
-        """Find the identity field name from compiled fields."""
-        for fc in self.fields:
-            meta = fc[STORAGE_FIELD_PHASE]
-            if meta.is_identity:
-                return fc.name
-        return None
+        """First identity field name, or None.
+
+        Single-key convenience over identity_fields. For composite keys this is
+        only the first column — callers needing the whole key use identity_fields.
+        """
+        fields = self.identity_fields
+        return fields[0] if fields else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -700,9 +734,9 @@ STORAGE_SCHEMA = SchemaCompiler(phases=(STORAGE_FIELD_PHASE,))
 
 
 def to_storage_dict(
-    entity: object,
+    entity: Any,
     fields: tuple[FieldCompilation, ...],
-) -> dict[str, object]:
+) -> StorageRow:
     """Entity → storage dict. Applies to_storage coercion from STORAGE_FIELD_PHASE.
 
     Universal — SA, Mongo, Pandas, Redis all use this.
@@ -711,7 +745,7 @@ def to_storage_dict(
         # SA:    model_cls(**data)
         # Mongo: collection.insert_one(data)
     """
-    data: dict[str, object] = {}
+    data: StorageRow = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getattr(entity, fc.name)
@@ -722,7 +756,7 @@ def to_storage_dict(
 
 
 def from_storage[T](
-    getter: Callable[[str], object],
+    getter: Callable[[str], Any],
     entity_cls: type[T],
     fields: tuple[FieldCompilation, ...],
 ) -> T:
@@ -737,16 +771,21 @@ def from_storage[T](
     """
     from enum import Enum as _Enum
 
-    data: dict[str, object] = {}
+    data: StorageRow = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         value = getter(fc.name)
         if meta.from_storage is not None:
             value = meta.from_storage(value)
-        # Reconstruct enums: storage returns raw str/int, entity expects Enum
+        # Reconstruct enums: storage returns raw str/int, entity expects Enum.
+        # `base_type` is annotated `type` but at runtime may be a parametrized
+        # generic (`list[int]`, `X | None`) for which `issubclass` would raise;
+        # `inspect.isclass` selects only real classes — exactly the runtime
+        # contract of the previous `isinstance(declared, type)` guard, without
+        # pyright flagging it as a redundant type-vs-type check.
         declared = fc.info.base_type
         if (
-            isinstance(declared, type)
+            inspect.isclass(declared)
             and issubclass(declared, _Enum)
             and not isinstance(value, declared)
             and value is not None
@@ -766,7 +805,7 @@ def coerce_expr(
     """
     from emergent.wire.axis.query._coerce import ExprCoercer
 
-    coercion: dict[str, Callable[[object], object]] = {}
+    coercion: CoercionMap = {}
     for fc in fields:
         meta = fc[STORAGE_FIELD_PHASE]
         if meta.to_storage is not None:

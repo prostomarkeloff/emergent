@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable, Mapping, Sequence
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+type ExceptionHandlerMap = Mapping[Any, Callable[..., Any]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -24,10 +26,10 @@ class FastAPIRouterProtocol(Protocol):
     """Protocol for FastAPI router (holds lifecycle handlers)."""
 
     @property
-    def on_startup(self) -> list[Callable[[], object]]: ...
+    def on_startup(self) -> list[Callable[[], Any]]: ...
 
     @property
-    def on_shutdown(self) -> list[Callable[[], object]]: ...
+    def on_shutdown(self) -> list[Callable[[], Any]]: ...
 
 
 @runtime_checkable
@@ -35,16 +37,16 @@ class FastAPIAppProtocol(Protocol):
     """Protocol for FastAPI app."""
 
     @property
-    def routes(self) -> Sequence[object]: ...
+    def routes(self) -> Sequence[Any]: ...
 
     @property
     def router(self) -> FastAPIRouterProtocol: ...
 
     @property
-    def exception_handlers(self) -> Mapping[object, Callable[..., object]]: ...
+    def exception_handlers(self) -> ExceptionHandlerMap: ...
 
     @property
-    def user_middleware(self) -> Sequence[object]: ...
+    def user_middleware(self) -> Sequence[Any]: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -52,17 +54,25 @@ class FastAPIAppProtocol(Protocol):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def is_depends(obj: object) -> bool:
+def is_depends(obj: Any) -> bool:
     """Check if object is FastAPI Depends instance."""
     return type(obj).__name__ == "Depends"
 
 
-def get_depends_func(depends: object) -> object | None:
+@runtime_checkable
+class _HasDependency(Protocol):
+    """A FastAPI ``Depends`` instance exposing its ``dependency`` callable."""
+
+    @property
+    def dependency(self) -> Any: ...
+
+
+def get_depends_func(depends: Any) -> Any | None:
     """Get the dependency function from Depends instance."""
-    return getattr(depends, "dependency", None)
+    return depends.dependency if isinstance(depends, _HasDependency) else None
 
 
-def find_depends_param(handler: object, depends_func: object) -> str | None:
+def find_depends_param(handler: Any, depends_func: Any) -> str | None:
     """Find parameter name that uses given Depends function.
 
     Args:
@@ -95,7 +105,7 @@ def find_depends_param(handler: object, depends_func: object) -> str | None:
     return None
 
 
-def get_all_depends(handler: Callable[..., object]) -> list[tuple[str, object]]:
+def get_all_depends(handler: Callable[..., Any]) -> list[tuple[str, Any]]:
     """Get all Depends() parameters from handler.
 
     Returns list of (param_name, dependency_function) tuples.
@@ -114,7 +124,7 @@ def get_all_depends(handler: Callable[..., object]) -> list[tuple[str, object]]:
     if not callable(handler):
         return []
 
-    result: list[tuple[str, object]] = []
+    result: list[tuple[str, Any]] = []
     try:
         sig = inspect.signature(handler)
         for name, param in sig.parameters.items():

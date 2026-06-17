@@ -96,9 +96,14 @@ class SagaResult[T]:
 
 @dataclass(frozen=True, slots=True)
 class SagaError[E]:
-    """Saga error with rollback status."""
+    """Saga error with rollback status.
 
-    error: E
+    ``error`` is the domain error (type ``E``) that failed the saga, or ``None`` when
+    the failure is a machinery break (the parallel combinator itself failing) with no
+    domain error to report.
+    """
+
+    error: E | None
     step_failed: int
     compensators_run: int
     compensators_failed: int

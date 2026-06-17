@@ -41,8 +41,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
 markers = [
-    "slow: marks tests as slow (skipped in light mode)",
+    "slow: heavy/slow tests — opt-in",
+    "fuzz: schemathesis generative fuzzing — opt-in via EMERGENT_FUZZ=1",
 ]
 asyncio_mode = "strict"
 
@@ -61,6 +63,31 @@ allow-direct-references = true
 [tool.uv.workspace]
 members = []
 
+[tool.uv.sources]
+pytest-fast = { git = "https://github.com/prostomarkeloff/pytest-fast" }
+ohbin = { git = "https://github.com/prostomarkeloff/ohbin.git" }
+
+
+[tool.ohbin.tools.find-dup-defs]
+repo = "prostomarkeloff/find-dup-defs"
+version = "0.7.5"
+binary = "find-dup-defs"
+
+[tool.ohbin.tools.find-dup-defs.assets.linux-x86_64]
+url = "https://github.com/prostomarkeloff/find-dup-defs/releases/download/v0.7.5/find-dup-defs-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "575630a804aa5595cbb4377513ed41ee625c3f7b932cff12ebd8cea072dcd44f"
+
+[tool.ohbin.tools.find-dup-defs.assets.linux-aarch64]
+url = "https://github.com/prostomarkeloff/find-dup-defs/releases/download/v0.7.5/find-dup-defs-aarch64-unknown-linux-gnu.tar.gz"
+sha256 = "78cf3c21c5b7c6c809309640e6314ad5158f41be1384c0a621227a91388a2df0"
+
+[tool.ohbin.tools.find-dup-defs.assets.darwin-x86_64]
+url = "https://github.com/prostomarkeloff/find-dup-defs/releases/download/v0.7.5/find-dup-defs-x86_64-apple-darwin.tar.gz"
+sha256 = "cdb763930dbff392c065c51e587ac10874bf32cf9c84e95691bc93e68c13551c"
+
+[tool.ohbin.tools.find-dup-defs.assets.darwin-arm64]
+url = "https://github.com/prostomarkeloff/find-dup-defs/releases/download/v0.7.5/find-dup-defs-aarch64-apple-darwin.tar.gz"
+sha256 = "fef934f36d3efc57f554c49bfce4d22c22b5694e8119136e4b8fa38b13b8e0d6"
 [dependency-groups]
 dev = [
     "emergent[all]",
@@ -75,4 +102,8 @@ dev = [
     "pyright>=1.1.408",
     "ruff>=0.14.11",
     "schemathesis>=4.0",
+    "ast-grep-cli>=0.42.1",
+    "pytest-fast",
+    "pyinstrument>=5.1.2",
+    "ohbin",
 ]

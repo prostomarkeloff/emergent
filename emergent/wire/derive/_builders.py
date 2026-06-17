@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Never
 from emergent.wire.derive._codegen import (
     HasAnnotations,
     annotate_handler,
+    create_collection_response_type,
     create_dataclass,
     create_request_type,
     create_response_type,
@@ -36,6 +37,13 @@ if TYPE_CHECKING:
     from emergent.wire.derive._codegen import FieldSpec
     from emergent.wire.derive._ctx import Operation, OperationHandler
     from emergent.wire.derive._project import ResponseConverter
+
+
+type FieldDefault = int | str | float | bool | None
+type RequestFieldMap = dict[str, type | tuple[type, FieldDefault]]
+type ResponseFieldMap = dict[str, type | tuple[type, FieldDefault]]
+
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,20 +62,33 @@ class ExposureBuilder[T, E]:
 
     _name: str
     _entity: type
-    _request_fields: dict[str, type]
-    _response_fields: dict[str, type | tuple[type, int | str | float | bool | None]]
+    _request_fields: RequestFieldMap
+    _response_fields: ResponseFieldMap
     _handler: OperationHandler[T, E] | None
     _trigger: Trigger | None
     _capabilities: tuple[SurfaceCapability, ...]
     _response_converter: ResponseConverter | None
+    _collection: bool = False
 
-    def request(self, **fields: type) -> ExposureBuilder[T, E]:
+    def request(self, **fields: type | tuple[type, FieldDefault]) -> ExposureBuilder[T, E]:
+        """Declare request fields. A field may be a bare type, a ``(type, default)``
+        tuple for an optional param, or ``provider_field(Node)`` for scope injection.
+        Non-default fields must be declared before defaulted ones (dataclass ordering).
+        """
         return replace(self, _request_fields=fields)
 
     def response(
         self, **fields: type | tuple[type, int | str | float | bool | None]
     ) -> ExposureBuilder[T, E]:
-        return replace(self, _response_fields=fields)
+        return replace(self, _response_fields=fields, _collection=False)
+
+    def response_list(self, **item_fields: type) -> ExposureBuilder[T, E]:
+        """Declare a top-level JSON array response: body is ``list[{item_fields}]``.
+
+        The handler returns ``Ok(list_of_dicts)``; each element is mapped through
+        the item type, producing a bare array (no ``{"items": ...}`` envelope).
+        """
+        return replace(self, _response_fields=item_fields, _collection=True)
 
     def handler[NewT, NewE](
         self, fn: OperationHandler[NewT, NewE]
@@ -81,6 +102,7 @@ class ExposureBuilder[T, E]:
             _trigger=self._trigger,
             _capabilities=self._capabilities,
             _response_converter=self._response_converter,
+            _collection=self._collection,
         )
 
     def trigger(self, t: Trigger) -> ExposureBuilder[T, E]:
@@ -98,15 +120,22 @@ class ExposureBuilder[T, E]:
         if self._handler is None:
             raise ValueError(f"Handler not set for operation '{self._name}'")
 
+        request_field_specs: list[FieldSpec] = []
+        for req_name, req_spec in self._request_fields.items():
+            if isinstance(req_spec, tuple):
+                request_field_specs.append((req_name, req_spec[0], req_spec[1]))
+            else:
+                request_field_specs.append((req_name, req_spec))
+
         op_type = create_dataclass(
             f"{self._entity.__name__}{self._name.title()}Op",
-            list(self._request_fields.items()),
+            request_field_specs,
             frozen=True,
         )
 
         request_type = create_request_type(
             f"{self._name.title()}Request",
-            list(self._request_fields.items()),
+            request_field_specs,
             op_type,
         )
 
@@ -116,6 +145,24 @@ class ExposureBuilder[T, E]:
                 response_field_specs.append((name, spec[0], spec[1]))
             else:
                 response_field_specs.append((name, spec))
+
+        if self._collection:
+            response_type = create_collection_response_type(
+                f"{self._name.title()}Response", response_field_specs,
+            )
+            annotated_handler = annotate_handler(self._handler, op_type)
+            from emergent.wire.axis.surface import Exposure as _ExposureColl
+            from emergent.wire.axis.surface.codecs import rrc as _rrc_coll
+            codec = _rrc_coll(request_type, response_type)
+            return (
+                op_type,
+                annotated_handler,
+                _ExposureColl(
+                    trigger=self._trigger,
+                    codec=codec,
+                    capabilities=tuple(self._capabilities),
+                ),
+            )
 
         if self._response_converter is not None:
             converter = self._response_converter
@@ -132,7 +179,7 @@ class ExposureBuilder[T, E]:
                         else:
                             return cls(**{f: getattr(val, f, None) for f in _fields})
                     case Error(err):
-                        return err  # type: ignore[return-value]
+                        return err
                     case _:
                         raise TypeError(f"Expected Result, got {type(result)}")
 

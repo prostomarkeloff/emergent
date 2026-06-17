@@ -558,7 +558,8 @@ class TestTraceDict:
     def test_non_traced_returns_empty(self) -> None:
         axes = Axes.default()
         data = trace_dict(axes)
-        assert data == {}
+        # Post-TypedDict refactor: always returns TraceDict shape.
+        assert data == {"types": [], "scan": [], "wrap": []}
 
     def test_trace_has_correct_class_name(self) -> None:
         axes = Axes.traced()

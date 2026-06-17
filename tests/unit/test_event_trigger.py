@@ -368,7 +368,12 @@ class TestEventExplain:
         assert "DelegateCodec" in text
 
     def test_event_trigger_in_surface_explain(self):
-        assert EventTrigger in SURFACE_EXPLAIN
+        # Triggers self-describe via the Explainable protocol now; SURFACE_EXPLAIN
+        # is the (empty) per-type override channel, not a dispatch table.
+        from emergent.wire.axis._explain import Explainable
+
+        assert EventTrigger not in SURFACE_EXPLAIN
+        assert isinstance(EventTrigger(OrderCreated), Explainable)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

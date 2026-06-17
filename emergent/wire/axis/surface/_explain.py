@@ -12,7 +12,7 @@ Two layers:
     text = explain_application(app)         # -> str
 
 Open-world: unknown trigger/codec/capability types get generic fallback.
-Custom handlers via Mapping[type, SurfaceExplainHandler].
+Custom handlers via ExplainHandlers.
 """
 
 from __future__ import annotations
@@ -21,6 +21,13 @@ import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, TypeGuard
 
+from emergent.wire.axis._explain import (
+    ExplainContext,
+    Explainable,
+    callable_name,
+    runtime_type,
+    to_dict,
+)
 from emergent.wire.axis.surface._app import Application
 from emergent.wire.axis.surface._endpoint import Endpoint
 from emergent.wire.axis.surface._types import Exposure
@@ -39,7 +46,9 @@ from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, Immediat
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-type SurfaceExplainHandler = Callable[[Any], dict[str, Any]]
+type JsonDict = dict[str, Any]
+type SurfaceExplainHandler = Callable[[Any], JsonDict]
+type ExplainHandlers = Mapping[type, SurfaceExplainHandler]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -47,9 +56,9 @@ type SurfaceExplainHandler = Callable[[Any], dict[str, Any]]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _dataclass_dict(obj: object) -> dict[str, Any]:
+def _dataclass_dict(obj: Any) -> JsonDict:
     """Any frozen dataclass -> dict via dataclass fields contract."""
-    d: dict[str, Any] = {"type": type(obj).__name__}
+    d: JsonDict = {"type": type(obj).__name__}
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         for f in dataclasses.fields(obj):
             val = getattr(obj, f.name)
@@ -57,48 +66,49 @@ def _dataclass_dict(obj: object) -> dict[str, Any]:
     return d
 
 
-def _unknown_dict(obj: object) -> dict[str, Any]:
+def _unknown_dict(obj: Any) -> JsonDict:
     """Fallback for unknown types — just the type name."""
     return _dataclass_dict(obj)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Trigger Handlers
+# Trigger / Codec handler shims
+#
+# Triggers and codecs self-describe via `compile_explain` (the shared `Explainable`
+# protocol) — that is the path `_explain_obj` takes for real objects. These
+# module-level functions are kept (tests import them and call them directly, often
+# with duck-typed mocks) with their original field-reading bodies, so they remain
+# byte-identical and do not depend on a real `compile_explain` being present.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _explain_http_trigger(t: HTTPRouteTrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "HTTPRouteTrigger", "method": t.method, "path": t.path}
+def _explain_http_trigger(t: HTTPRouteTrigger) -> JsonDict:
+    d: JsonDict = {"type": "HTTPRouteTrigger", "method": t.method, "path": t.path}
     if t.headers:
         d["headers"] = sorted(t.headers)
     return d
 
 
-def _explain_cli_trigger(t: CLITrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "CLITrigger", "command": t.command}
+def _explain_cli_trigger(t: CLITrigger) -> JsonDict:
+    d: JsonDict = {"type": "CLITrigger", "command": t.command}
     if t.description:
         d["description"] = t.description
     return d
 
 
-def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> dict[str, Any]:
-    d: dict[str, Any] = {"type": "TelegrinderTrigger", "view": t.view}
-    rules: tuple[object, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
+def _explain_telegrinder_trigger(t: TelegrinderTrigger) -> JsonDict:
+    d: JsonDict = {"type": "TelegrinderTrigger", "view": t.view}
+    rules: tuple[Any, ...] = t.rules  # ABCRule behind TYPE_CHECKING — treat as object
     if rules:
         d["rules"] = [type(r).__name__ for r in rules]
     return d
 
 
-def _explain_event_trigger(t: EventTrigger[object]) -> dict[str, Any]:
+def _explain_event_trigger(t: EventTrigger[Any]) -> JsonDict:
     return {"type": "EventTrigger", "event_type": t.event_type.__name__}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Codec Handlers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _explain_rrc(c: RequestResponseCodec) -> dict[str, Any]:
+def _explain_rrc(c: RequestResponseCodec) -> JsonDict:
     return {
         "type": "RequestResponseCodec",
         "request": c.request.__name__,
@@ -106,8 +116,8 @@ def _explain_rrc(c: RequestResponseCodec) -> dict[str, Any]:
     }
 
 
-def _explain_stateful(c: StatefulCodec) -> dict[str, Any]:
-    d: dict[str, Any] = {
+def _explain_stateful(c: StatefulCodec) -> JsonDict:
+    d: JsonDict = {
         "type": "StatefulCodec",
         "flow": c.flow.__name__,
     }
@@ -117,46 +127,50 @@ def _explain_stateful(c: StatefulCodec) -> dict[str, Any]:
     return d
 
 
-def _explain_delegate(c: DelegateCodec) -> dict[str, Any]:
-    d: dict[str, Any] = {
+def _explain_delegate(c: DelegateCodec) -> JsonDict:
+    d: JsonDict = {
         "type": "DelegateCodec",
-        "handler": getattr(c.handler, "__name__", repr(c.handler)),
+        "handler": callable_name(c.handler),
     }
     return d
 
 
-def _explain_immediate(c: ImmediateCodec) -> dict[str, Any]:
+def _explain_immediate(c: ImmediateCodec) -> JsonDict:
     return {
         "type": "ImmediateCodec",
         "response": c.response.__name__,
     }
 
 
-def _explain_immediate_factory(c: ImmediateFactoryCodec) -> dict[str, Any]:
+def _explain_immediate_factory(c: ImmediateFactoryCodec) -> JsonDict:
     return {
         "type": "ImmediateFactoryCodec",
-        "factory": getattr(c.factory, "__name__", repr(c.factory)),
+        "factory": callable_name(c.factory),
     }
 
 
+# Back-compat: these single-object shims are no longer the dispatch path (that is
+# the Explainable protocol via `_explain_obj`); they are kept only for direct import
+# by tests/tooling. This tuple keeps the references live without re-registering them.
+_LEGACY_SHIMS: tuple[Callable[[Any], JsonDict], ...] = (
+    _explain_http_trigger,
+    _explain_cli_trigger,
+    _explain_telegrinder_trigger,
+    _explain_event_trigger,
+    _explain_rrc,
+    _explain_stateful,
+    _explain_delegate,
+    _explain_immediate,
+    _explain_immediate_factory,
+)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# Pre-built handler mapping
+# Handler mapping — empty (triggers/codecs self-describe); override channel
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
-    # Triggers
-    HTTPRouteTrigger: _explain_http_trigger,
-    CLITrigger: _explain_cli_trigger,
-    TelegrinderTrigger: _explain_telegrinder_trigger,
-    EventTrigger: _explain_event_trigger,
-    # Codecs
-    RequestResponseCodec: _explain_rrc,
-    StatefulCodec: _explain_stateful,
-    DelegateCodec: _explain_delegate,
-    ImmediateCodec: _explain_immediate,
-    ImmediateFactoryCodec: _explain_immediate_factory,
-}
+SURFACE_EXPLAIN: ExplainHandlers = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -165,21 +179,24 @@ SURFACE_EXPLAIN: Mapping[type, SurfaceExplainHandler] = {
 
 
 def _explain_obj(
-    obj: object,
-    handlers: Mapping[type, SurfaceExplainHandler] | None,
-) -> dict[str, Any]:
-    """Explain any object using handler dispatch with fallback."""
+    obj: Any,
+    handlers: ExplainHandlers | None,
+) -> JsonDict:
+    """Explain any object: override handler → `Explainable` protocol → fallback."""
     effective = handlers if handlers is not None else SURFACE_EXPLAIN
-    handler = effective.get(type(obj))
+    handler = effective.get(runtime_type(obj))
     if handler is not None:
         return handler(obj)
+    if isinstance(obj, Explainable):
+        ctx = obj.compile_explain(ExplainContext())
+        return to_dict(ctx.nodes[-1], type_key="type")
     return _unknown_dict(obj)
 
 
 def exposure_dict(
     exp: Exposure,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """One exposure as structured dict.
 
     Args:
@@ -189,7 +206,7 @@ def exposure_dict(
     Returns:
         Dict with trigger, codec, and capabilities info.
     """
-    d: dict[str, Any] = {
+    d: JsonDict = {
         "trigger": _explain_obj(exp.trigger, handlers),
         "codec": _explain_obj(exp.codec, handlers),
     }
@@ -200,8 +217,8 @@ def exposure_dict(
 
 def endpoint_dict(
     ep: Endpoint,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """One endpoint as structured dict.
 
     Args:
@@ -219,8 +236,8 @@ def endpoint_dict(
 
 def application_dict(
     app: Application,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
-) -> dict[str, Any]:
+    handlers: ExplainHandlers | None = None,
+) -> JsonDict:
     """Full application as structured dict.
 
     Args:
@@ -236,7 +253,7 @@ def application_dict(
         data["global_capabilities"] # list of cap dicts
         data["endpoints"]           # list of endpoint dicts
     """
-    d: dict[str, Any] = {
+    d: JsonDict = {
         "endpoint_count": len(app.endpoints),
     }
     if app.capabilities:
@@ -252,7 +269,7 @@ def application_dict(
 
 def explain_application(
     app: Application,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
+    handlers: ExplainHandlers | None = None,
 ) -> str:
     """Human-readable explanation of an application. Formats from application_dict().
 
@@ -268,7 +285,7 @@ def explain_application(
 
 def explain_endpoint(
     ep: Endpoint,
-    handlers: Mapping[type, SurfaceExplainHandler] | None = None,
+    handlers: ExplainHandlers | None = None,
 ) -> str:
     """Human-readable explanation of one endpoint. Formats from endpoint_dict()."""
     data = endpoint_dict(ep, handlers)
@@ -280,7 +297,7 @@ def explain_endpoint(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _format_obj_short(d: dict[str, Any]) -> str:
+def _format_obj_short(d: JsonDict) -> str:
     """Format an explain dict as a short string."""
     name = d.get("type", "?")
     rest = {k: v for k, v in d.items() if k != "type"}
@@ -290,19 +307,19 @@ def _format_obj_short(d: dict[str, Any]) -> str:
     return f"{name}({parts})"
 
 
-def _is_sequence(v: object) -> TypeGuard[Sequence[object]]:
+def _is_sequence(v: Any) -> TypeGuard[Sequence[Any]]:
     """TypeGuard: narrow object to Sequence[object] without Unknown propagation."""
     return isinstance(v, (list, tuple))
 
 
-def _format_value(v: object) -> str:
+def _format_value(v: Any) -> str:
     """Format a dict value for human-readable output."""
     if _is_sequence(v):
         return ", ".join(str(x) for x in v)
     return repr(v)
 
 
-def _format_trigger_short(d: dict[str, Any]) -> str:
+def _format_trigger_short(d: JsonDict) -> str:
     """Format trigger dict as a compact label."""
     t = d.get("type", "?")
     if t == "HTTPRouteTrigger":
@@ -318,7 +335,7 @@ def _format_trigger_short(d: dict[str, Any]) -> str:
     return _format_obj_short(d)
 
 
-def _format_application(data: dict[str, Any]) -> str:
+def _format_application(data: JsonDict) -> str:
     ep_count = data["endpoint_count"]
     global_caps = data.get("global_capabilities", [])
     cap_count = len(global_caps)
@@ -340,7 +357,7 @@ def _format_application(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _format_endpoint(data: dict[str, Any], *, idx: int) -> str:
+def _format_endpoint(data: JsonDict, *, idx: int) -> str:
     exp_count = data["exposure_count"]
     lines: list[str] = [
         f"  Endpoint #{idx} ({exp_count} exposure{'s' if exp_count != 1 else ''}):"
@@ -352,7 +369,7 @@ def _format_endpoint(data: dict[str, Any], *, idx: int) -> str:
     return "\n".join(lines)
 
 
-def _format_exposure(data: dict[str, Any]) -> str:
+def _format_exposure(data: JsonDict) -> str:
     trigger_str = _format_trigger_short(data["trigger"])
     codec_str = data["codec"].get("type", "?")
 

@@ -19,6 +19,7 @@ from emergent.wire.axis._capability import pydantic_metadata, pydantic_field
 
 if TYPE_CHECKING:
     from emergent.wire.axis._capability import PydanticContext
+    from pydantic.fields import FieldInfo
 
 
 class PydanticCapability(SchemaAxisCapability):
@@ -70,7 +71,11 @@ class AliasPath(PydanticCapability):
 
         first, *rest = self.path
         alias = PydAliasPath(str(first), *rest)
-        return pydantic_field(ctx, lambda fi: setattr(fi, "validation_alias", alias))
+
+        def _set(fi: "FieldInfo") -> None:
+            fi.validation_alias = alias
+
+        return pydantic_field(ctx, _set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +83,10 @@ class Exclude(PydanticCapability):
     """Exclude from serialization."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        return pydantic_field(ctx, lambda fi: setattr(fi, "exclude", True))
+        def _set(fi: "FieldInfo") -> None:
+            fi.exclude = True
+
+        return pydantic_field(ctx, _set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +94,10 @@ class Include(PydanticCapability):
     """Explicitly include in serialization."""
 
     def compile_pydantic(self, ctx: "PydanticContext") -> "PydanticContext":
-        return pydantic_field(ctx, lambda fi: setattr(fi, "exclude", False))
+        def _set(fi: "FieldInfo") -> None:
+            fi.exclude = False
+
+        return pydantic_field(ctx, _set)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

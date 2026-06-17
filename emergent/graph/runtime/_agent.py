@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
-from typing import ClassVar
+from typing import ClassVar, Protocol, runtime_checkable
 
 from nodnod.agent.base import Agent
 from nodnod.node import Node
@@ -24,17 +24,35 @@ from nodnod.scope import Scope
 from emergent.graph.runtime._policy import RuntimePolicy
 from emergent.graph.runtime._spawnable import Spawnable
 
+type MappedScopes = Mapping[type[Node], Scope]
+
+
+# sys._is_gil_enabled exists only on free-threaded (3.13t+) builds. Look it up in
+# the module namespace (not reflection builtins) and structurally verify it is a
+# zero-arg bool callable before calling; default to GIL-enabled otherwise.
+@runtime_checkable
+class _GilProbe(Protocol):
+    def __call__(self) -> bool: ...
+
 
 def _is_gil_enabled() -> bool:
-    return getattr(sys, "_is_gil_enabled", lambda: True)()
+    probe = sys.__dict__.get("_is_gil_enabled")
+    if isinstance(probe, _GilProbe):
+        return probe()
+    return True
+
+
+@runtime_checkable
+class _HasWorkers(Protocol):
+    workers: int | None
 
 
 def _policy_label(policy: RuntimePolicy) -> str:
     """Human-readable label for a policy (used in dynamic class name)."""
     sched = type(policy.scheduling).__name__
-    workers = getattr(policy.scheduling, "workers", None)
-    if workers is not None:
-        sched = f"{sched}({workers})"
+    scheduling = policy.scheduling
+    if isinstance(scheduling, _HasWorkers) and scheduling.workers is not None:
+        sched = f"{sched}({scheduling.workers})"
     return sched
 
 
@@ -78,15 +96,17 @@ class RuntimeAgent(Agent):
         delegate = effective.build_agent(nodes)
         return cls(delegate)
 
-    async def run(self, local_scope: Scope, mapped_scopes: dict[type[Node], Scope]) -> None:
-        await self._delegate.run(local_scope, mapped_scopes)
+    async def run(self, local_scope: Scope, mapped_scopes: MappedScopes) -> None:
+        # nodnod's Agent.run requires a concrete dict; accept any Mapping at our
+        # boundary and materialize before delegating (delegates copy or only read).
+        await self._delegate.run(local_scope, dict(mapped_scopes))
 
     # --- Spawnable delegation ---
 
     def spawn(
         self,
         nodes: set[type[Node]],
-        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+        mapped_scopes: MappedScopes | None = None,
     ) -> None:
         """Delegate to inner agent. Raises TypeError if delegate isn't Spawnable."""
         if not isinstance(self._delegate, Spawnable):

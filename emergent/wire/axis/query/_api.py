@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import MemoryAPIContext, HTTPAPIContext
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import (
     FieldProxy,
@@ -61,17 +62,28 @@ class ListOp:
     """List resources."""
     pass
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="List"))
+
 
 @dataclass(frozen=True, slots=True)
 class GetOp(Generic[K]):
     """Get single resource by ID."""
     id: K
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Get", fields=(("id", repr(self.id)),)))
+
 
 @dataclass(frozen=True, slots=True)
 class CreateOp(Generic[T]):
     """Create resource."""
     entity: T
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Create", fields=(
+            ("entity_type", type(self.entity).__name__),
+        )))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,11 +93,18 @@ class UpdateOp(Generic[K, T]):
     entity: T
     partial: bool = False  # PATCH vs PUT
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        method = "Patch" if self.partial else "Update"
+        return ctx.add(ExplainNode(kind=method, fields=(("id", repr(self.id)),)))
+
 
 @dataclass(frozen=True, slots=True)
 class DeleteOp(Generic[K]):
     """Delete resource."""
     id: K
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Delete", fields=(("id", repr(self.id)),)))
 
 
 # ─── API-only Modifiers (self-compiling) ──────────────────────────────────────
@@ -109,6 +128,11 @@ class PageMod:
         ctx.apply_pagination(ctx.params, self)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Page", fields=(
+            ("page", self.page), ("per_page", self.per_page),
+        )))
+
 
 @dataclass(frozen=True, slots=True)
 class CursorMod:
@@ -130,6 +154,11 @@ class CursorMod:
         ctx.apply_pagination(ctx.params, self)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Cursor", fields=(
+            ("cursor", self.cursor), ("limit", self.limit),
+        )))
+
 
 @dataclass(frozen=True, slots=True)
 class OffsetMod:
@@ -147,6 +176,11 @@ class OffsetMod:
         ctx.apply_pagination(ctx.params, self)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Offset", fields=(
+            ("offset", self.offset), ("limit", self.limit),
+        )))
+
 
 @dataclass(frozen=True, slots=True)
 class SearchMod:
@@ -156,11 +190,17 @@ class SearchMod:
 
     def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
         search_lower = self.query.lower()
+        # Memory search inspects dataclass entities only; non-dataclass items
+        # never match (mirrors the prior behavior, where fields() only succeeds
+        # for dataclass instances). The is_dataclass + "not a type" guard
+        # narrows each item for fields() — the codebase-wide pattern.
         result = [
-            item for item in ctx.data
+            item
+            for item in ctx.data
+            if _dc.is_dataclass(item) and not isinstance(item, type)
             if any(
                 search_lower in str(getattr(item, f.name, "")).lower()
-                for f in _dc.fields(item)  # type: ignore[arg-type]
+                for f in _dc.fields(item)
             )
         ]
         return replace(ctx, data=result)
@@ -168,6 +208,9 @@ class SearchMod:
     def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
         ctx.params["q"] = self.query
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Search", fields=(("query", self.query),)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +227,11 @@ class IncludeMod:
     def compile_http_api(self, ctx: HTTPAPIContext) -> HTTPAPIContext:
         ctx.params["include"] = ",".join(self.relations)
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Include", fields=(
+            ("relations", list(self.relations)),
+        )))
 
 
 # Union of all operations
@@ -318,7 +366,7 @@ class APIQuerySet(Generic[K, T]):
             .select(lambda u: u.id, lambda u: u.name)
         """
         proxy = EntityProxy(self.entity)
-        fields = tuple(fn(proxy).name for fn in field_fns)  # type: ignore
+        fields = tuple(fn(proxy).name for fn in field_fns)
         return self._with_mod(Select(fields))
 
     def search(self, query: str) -> APIQuerySet[K, T]:

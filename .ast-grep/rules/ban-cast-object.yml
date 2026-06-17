@@ -1,0 +1,13 @@
+id: ban-cast-object
+language: python
+severity: error
+message: "cast(object, ...) is banned — narrow with isinstance() or use a concrete response type"
+ignores:
+  - tests/**
+rule:
+  any:
+    - pattern: cast($TYPE, $EXPR)
+    - pattern: typing.cast($TYPE, $EXPR)
+constraints:
+  TYPE:
+    regex: "^(object|\"object\"|'object')$"

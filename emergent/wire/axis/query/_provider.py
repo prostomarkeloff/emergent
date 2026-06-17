@@ -26,6 +26,8 @@ K = TypeVar("K")
 V = TypeVar("V")
 E = TypeVar("E")
 
+type AggregateResult = dict[str, Any]
+
 
 # ─── Relational Provider ──────────────────────────────────────────────────────
 
@@ -53,7 +55,7 @@ class RelationalProvider(Protocol[T]):
         """Check if any results exist."""
         ...
 
-    async def aggregate(self, query: RelationalQuerySet[T]) -> dict[str, Any]:
+    async def aggregate(self, query: RelationalQuerySet[T]) -> AggregateResult:
         """Execute aggregate query.
 
         Returns dict mapping alias to aggregate value:

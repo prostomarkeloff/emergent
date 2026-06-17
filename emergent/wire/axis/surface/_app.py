@@ -14,13 +14,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from emergent.wire.axis.surface._endpoint import Endpoint
+from emergent.wire.axis.surface.capabilities._base import empty_caps as _empty_caps
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface.capabilities import SurfaceCapability
-
-
-def _empty_caps() -> tuple[SurfaceCapability, ...]:
-    return ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -43,7 +43,16 @@ if TYPE_CHECKING:
 
 
 
-def _is_result_node(node: type[Node]) -> bool:
+type DependentsMap = Mapping[type[Node], frozenset[type[Node]]]
+type PendingMap = Mapping[type[Node], int]
+type DependentsMutMap = dict[type[Node], set[type[Node]]]
+type PendingMutMap = dict[type[Node], int]
+type NodeFutures = dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]]
+type ScopeMap = dict[type[Node], Scope]
+type ScopeMapping = Mapping[type[Node], Scope]
+
+
+def is_result_node(node: type[Node]) -> bool:
     """Check if node is a ResultNode without narrowing the type."""
     from nodnod.interface.result_node import ResultNode
 
@@ -66,8 +75,8 @@ class GraphInfo:
     """
 
     all_nodes: tuple[type[Node], ...]
-    dependents: Mapping[type[Node], frozenset[type[Node]]]
-    initial_pending: Mapping[type[Node], int]
+    dependents: DependentsMap
+    initial_pending: PendingMap
     ready_roots: frozenset[type[Node]]
     final_nodes: frozenset[type[Node]]
 
@@ -79,8 +88,8 @@ def build_graph_info(nodes: set[type[Node]]) -> GraphInfo:
     identifies ready roots and final nodes.
     """
     all_nodes_list = traverse_all(nodes)
-    dependents_mut: dict[type[Node], set[type[Node]]] = {}
-    initial_pending: dict[type[Node], int] = {}
+    dependents_mut: DependentsMutMap = {}
+    initial_pending: PendingMutMap = {}
 
     for node in all_nodes_list:
         deps = node.__dependencies__
@@ -145,9 +154,9 @@ class CallbackAgent(Agent):
         self._graph_info = graph_info
         self._execute = execute
         # Mutable state — initialized in run(), used by spawn/despawn
-        self._futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]] = {}
+        self._futures: NodeFutures = {}
         self._local_scope: Scope | None = None
-        self._mapped_scopes: dict[type[Node], Scope] = {}
+        self._mapped_scopes: ScopeMap = {}
         self._wake: asyncio.Event = asyncio.Event()
         self._living: set[type[Node]] = set()
         self._final_nodes: set[type[Node]] = set()
@@ -162,7 +171,7 @@ class CallbackAgent(Agent):
         """Build with custom executor."""
         return cls(graph_info=build_graph_info(nodes), execute=execute)
 
-    async def run(self, local_scope: Scope, mapped_scopes: dict[type[Node], Scope]) -> None:
+    async def run(self, local_scope: Scope, mapped_scopes: ScopeMap) -> None:
         validate_local_scope_is_linked_to_node_scopes(local_scope, mapped_scopes)
 
         if not self._graph_info.all_nodes:
@@ -213,7 +222,7 @@ class CallbackAgent(Agent):
     def spawn(
         self,
         nodes: set[type[Node]],
-        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+        mapped_scopes: ScopeMapping | None = None,
     ) -> None:
         """Add new nodes to the running agent."""
         if self._local_scope is None:
@@ -247,8 +256,8 @@ class CallbackAgent(Agent):
         self,
         graph_info: GraphInfo,
         local_scope: Scope,
-        mapped_scopes: Mapping[type[Node], Scope],
-        futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]],
+        mapped_scopes: ScopeMapping,
+        futures: NodeFutures,
     ) -> None:
         """Build the asyncio task DAG — same structure as EventLoopAgent.
 
@@ -280,7 +289,7 @@ class CallbackAgent(Agent):
                         local_scope=local_scope,
                         execute=self._execute,
                     ))
-            elif _is_result_node(node):
+            elif is_result_node(node):
                 dep_futures = [futures[dep] for dep in node.__dependencies__]
                 futures[node] = asyncio.ensure_future(_result_node_coroutine(
                     node, dep_futures, node_scope, local_scope, self._execute
@@ -323,8 +332,8 @@ async def _concurrent_either_coroutine(
 async def _sequential_either_coroutine(
     first_future: asyncio.Future[kungfu.Result[Value, NodeError]],
     other_deps: tuple[type[Node], ...],
-    futures: dict[type[Node], asyncio.Future[kungfu.Result[Value, NodeError]]],
-    mapped_scopes: dict[type[Node], Scope],
+    futures: NodeFutures,
+    mapped_scopes: ScopeMap,
     local_scope: Scope,
     execute: NodeExecutor,
 ) -> kungfu.Result[Value, NodeError]:
@@ -353,4 +362,11 @@ async def _result_node_coroutine(
     return await execute(node, node_scope, local_scope)
 
 
-__all__ = ("GraphInfo", "build_graph_info", "NodeExecutor", "default_executor", "CallbackAgent")
+__all__ = (
+    "GraphInfo",
+    "build_graph_info",
+    "is_result_node",
+    "NodeExecutor",
+    "default_executor",
+    "CallbackAgent",
+)

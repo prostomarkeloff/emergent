@@ -27,7 +27,7 @@ Core does:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import Any, TYPE_CHECKING, Callable, Sequence
 
 from emergent.wire.bridge._introspect import HandlerShape, analyze_handler
 from emergent.wire.bridge._detect import (
@@ -37,7 +37,8 @@ from emergent.wire.bridge._detect import (
     DetectionResult,
     run_detectors,
 )
-from emergent.wire.bridge._types import Extracted, RouteData
+from emergent.wire.bridge._types import Extracted, RouteData, empty_metadata
+from emergent.wire.axis.surface.capabilities._base import empty_caps as _empty_caps
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
@@ -48,12 +49,8 @@ if TYPE_CHECKING:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, object]:
-    return {}
-
-
-def _empty_caps() -> tuple[SurfaceCapability, ...]:
-    return ()
+type MetadataAny = dict[str, Any]
+type MetadataObj = dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +69,7 @@ class ExtractedWithShape[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: dict[str, object] = field(default_factory=_empty_metadata)
+    metadata: MetadataObj = field(default_factory=empty_metadata)
 
     # Extended
     shape: HandlerShape | None = None
@@ -113,14 +110,14 @@ class ExtractedWithShape[R: RouteData]:
 
 
 def build_extracted[R: RouteData](
-    handler: object,
+    handler: Any,
     route_data: R,
     *,
     # Metadata
     name: str | None = None,
     description: str | None = None,
     deprecated: bool = False,
-    metadata: dict[str, object] | None = None,
+    metadata: MetadataAny | None = None,
     # Bridger-provided detectors
     body_detectors: Sequence[BodyDetector] = (),
     di_detectors: Sequence[DIDetector] = (),

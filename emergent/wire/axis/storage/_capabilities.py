@@ -32,6 +32,9 @@ from typing import Protocol, AsyncIterator
 from kungfu import Result, Option
 
 
+type KVMap[K, V] = dict[K, V]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # KV Capabilities
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -149,12 +152,12 @@ class IncrBy[K, E](Protocol):
 
 class BatchGet[K, V, E](Protocol):
     """Read multiple keys."""
-    async def get_many(self, keys: list[K]) -> Result[dict[K, V], E]: ...
+    async def get_many(self, keys: list[K]) -> Result[KVMap[K, V], E]: ...
 
 
 class BatchSet[K, V, E](Protocol):
     """Write multiple keys."""
-    async def set_many(self, items: dict[K, V]) -> Result[None, E]: ...
+    async def set_many(self, items: KVMap[K, V]) -> Result[None, E]: ...
 
 
 class BatchDelete[K, E](Protocol):

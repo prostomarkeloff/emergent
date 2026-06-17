@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from emergent.wire.derive._codegen import AnnotationValue
+
 if TYPE_CHECKING:
     from emergent.wire.axis.query import RelationalQuerySet
 
@@ -29,8 +31,8 @@ class ProviderInjection:
     Defunctionalized — inspectable, replaceable data.
     """
 
-    op_field: tuple[str, type]
-    request_field: tuple[str, type]
+    op_field: tuple[str, AnnotationValue]
+    request_field: tuple[str, AnnotationValue]
 
 
 @dataclass(frozen=True, slots=True)

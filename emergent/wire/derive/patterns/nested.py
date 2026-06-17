@@ -50,9 +50,11 @@ from emergent.wire.derive._project import (
 )
 from emergent.wire.derive._trigger import NestedHTTPTriggers
 
+type ScopeTypeMap = dict[str, type]
+
 
 def _scoped_crud_ops(
-    scope: tuple[str, ...], scope_types: dict[str, type]
+    scope: tuple[str, ...], scope_types: ScopeTypeMap
 ) -> tuple[Op, ...]:
     """CRUD ops scoped by parent FK field(s)."""
     scope_extra = tuple(scope_types.items())

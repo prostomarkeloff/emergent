@@ -225,11 +225,14 @@ async def run_parallel[T, E](
 
     match parallel_result:
         case Error(_):
-            # Parallel itself failed (shouldn't happen with catching_async)
+            # The parallel combinator itself failed. catching_async wraps every step
+            # into an Ok(Result[...]) channel, so this is an internal invariant break,
+            # not a saga-domain error of type E — there is no E value to report, hence
+            # error=None. Roll back what ran and surface it as a saga error.
             comp_run, comp_failed = await run_compensators(compensators)
             return Error(
                 SagaError(
-                    error=par.sagas[0].action if par.sagas else None,  # type: ignore[arg-type]
+                    error=None,
                     step_failed=0,
                     compensators_run=comp_run,
                     compensators_failed=comp_failed,

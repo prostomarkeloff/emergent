@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import dataclasses as _dc
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Generic, Hashable, Literal, TypeVar
+from typing import Any, TYPE_CHECKING, Generic, Hashable, Literal, TypeVar
 
 from emergent.wire.axis.query._expr import Expr
 from emergent.wire.axis.query._proxy import OrderSpec
 from emergent.wire.axis.query._aggregate import AggregateSpec
 from emergent.wire.axis.query._base_qs import RelationalMixin
+from emergent.wire.axis._explain import AutoExplain, ExplainContext, ExplainNode
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query._contexts import (
@@ -72,6 +73,13 @@ class Filter:
             ctx.params.update(filter_data)
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        from emergent.wire.axis.query._serialize import expr_fields
+        return ctx.add(ExplainNode(kind="Filter", fields=(
+            ("expr", str(self.expr)),
+            ("fields", sorted(expr_fields(self.expr))),
+        )))
+
 
 @dataclass(frozen=True, slots=True)
 class OrderBy:
@@ -112,6 +120,12 @@ class OrderBy:
             ctx.params.update(ctx.encode_order(self.specs))
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        specs = [
+            f"{s.field} {'ASC' if s.ascending else 'DESC'}" for s in self.specs
+        ]
+        return ctx.add(ExplainNode(kind="OrderBy", fields=(("specs", specs),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Limit:
@@ -139,6 +153,9 @@ class Limit:
             ctx.params.update(ctx.encode_limit(self.count))
         return ctx
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Limit", fields=(("count", self.count),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Offset:
@@ -155,6 +172,9 @@ class Offset:
     def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
         return replace(ctx, stmt=ctx.stmt.offset(self.count))
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Offset", fields=(("count", self.count),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Select:
@@ -165,7 +185,7 @@ class Select:
     fields: tuple[str, ...]
 
     def compile_memory_query(self, ctx: MemoryQueryContext) -> MemoryQueryContext:
-        projected: list[object] = [
+        projected: list[Any] = [
             {f: getattr(item, f) for f in self.fields}
             for item in ctx.data
         ]
@@ -175,7 +195,7 @@ class Select:
         return replace(ctx, stmt=ctx.select_columns(ctx.stmt, self.fields))
 
     def compile_memory_api(self, ctx: MemoryAPIContext) -> MemoryAPIContext:
-        projected: list[object] = [
+        projected: list[Any] = [
             {f: getattr(item, f) for f in self.fields}
             for item in ctx.data
         ]
@@ -185,6 +205,11 @@ class Select:
         if ctx.encode_select is not None:
             ctx.params.update(ctx.encode_select(self.fields))
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Select", fields=(
+            ("fields", list(self.fields)),
+        )))
 
 
 JoinKind = Literal["inner", "left", "right", "outer"]
@@ -202,15 +227,27 @@ class Join:
         new_stmt = ctx.join(ctx.stmt, self.target, self.on, self.kind, self.tablename)
         return replace(ctx, stmt=new_stmt)
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Join", fields=(
+            ("target", self.target.__name__),
+            ("kind", self.kind),
+            ("on", str(self.on)),
+        )))
+
 
 @dataclass(frozen=True, slots=True)
-class GroupBy:
+class GroupBy(AutoExplain):
     """GROUP BY clause."""
     fields: tuple[str, ...]
 
     def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
         cols = [ctx.get_column(f) for f in self.fields]
         return replace(ctx, stmt=ctx.stmt.group_by(*cols))
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="GroupBy", fields=(
+            ("fields", list(self.fields)),
+        )))
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +259,9 @@ class Having:
         clause = ctx.compile_expr(self.expr)
         return replace(ctx, stmt=ctx.stmt.having(clause))
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Having", fields=(("expr", str(self.expr)),)))
+
 
 @dataclass(frozen=True, slots=True)
 class Distinct:
@@ -230,16 +270,19 @@ class Distinct:
     Implements 3 protocols: memory_query, sa_query, memory_api.
     """
 
-    def _deduplicate(self, data: list[object]) -> list[object]:
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(ExplainNode(kind="Distinct"))
+
+    def _deduplicate(self, data: list[Any]) -> list[Any]:
         seen: set[Hashable] = set()
-        unique: list[object] = []
+        unique: list[Any] = []
         for item in data:
             if _dc.is_dataclass(item):
                 key: Hashable = tuple(
                     getattr(item, f.name) for f in _dc.fields(item)
                 )
             else:
-                key = item  # type: ignore[assignment]
+                key = item
             if key not in seen:
                 seen.add(key)
                 unique.append(item)
@@ -273,6 +316,13 @@ class Aggregate:
     def compile_sa_query(self, ctx: SAQueryContext) -> SAQueryContext:
         # Aggregate is handled by provider.aggregate(), not by fold.
         return ctx
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        specs = [
+            f"{s.alias}={type(s.func).__name__}({s.field or '*'})"
+            for s in self.specs
+        ]
+        return ctx.add(ExplainNode(kind="Aggregate", fields=(("specs", specs),)))
 
 
 # Union type for all relational ops

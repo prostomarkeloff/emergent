@@ -1,0 +1,10 @@
+id: ban-literal-via-comment
+language: python
+severity: error
+message: |
+  Комментарий `# "a" | "b" | ...` рядом с `: str` = неформальный Literal.
+  Замени на `typing.Literal["a", "b", ...]` — тогда pyright/ruff знают о наборе,
+  а рефактор переименования ловит все места использования.
+rule:
+  kind: comment
+  regex: '"[^"\\]+"\s*\|\s*"[^"\\]+"'

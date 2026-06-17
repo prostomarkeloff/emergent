@@ -16,10 +16,10 @@ call compile_* on each that implements the protocol, accumulate context.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from inspect import isawaitable
-from typing import Any, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Callable, Protocol, TYPE_CHECKING, cast
 
 from emergent.wire.axis.schema import inspect_dataclass, FieldInfo
 
@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from emergent.wire.compile._trace import TraceCollector
     from emergent.wire.compile._lifetime import ScopeLayer
 from emergent.wire.axis._capability import Capability, ConstraintsContext, ConstraintsCompilable
+
+type SchemaMap = dict[str, FieldInfo]
+type ConstraintsByField = dict[str, tuple[type, FieldConstraints]]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Scope Setup Protocol
@@ -73,7 +76,7 @@ class Axes:
         trace: Optional trace collector. None = no tracing (zero overhead).
     """
 
-    schema: Callable[[type], dict[str, FieldInfo]]
+    schema: Callable[[type], SchemaMap]
     trace: TraceCollector | None = None
     scope_layer: ScopeLayer | None = None
 
@@ -118,6 +121,8 @@ from collections.abc import Iterable
 
 type ItemHandler[Ctx] = Callable[[Any, Ctx], Ctx]
 type CapabilityHandler[Ctx] = Callable[[Capability, Ctx], Ctx]
+type ItemHandlerMap[Ctx] = Mapping[type, ItemHandler[Ctx]]
+type CapabilityHandlerMap[Ctx] = Mapping[type[Capability], CapabilityHandler[Ctx]]
 
 
 def fold[Ctx](
@@ -125,7 +130,7 @@ def fold[Ctx](
     initial: Ctx,
     protocol: type,
     method: str,
-    handlers: Mapping[type, ItemHandler[Ctx]] | None = None,
+    handlers: ItemHandlerMap[Ctx] | None = None,
     *,
     trace: TraceCollector | None = None,
 ) -> Ctx:
@@ -172,7 +177,7 @@ async def async_fold[Ctx](
     initial: Ctx,
     protocol: type,
     method: str,
-    handlers: Mapping[type, ItemHandler[Ctx]] | None = None,
+    handlers: ItemHandlerMap[Ctx] | None = None,
 ) -> Ctx:
     """Async-aware fold — awaits results that are awaitables, passes through sync results.
 
@@ -184,10 +189,15 @@ async def async_fold[Ctx](
         item_cls: type = item.__class__
         if handlers and item_cls in handlers:
             result = handlers[item_cls](item, ctx)
-            ctx = await result if isawaitable(result) else result
         elif isinstance(item, protocol):
             result = getattr(item, method)(ctx)
-            ctx = await result if isawaitable(result) else result
+        else:
+            continue
+        # emergent-type-cast-explain: handler returns Ctx but may transparently
+        # return Awaitable[Ctx] for async compile_* methods. isawaitable is a
+        # TypeGuard[Awaitable[Any]] so both branches produce Ctx-compatible values,
+        # but pyright widens the conditional to Ctx | Any which breaks strict return.
+        ctx = cast(Ctx, await result if isawaitable(result) else result)
     return ctx
 
 
@@ -196,7 +206,7 @@ def fold_field[Ctx](
     initial: Ctx,
     protocol: type,
     compile_method: str,
-    handlers: Mapping[type[Capability], CapabilityHandler[Ctx]] | None = None,
+    handlers: CapabilityHandlerMap[Ctx] | None = None,
     *,
     trace: TraceCollector | None = None,
 ) -> Ctx:
@@ -230,7 +240,7 @@ def traced_fold[Ctx](
     initial: Ctx,
     protocol: type,
     method: str,
-    handlers: Mapping[type, ItemHandler[Ctx]] | None,
+    handlers: ItemHandlerMap[Ctx] | None,
     collector: TraceCollector,
 ) -> tuple[Ctx, Any]:
     """fold() with trace emission. Returns (result_ctx, FoldTrace).
@@ -337,7 +347,7 @@ def extract_constraints(info: FieldInfo) -> FieldConstraints:
 
 def extract_all_constraints(
     cls: type, axes: Axes
-) -> dict[str, tuple[type, FieldConstraints]]:
+) -> ConstraintsByField:
     """Extract constraints for all fields of a dataclass.
 
     Returns: {field_name: (base_type, constraints)}

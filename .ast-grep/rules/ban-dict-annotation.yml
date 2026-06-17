@@ -1,0 +1,13 @@
+id: ban-dict-annotation
+language: python
+severity: error
+message: "Inline dict[]/Mapping[] is banned — use a named type alias (type X = dict[...]) or TypedDict"
+ignores:
+  - tests/**
+rule:
+  kind: type
+  regex: "(dict|Mapping)\\["
+  not:
+    inside:
+      stopBy: end
+      kind: type_alias_statement

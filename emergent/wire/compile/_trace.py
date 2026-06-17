@@ -27,7 +27,7 @@ All events are frozen dataclasses — immutable, serializable, inspectable.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -47,7 +47,7 @@ class FoldStep:
     """
 
     item_type: str
-    dispatch: str  # "handler" | "protocol" | "skipped"
+    dispatch: Literal["handler", "protocol", "skipped"]
     method: str
     context_before: Any
     context_after: Any
@@ -122,7 +122,7 @@ class CapabilityEvent:
     """Runtime capability application (response transforms, route config, etc.)."""
 
     cap_type: str
-    phase: str  # "response_transform" | "fastapi_route" | "fastapi_compile"
+    phase: Literal["response_transform", "fastapi_route", "fastapi_compile"]
     before: Any
     after: Any
 

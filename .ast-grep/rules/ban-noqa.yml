@@ -1,0 +1,7 @@
+id: ban-noqa
+language: python
+severity: error
+message: "# noqa is banned — fix the actual lint error instead"
+rule:
+  kind: comment
+  regex: "# noqa"

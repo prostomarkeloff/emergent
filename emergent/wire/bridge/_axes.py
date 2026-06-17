@@ -15,7 +15,7 @@ Symmetric to compile.Axes — enables extensibility without global state.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +23,9 @@ if TYPE_CHECKING:
     from emergent.wire.axis.schema._inspect import FieldInfo
     from emergent.wire.bridge._registry import BridgeRegistry
     from emergent.wire.bridge._signature import HandlerSignature
+
+
+type SchemaMap = Mapping[str, "FieldInfo"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -44,7 +47,7 @@ class BridgeAxes:
                   If None, get_default_registry() is used at call time.
     """
 
-    schema: Callable[[type], dict[str, FieldInfo]]
+    schema: Callable[[type], SchemaMap]
     signature_analyzer: Callable[[Callable[..., object]], HandlerSignature]
     registry: BridgeRegistry | None = None
 

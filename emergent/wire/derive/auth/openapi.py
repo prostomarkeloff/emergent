@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 
 _PROBLEM_MEDIA_TYPE = "application/problem+json"
 
+# Any: openapi_extra is heterogeneous JSON by definition.
+type OpenAPIExtra = dict[str, Any]
+
 
 @dataclass(frozen=True, slots=True)
 class AuthOpenAPI(SurfaceCapability):
@@ -68,8 +71,7 @@ class AuthOpenAPI(SurfaceCapability):
 
         existing_extra = dict(ctx.openapi_extra) if ctx.openapi_extra else {}
         existing_responses = existing_extra.get("responses", {})
-        # Any: openapi_extra is dict[str, Any] by definition (heterogeneous JSON).
-        merged_extra: dict[str, Any] = {
+        merged_extra: OpenAPIExtra = {
             **existing_extra,
             "security": [{self.scheme_name: []}],
             "responses": {**existing_responses, **auth_responses},

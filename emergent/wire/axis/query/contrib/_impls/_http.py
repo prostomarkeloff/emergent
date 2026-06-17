@@ -57,6 +57,9 @@ T = TypeVar("T")
 K = TypeVar("K")  # Key type for APIQuerySet methods
 P = TypeVar("P")  # Profile
 
+type Params = dict[str, Any]
+type Headers = dict[str, str]
+
 
 # ─── Pagination Strategies ───────────────────────────────────────────────────
 
@@ -65,7 +68,7 @@ class Pagination(ABC):
     """Base for pagination strategies."""
 
     @abstractmethod
-    def apply(self, params: dict[str, Any], mod: PageMod | CursorMod | OffsetMod) -> None:
+    def apply(self, params: Params, mod: PageMod | CursorMod | OffsetMod) -> None:
         """Apply pagination to request params."""
         ...
 
@@ -76,7 +79,7 @@ class PageSizePagination(Pagination):
     page_param: str = "page"
     size_param: str = "per_page"
 
-    def apply(self, params: dict[str, Any], mod: PageMod | CursorMod | OffsetMod) -> None:
+    def apply(self, params: Params, mod: PageMod | CursorMod | OffsetMod) -> None:
         if isinstance(mod, PageMod):
             params[self.page_param] = mod.page
             params[self.size_param] = mod.per_page
@@ -98,7 +101,7 @@ class OffsetLimitPagination(Pagination):
     offset_param: str = "offset"
     limit_param: str = "limit"
 
-    def apply(self, params: dict[str, Any], mod: PageMod | CursorMod | OffsetMod) -> None:
+    def apply(self, params: Params, mod: PageMod | CursorMod | OffsetMod) -> None:
         if isinstance(mod, OffsetMod):
             params[self.offset_param] = mod.offset
             params[self.limit_param] = mod.limit
@@ -119,7 +122,7 @@ class CursorPagination(Pagination):
     cursor_param: str = "cursor"
     limit_param: str = "limit"
 
-    def apply(self, params: dict[str, Any], mod: PageMod | CursorMod | OffsetMod) -> None:
+    def apply(self, params: Params, mod: PageMod | CursorMod | OffsetMod) -> None:
         if isinstance(mod, CursorMod):
             if mod.cursor:
                 params[self.cursor_param] = mod.cursor
@@ -138,7 +141,7 @@ class Auth(ABC):
     """Base for auth strategies."""
 
     @abstractmethod
-    def apply(self, headers: dict[str, str]) -> None:
+    def apply(self, headers: Headers) -> None:
         """Apply auth to request headers."""
         ...
 
@@ -148,7 +151,7 @@ class BearerAuth(Auth):
     """Bearer token auth: Authorization: Bearer <token>"""
     token: str
 
-    def apply(self, headers: dict[str, str]) -> None:
+    def apply(self, headers: Headers) -> None:
         headers["Authorization"] = f"Bearer {self.token}"
 
 
@@ -164,7 +167,7 @@ class APIKeyAuth(Auth):
     header: str | None = "X-API-Key"
     param: str | None = None
 
-    def apply(self, headers: dict[str, str]) -> None:
+    def apply(self, headers: Headers) -> None:
         if self.header:
             headers[self.header] = self.key
 
@@ -180,7 +183,7 @@ class BasicAuth(Auth):
     username: str
     password: str
 
-    def apply(self, headers: dict[str, str]) -> None:
+    def apply(self, headers: Headers) -> None:
         import base64
         credentials = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
         headers["Authorization"] = f"Basic {credentials}"
@@ -203,7 +206,7 @@ class FilterEncoding(ABC):
         expr: Expr,
         entity: type,
         profile: type | None,
-    ) -> dict[str, Any]:
+    ) -> Params:
         """Encode filter expression to request params/body."""
         ...
 
@@ -218,12 +221,12 @@ class QueryParamFilters(FilterEncoding):
         expr: Expr,
         entity: type,
         profile: type | None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {}
+    ) -> Params:
+        params: Params = {}
         self._encode_expr(expr, params)
         return params
 
-    def _encode_expr(self, expr: Expr, params: dict[str, Any]) -> None:
+    def _encode_expr(self, expr: Expr, params: Params) -> None:
         match expr:
             case Eq(Field(name), Const(value)):
                 params[name] = value
@@ -251,7 +254,7 @@ class QueryParamFilters(FilterEncoding):
                 params[f"{name}{self.operator_sep}isnull"] = "false"
             case And(left, right):
                 self._encode_expr(left, params)
-                right_params: dict[str, Any] = {}
+                right_params: Params = {}
                 self._encode_expr(right, right_params)
                 for k, v in right_params.items():
                     if k in params:
@@ -277,10 +280,10 @@ class BodyFilters(FilterEncoding):
         expr: Expr,
         entity: type,
         profile: type | None,
-    ) -> dict[str, Any]:
+    ) -> Params:
         return {"filter": self._encode_expr(expr)}
 
-    def _encode_expr(self, expr: Expr) -> dict[str, Any]:
+    def _encode_expr(self, expr: Expr) -> Params:
         match expr:
             case Eq(Field(name), Const(value)):
                 return {name: {"eq": value}}
@@ -316,7 +319,7 @@ class OrderEncoding(ABC):
     """Base for order encoding strategies."""
 
     @abstractmethod
-    def encode(self, specs: SequenceABC[OrderSpec]) -> dict[str, Any]:
+    def encode(self, specs: SequenceABC[OrderSpec]) -> Params:
         """Encode order specs to request params."""
         ...
 
@@ -332,7 +335,7 @@ class SortParamEncoding(OrderEncoding):
     asc_prefix: str = ""
     separator: str = ","
 
-    def encode(self, specs: SequenceABC[OrderSpec]) -> dict[str, Any]:
+    def encode(self, specs: SequenceABC[OrderSpec]) -> Params:
         parts: list[str] = []
         for spec in specs:
             prefix = self.asc_prefix if spec.ascending else self.desc_prefix
@@ -359,7 +362,7 @@ class LimitEncoding(ABC):
     """Base for limit encoding strategies."""
 
     @abstractmethod
-    def encode(self, count: int) -> dict[str, Any]:
+    def encode(self, count: int) -> Params:
         """Encode limit to request params."""
         ...
 
@@ -369,7 +372,7 @@ class LimitParamEncoding(LimitEncoding):
     """Encode limit as query param: ?limit=50"""
     param: str = "limit"
 
-    def encode(self, count: int) -> dict[str, Any]:
+    def encode(self, count: int) -> Params:
         return {self.param: count}
 
 
@@ -385,7 +388,7 @@ class SelectEncoding(ABC):
     """Base for field selection encoding strategies."""
 
     @abstractmethod
-    def encode(self, fields: SequenceABC[str]) -> dict[str, Any]:
+    def encode(self, fields: SequenceABC[str]) -> Params:
         """Encode field selection to request params."""
         ...
 
@@ -396,7 +399,7 @@ class FieldsParamEncoding(SelectEncoding):
     param: str = "fields"
     separator: str = ","
 
-    def encode(self, fields: SequenceABC[str]) -> dict[str, Any]:
+    def encode(self, fields: SequenceABC[str]) -> Params:
         return {self.param: self.separator.join(fields)}
 
 
@@ -408,7 +411,7 @@ def fields_param(param: str = "fields", separator: str = ",") -> FieldsParamEnco
 # ─── Response Parsing ────────────────────────────────────────────────────────
 
 
-def _get_nested(data: dict[str, Any], path: str) -> Any:
+def _get_nested(data: Params, path: str) -> Any:
     """Get nested value by dot-separated path."""
     parts = path.split(".")
     current = data
@@ -531,11 +534,11 @@ class HTTPAPIProvider(Generic[T]):
         self,
         method: str,
         url: str,
-        params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
+        params: Params | None = None,
+        json: Params | None = None,
     ) -> httpx.Response:
         """Make HTTP request with auth."""
-        headers: dict[str, str] = {}
+        headers: Headers = {}
         if self.auth:
             self.auth.apply(headers)
 
@@ -549,7 +552,7 @@ class HTTPAPIProvider(Generic[T]):
         response.raise_for_status()
         return response
 
-    def _parse_entity(self, data: dict[str, Any]) -> T:
+    def _parse_entity(self, data: Params) -> T:
         """Parse response data into entity."""
         if not dataclasses.is_dataclass(self.entity):
             raise TypeError(
@@ -557,15 +560,17 @@ class HTTPAPIProvider(Generic[T]):
             )
         field_names = {f.name for f in dataclasses.fields(self.entity)}
         filtered = {k: v for k, v in data.items() if k in field_names}
-        return self.entity(**filtered)  # type: ignore
+        return self.entity(**filtered)
 
-    def _serialize_entity(self, entity: T) -> dict[str, Any]:
+    def _serialize_entity(self, entity: T) -> Params:
         """Serialize entity to dict."""
-        if not dataclasses.is_dataclass(entity):
+        # asdict() needs a dataclass *instance*; is_dataclass alone also admits the
+        # dataclass *type*, so exclude that to narrow entity to an instance.
+        if not dataclasses.is_dataclass(entity) or isinstance(entity, type):
             raise TypeError(
                 f"{type(entity).__name__} must be a dataclass instance"
             )
-        return dataclasses.asdict(entity)  # type: ignore
+        return dataclasses.asdict(entity)
 
 
 # ─── Builder ─────────────────────────────────────────────────────────────────

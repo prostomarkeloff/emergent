@@ -8,16 +8,19 @@ Work for any relational entity with identity fields and a provider.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from kungfu import Error
 
+from emergent.wire.derive._codegen import AnnotationValue, make_annotation
 from emergent.wire.derive._errors import DomainError, IdentityMap, NotFound
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet
     from emergent.wire.derive._handler import HasProvider
+
+
+type SerializedPayload = dict[str, str | int | float | bool]
 
 
 def filter_by_identity[T](
@@ -30,7 +33,7 @@ def filter_by_identity[T](
     return query
 
 
-def identity_values(op: object, id_names: tuple[str, ...]) -> IdentityMap:
+def identity_values(op: Any, id_names: tuple[str, ...]) -> IdentityMap:
     """Extract identity values as dict."""
     return {n: getattr(op, n) for n in id_names}
 
@@ -53,7 +56,7 @@ def identity_query[T](
 
 
 def not_found_error(
-    entity_name: str, op: object, id_names: tuple[str, ...]
+    entity_name: str, op: Any, id_names: tuple[str, ...]
 ) -> Error[DomainError]:
     """Build Error(NotFound(...)) for missing entity."""
     err: DomainError = NotFound(entity=entity_name, id=identity_values(op, id_names))
@@ -87,9 +90,9 @@ async def fetch_by_identity[T](
     return await provider.fetch_one(q)
 
 
-def serialize_op_fields(op: object, field_names: tuple[str, ...] | list[str]) -> str:
+def serialize_op_fields(op: Any, field_names: tuple[str, ...] | list[str]) -> str:
     """JSON-serialize op fields for audit/event/webhook payloads."""
-    payload: dict[str, str | int | float | bool] = {}
+    payload: SerializedPayload = {}
     for name in field_names:
         val = getattr(op, name, None)
         if val is not None:
@@ -101,15 +104,12 @@ def serialize_op_fields(op: object, field_names: tuple[str, ...] | list[str]) ->
     return json.dumps(payload)
 
 
-def provider_field(node_type: type) -> type:
+def provider_field(node_type: type) -> AnnotationValue:
     """Annotated provider field for request types with ComposeNode."""
-    import typing
-
-    from emergent.wire.axis.query import MutatingRelationalProvider  # noqa: F811
+    from emergent.wire.axis.query import MutatingRelationalProvider as _MRP_rt
     from emergent.wire.axis.schema.dialects.compose import Node as ComposeNode
 
-    annotated_getitem: Callable[..., type] = getattr(typing, "Annotated").__getitem__
-    return annotated_getitem((MutatingRelationalProvider, ComposeNode(node_type)))
+    return make_annotation(_MRP_rt, ComposeNode(node_type))
 
 
 def id_path(id_names: tuple[str, ...]) -> str:

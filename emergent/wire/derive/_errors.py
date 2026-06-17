@@ -25,6 +25,9 @@ from typing import Protocol, runtime_checkable
 # (int for auto-increment, str for UUID/slug). Mapping because read-only.
 type IdentityMap = Mapping[str, int | str]
 
+# Mutable result of ProblemDetail.to_dict() (built then conditionally extended).
+type ProblemDict = dict[str, str | int]
+
 
 @dataclass(frozen=True, slots=True)
 class ProblemDetail:
@@ -47,9 +50,9 @@ class ProblemDetail:
     def status_code(self) -> int:
         return self.status
 
-    def to_dict(self) -> dict[str, str | int]:
+    def to_dict(self) -> ProblemDict:
         """Serialize to JSON-compatible dict, omitting None fields."""
-        d: dict[str, str | int] = {
+        d: ProblemDict = {
             "type": self.type,
             "title": self.title,
             "status": self.status,

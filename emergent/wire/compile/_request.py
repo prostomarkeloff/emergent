@@ -29,6 +29,8 @@ if TYPE_CHECKING:
     from nodnod import Scope
     from nodnod.agent.base import Agent
 
+type Kwargs = dict[str, Any]
+
 
 async def compose_node_value(
     node_type: type,
@@ -176,7 +178,7 @@ async def build_request(
     fields = inspect_dataclass(request_cls)
     dc_fields = {f.name: f for f in dataclasses.fields(request_cls)}
 
-    kwargs: dict[str, Any] = {}
+    kwargs: Kwargs = {}
 
     for name, info in fields.items():
         dc_field = dc_fields.get(name)
@@ -214,7 +216,7 @@ def build_request_sync(
     fields = inspect_dataclass(request_cls)
     dc_fields = {f.name: f for f in dataclasses.fields(request_cls)}
 
-    kwargs: dict[str, Any] = {}
+    kwargs: Kwargs = {}
 
     for name, info in fields.items():
         value = get_value(name)

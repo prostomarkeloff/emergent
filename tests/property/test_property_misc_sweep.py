@@ -1776,7 +1776,8 @@ class TestCompileExplain:
         from emergent.wire.compile._core import Axes
 
         axes = Axes.default()
-        assert trace_dict(axes) == {}
+        # Post-TypedDict refactor: always returns TraceDict shape with empty lists.
+        assert trace_dict(axes) == {"types": [], "scan": [], "wrap": []}
 
     def test_field_dict_no_tracing(self) -> None:
         from emergent.wire.compile._explain import field_dict

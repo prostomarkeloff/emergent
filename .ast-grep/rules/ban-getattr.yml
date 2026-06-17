@@ -1,0 +1,57 @@
+id: ban-getattr
+language: python
+severity: error
+message: "getattr() / __getattribute__() is banned — use direct typed attribute access"
+ignores:
+  - tests/**
+  - emergent/wire/axis/_explain.py
+  - emergent/graph/_analyze.py
+  - emergent/graph/_visualize.py
+  - emergent/ops/_graph.py
+  - emergent/wire/axis/query/_api.py
+  - emergent/wire/axis/query/_coerce.py
+  - emergent/wire/axis/query/_contexts.py
+  - emergent/wire/axis/query/_expr.py
+  - emergent/wire/axis/query/_fold.py
+  - emergent/wire/axis/query/_relational.py
+  - emergent/wire/axis/query/_simplify.py
+  - emergent/wire/axis/query/contrib/_impls/_sqlalchemy.py
+  - emergent/wire/axis/query/providers/memory.py
+  - emergent/wire/axis/schema/_explain.py
+  - emergent/wire/axis/schema/_inspect.py
+  - emergent/wire/axis/schema/_universal.py
+  - emergent/wire/axis/schema/dialects/delta.py
+  - emergent/wire/axis/schema/dialects/temporal.py
+  - emergent/wire/axis/storage/_explain.py
+  - emergent/wire/axis/storage/contrib/_impls/_sqlalchemy.py
+  - emergent/wire/axis/surface/_explain.py
+  - emergent/wire/axis/surface/codecs/resolve.py
+  - emergent/wire/axis/surface/codecs/stateful.py
+  - emergent/wire/axis/surface/enrichers/_impl.py
+  - emergent/wire/bridge/_capabilities.py
+  - emergent/wire/bridge/_introspect.py
+  - emergent/wire/bridge/bridgers/fastapi/_extractors.py
+  - emergent/wire/compile/_core.py
+  - emergent/wire/compile/_phase.py
+  - emergent/wire/compile/_pipeline.py
+  - emergent/wire/compile/targets/cli.py
+  - emergent/wire/compile/targets/event.py
+  - emergent/wire/compile/targets/fastapi.py
+  - emergent/wire/compile/targets/sqlalchemy.py
+  - emergent/wire/compile/targets/telegrinder.py
+  - emergent/wire/derive/__init__.py
+  - emergent/wire/derive/_builders.py
+  - emergent/wire/derive/_codegen.py
+  - emergent/wire/derive/_handler.py
+  - emergent/wire/derive/_pipeline.py
+  - emergent/wire/derive/_project.py
+  - emergent/wire/derive/_query_helpers.py
+  - emergent/wire/derive/_transforms.py
+  - emergent/wire/derive/auth/caps.py
+  - emergent/wire/derive/auth/extractors.py
+  - emergent/wire/derive/auth/login.py
+  - emergent/wire/derive/patterns/methods.py
+rule:
+  any:
+    - pattern: "getattr($$$)"
+    - pattern: "$OBJ.__getattribute__($$$)"

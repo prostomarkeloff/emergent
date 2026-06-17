@@ -1,0 +1,24 @@
+id: ban-object-annotation
+language: python
+severity: error
+message: "object as type hint is banned — use a concrete type, union, or Protocol"
+ignores:
+  - tests/**
+  - emergent/wire/compile/targets/telegrinder.py
+rule:
+  all:
+    - pattern: object
+    - kind: identifier
+    - inside:
+        stopBy: end
+        any:
+          - kind: typed_parameter
+          - kind: typed_default_parameter
+          - kind: function_definition
+    - not:
+        inside:
+          stopBy: end
+          kind: function_definition
+          has:
+            kind: identifier
+            regex: "^__.*__$"

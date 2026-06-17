@@ -38,9 +38,10 @@ Transport-agnostic via @op + MethodDialect::
 from __future__ import annotations
 
 import inspect
+import types
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, get_args, get_origin, get_type_hints
+from typing import Any, TYPE_CHECKING, get_args, get_origin, get_type_hints
 
 from kungfu import Error, Ok, Result
 
@@ -69,6 +70,25 @@ if TYPE_CHECKING:
     from emergent.wire.derive._trigger import TriggerGen
 
 F = Callable[..., object]
+
+type FieldTypeMap = dict[str, type]
+type StrAnyMap = dict[str, Any]
+
+# A class attribute may be a plain function or a static/classmethod descriptor.
+type _MethodAttr = staticmethod[Any, Any] | classmethod[Any, Any, Any] | types.FunctionType
+
+
+def _unwrap_descriptor(attr: _MethodAttr) -> Callable[..., Any]:
+    """Return the underlying function of a static/classmethod, else the attr.
+
+    Branches on each descriptor kind separately: a combined ``isinstance``
+    narrowing of an untyped attr leaves ``__func__`` with unknown type params.
+    """
+    if isinstance(attr, staticmethod):
+        return attr.__func__
+    if isinstance(attr, classmethod):
+        return attr.__func__
+    return attr
 
 TRIGGER_ENTRIES_ATTR = "__trigger_entries__"
 OP_ENTRIES_ATTR = "__op_entry__"
@@ -136,7 +156,7 @@ def op(
 
     def decorator(fn: F) -> F:
         entry = _OpEntry(
-            name=name or fn.__name__,  # type: ignore[union-attr]
+            name=name or fn.__name__,
             effects=effects,
             capabilities=caps,
         )
@@ -198,7 +218,7 @@ except (ImportError, RuntimeError):
 
 def _enhance_trigger_with_args(
     trigger: Trigger,
-    fields: dict[str, type],
+    fields: FieldTypeMap,
 ) -> Trigger:
     """Enhance TelegrindTrigger Command rule with Arguments from field annotations."""
     if _TelegrindTrigger is None or not isinstance(trigger, _TelegrindTrigger):
@@ -268,28 +288,27 @@ def _build_method_operation(
     suffix: str,
     description: str | None = None,
     order: int = 100,
-) -> Operation[object, DomainError]:
+) -> Operation[Any, DomainError]:
     """Build (OpType, annotated_handler, Exposure) from a decorated method."""
-    method_fn: Callable[..., object] = getattr(service, method_name)
+    method_fn: Callable[..., Any] = getattr(service, method_name)
     hints = get_type_hints(method_fn, include_extras=True)
     sig = inspect.signature(method_fn)
 
-    raw_attr: Callable[..., object] = inspect.getattr_static(service, method_name)
+    raw_attr: _MethodAttr = inspect.getattr_static(service, method_name)
     is_static = isinstance(raw_attr, staticmethod)
     is_classmethod = isinstance(raw_attr, classmethod)
 
     # Validate the method is async — sync methods will crash at await
     # Extract __func__ from classmethod/staticmethod descriptors
-    _has_func = hasattr(raw_attr, "__func__")
-    raw_fn: Callable[..., object] = getattr(raw_attr, "__func__") if _has_func else raw_attr
+    raw_fn: Callable[..., Any] = _unwrap_descriptor(raw_attr)
     if not inspect.iscoroutinefunction(raw_fn):
         raise TypeError(
             f"{service.__name__}.{method_name} must be async. "
             f"Use 'async def {method_name}(...)' instead of 'def {method_name}(...)'."
         )
 
-    fields: dict[str, type] = {}
-    defaults: dict[str, object] = {}
+    fields: FieldTypeMap = {}
+    defaults: StrAnyMap = {}
     params: list[str] = []
     for name, param in sig.parameters.items():
         if name in ("self", "cls"):
@@ -303,10 +322,10 @@ def _build_method_operation(
     # (the bound/resolved version from getattr) returns Awaitable at runtime.
     # getattr returns object, which cannot express async — Callable[..., Awaitable[...]]
     # is the tightest annotation that preserves type safety without cast.
-    _method_fn: Callable[..., Awaitable[Result[object, DomainError]]] = getattr(service, method_name)
+    _method_fn: Callable[..., Awaitable[Result[Any, DomainError]]] = getattr(service, method_name)
     _params = params
 
-    async def handler(op: object) -> Result[object, DomainError]:
+    async def handler(op: Any) -> Result[Any, DomainError]:
         kw = {n: getattr(op, n) for n in _params}
         return (
             await _method_fn(**kw)
@@ -358,7 +377,7 @@ def _build_method_operation(
 
     _resp_field_names = list(_result_type_fields(result_type).keys())
 
-    def converter(cls: type, result: Result[object, object]) -> HasAnnotations:
+    def converter(cls: type, result: Result[Any, Any]) -> HasAnnotations:
         match result:
             case Ok(val):
                 if len(_resp_field_names) == 1 and not hasattr(val, _resp_field_names[0]):
@@ -366,7 +385,7 @@ def _build_method_operation(
                 else:
                     return cls(**{f: getattr(val, f, None) for f in _resp_field_names})
             case Error(err):
-                return err  # type: ignore[return-value]
+                return err
             case _:
                 raise TypeError(f"Expected Result, got {type(result)}")
 
@@ -377,7 +396,7 @@ def _build_method_operation(
     )
 
     # Build annotated handler
-    annotated_handler: OperationHandler[object, DomainError] = annotate_handler(handler, op_type)
+    annotated_handler: OperationHandler[Any, DomainError] = annotate_handler(handler, op_type)
 
     # Build Exposure
     codec = rrc(request_type, response_type)
@@ -386,7 +405,7 @@ def _build_method_operation(
     return op_type, annotated_handler, exposure_obj
 
 
-def _result_type_fields(result_type: type) -> dict[str, type]:
+def _result_type_fields(result_type: type) -> FieldTypeMap:
     """Extract fields from result type for response.
 
     If result_type is a dataclass, uses its fields. Otherwise treats as
@@ -416,7 +435,7 @@ def _stub_op(name: str, effects: tuple[DerivationEffect, ...]) -> Op:
 
     @dataclass(frozen=True, slots=True)
     class _NullTemplate:
-        def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[object, DomainError]:
+        def build[EntityT](self, spec: HandlerSpec[EntityT]) -> OperationHandler[Any, DomainError]:
             raise RuntimeError("_NullTemplate should never be called")
 
     return Op(
@@ -453,16 +472,15 @@ class Methods(SchemaCapability):
         for name in dir(entity):
             if name.startswith("_"):
                 continue
-            raw: Callable[..., object] | None = inspect.getattr_static(entity, name, None)
+            raw: _MethodAttr | None = inspect.getattr_static(entity, name, None)
             if raw is None:
                 continue
-            _has_func = hasattr(raw, "__func__")
-            fn: Callable[..., object] = getattr(raw, "__func__") if _has_func else raw
+            fn: Callable[..., Any] = _unwrap_descriptor(raw)
 
             entries: list[_TriggerEntry] = getattr(fn, TRIGGER_ENTRIES_ATTR, [])
             for i, entry in enumerate(entries):
                 suffix = f"_{i}" if len(entries) > 1 else ""
-                operation: Operation[object, DomainError] = _build_method_operation(
+                operation: Operation[Any, DomainError] = _build_method_operation(
                     service=entity,
                     method_name=name,
                     trigger=entry.trigger,
@@ -505,11 +523,10 @@ class MethodDialect(SchemaCapability):
         for method_name in dir(entity):
             if method_name.startswith("_"):
                 continue
-            raw: Callable[..., object] | None = inspect.getattr_static(entity, method_name, None)
+            raw: _MethodAttr | None = inspect.getattr_static(entity, method_name, None)
             if raw is None:
                 continue
-            _has_func = hasattr(raw, "__func__")
-            fn: Callable[..., object] = getattr(raw, "__func__") if _has_func else raw
+            fn: Callable[..., Any] = _unwrap_descriptor(raw)
 
             entry: _OpEntry | None = getattr(fn, OP_ENTRIES_ATTR, None)
             if entry is None:
@@ -520,7 +537,7 @@ class MethodDialect(SchemaCapability):
             if trigger is None:
                 continue
 
-            operation: Operation[object, DomainError] = _build_method_operation(
+            operation: Operation[Any, DomainError] = _build_method_operation(
                 service=entity,
                 method_name=method_name,
                 trigger=trigger,

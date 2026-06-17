@@ -101,7 +101,9 @@ class TestGetCollector:
 class TestTraceDict:
     def test_empty_when_no_trace(self) -> None:
         axes = Axes.default()
-        assert trace_dict(axes) == {}
+        # Post-TypedDict refactor: trace_dict always returns a TraceDict shape.
+        # No-trace case yields all-empty lists (not a bare empty dict).
+        assert trace_dict(axes) == {"types": [], "scan": [], "wrap": []}
 
     def test_has_types_scan_wrap_keys(self) -> None:
         collector = ListCollector()

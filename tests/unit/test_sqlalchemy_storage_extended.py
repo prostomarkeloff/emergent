@@ -728,7 +728,9 @@ class TestSATypeMap:
         assert SA_TYPE_MAP[str] is Text
 
     def test_unknown_type_not_in_map(self) -> None:
-        assert bytes not in SA_TYPE_MAP
+        # bytes is a supported native column (-> LargeBinary); use a genuinely
+        # unmapped scalar to exercise the "unknown type" path.
+        assert complex not in SA_TYPE_MAP
 
     def test_list_not_in_map(self) -> None:
         assert list not in SA_TYPE_MAP

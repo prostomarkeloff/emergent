@@ -20,6 +20,8 @@ from typing import Protocol, runtime_checkable
 from nodnod.node import Node
 from nodnod.scope import Scope
 
+type MappedScopes = Mapping[type[Node], Scope]
+
 
 @runtime_checkable
 class Spawnable(Protocol):
@@ -41,7 +43,7 @@ class Spawnable(Protocol):
     def spawn(
         self,
         nodes: set[type[Node]],
-        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+        mapped_scopes: MappedScopes | None = None,
     ) -> None: ...
 
     def despawn(self, nodes: set[type[Node]]) -> None: ...

@@ -1,0 +1,8 @@
+id: ban-cast-alias
+language: python
+severity: error
+message: "Alias for typing.cast is banned — use typing.cast(...) or import cast directly"
+ignores:
+  - tests/**
+rule:
+  pattern: "from typing import cast as $ALIAS"

@@ -26,6 +26,8 @@ from typing import Any, Callable
 
 from kungfu import Option, Nothing, Some
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode, callable_name
+
 
 def _nothing() -> Option[type]:
     return Nothing()
@@ -47,6 +49,11 @@ class DelegateCodec:
 
     handler: Callable[..., Any]
     response: Option[type] = field(default_factory=_nothing)
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("DelegateCodec", (("handler", callable_name(self.handler)),))
+        )
 
 
 def delegate(

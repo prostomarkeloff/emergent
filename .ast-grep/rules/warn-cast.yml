@@ -1,0 +1,16 @@
+id: warn-cast
+language: python
+severity: warning
+message: "cast() requires a comment explaining why the type checker can't infer this"
+ignores:
+  - tests/**
+rule:
+  any:
+    - pattern: cast($TYPE, $EXPR)
+    - pattern: typing.cast($TYPE, $EXPR)
+  not:
+    inside:
+      stopBy: end
+      follows:
+        stopBy: end
+        kind: comment

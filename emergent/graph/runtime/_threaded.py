@@ -33,16 +33,16 @@ from nodnod.value import Value
 
 from emergent.graph.runtime._helpers import GraphInfo as _GraphInfo
 from emergent.graph.runtime._helpers import build_graph_info as _build_graph_info
+from emergent.graph.runtime._helpers import is_result_node
 
 if TYPE_CHECKING:
     from emergent.graph.runtime._policy import WorkStealingContext
 
-
-def _is_result_node(node: type[Node]) -> bool:
-    """Check if node is a ResultNode without narrowing the type."""
-    from nodnod.interface.result_node import ResultNode
-
-    return issubclass(node, ResultNode)
+type PendingMap = dict[type[Node], int]
+type ScopeMap = dict[type[Node], Scope]
+type EventMap = dict[type[Node], threading.Event]
+type TraitsMap = Mapping[type[Node], WorkStealingContext]
+type MappedScopes = Mapping[type[Node], Scope]
 
 
 def _is_sequential_either(node: type[Node]) -> bool:
@@ -67,7 +67,7 @@ def _get_either_members(node: type[Node]) -> tuple[type[Node], ...]:
 def _get_from_node(node: type[Node]) -> type[Node]:
     """Get __from_node__ from a ResultNode.
 
-    Assumes caller has verified node is a ResultNode via _is_result_node.
+    Assumes caller has verified node is a ResultNode via is_result_node.
     """
     from nodnod.interface.result_node import ResultNode
 
@@ -85,7 +85,7 @@ class _Task:
 
 @dataclass(slots=True)
 class _RunState:
-    pending: dict[type[Node], int]
+    pending: PendingMap
     pending_lock: threading.Lock
     remaining_finals: int
     remaining_lock: threading.Lock
@@ -94,8 +94,8 @@ class _RunState:
     error: BaseException | None
     error_lock: threading.Lock
     local_scope: Scope
-    mapped_scopes: dict[type[Node], Scope]
-    node_completed: dict[type[Node], threading.Event]
+    mapped_scopes: ScopeMap
+    node_completed: EventMap
     node_completed_lock: threading.Lock
 
 
@@ -218,7 +218,7 @@ def _on_node_failed(
             run_state.pending[dependent] -= 1
             ready = run_state.pending[dependent] == 0
 
-        if _is_result_node(dependent):
+        if is_result_node(dependent):
             if ready:
                 node_scope = run_state.mapped_scopes.get(dependent, run_state.local_scope)
                 _submit_task(pool, _Task(dependent, node_scope, run_state.local_scope))
@@ -381,7 +381,7 @@ async def _execute_task(
             await _execute_sequential_either(task, run_state, pool, graph_info)
             return
 
-        if _is_result_node(node):
+        if is_result_node(node):
             await _execute_result_node_task(task, run_state, pool, graph_info)
             return
 
@@ -495,11 +495,11 @@ class _WorkStealingAgent(Agent):
         self,
         graph_info: _GraphInfo,
         n_workers: int,
-        traits: Mapping[type[Node], WorkStealingContext] | None = None,
+        traits: TraitsMap | None = None,
     ) -> None:
         self._graph_info = graph_info
         self._n_workers = n_workers
-        self._traits: Mapping[type[Node], WorkStealingContext] = traits if traits is not None else {}
+        self._traits: TraitsMap = traits if traits is not None else {}
         # Mutable state — initialized in run(), used by spawn/despawn
         self._pool: _WorkStealingPool | None = None
         self._run_state: _RunState | None = None
@@ -531,11 +531,11 @@ class _WorkStealingAgent(Agent):
         return cls(graph_info=graph_info, n_workers=n_workers)
 
     @property
-    def traits(self) -> Mapping[type[Node], WorkStealingContext]:
+    def traits(self) -> TraitsMap:
         """Per-node compilation context folded from schema_meta capabilities."""
         return self._traits
 
-    async def run(self, local_scope: Scope, mapped_scopes: dict[type[Node], Scope]) -> None:
+    async def run(self, local_scope: Scope, mapped_scopes: ScopeMap) -> None:
         validate_local_scope_is_linked_to_node_scopes(local_scope, mapped_scopes)
 
         run_state = _RunState(
@@ -583,7 +583,7 @@ class _WorkStealingAgent(Agent):
     def spawn(
         self,
         nodes: set[type[Node]],
-        mapped_scopes: Mapping[type[Node], Scope] | None = None,
+        mapped_scopes: MappedScopes | None = None,
     ) -> None:
         """Add new nodes to the running work-stealing pool."""
         if self._pool is None or self._run_state is None:
@@ -652,7 +652,7 @@ def resolve_worker_count(n_nodes: int, workers: int | None) -> int:
 def build_work_stealing_agent(
     graph_info: _GraphInfo,
     n_workers: int,
-    traits: Mapping[type[Node], WorkStealingContext] | None = None,
+    traits: TraitsMap | None = None,
 ) -> _WorkStealingAgent:
     """Public factory for _WorkStealingAgent.
 

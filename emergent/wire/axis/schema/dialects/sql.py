@@ -19,7 +19,18 @@ from typing import TYPE_CHECKING
 from emergent.wire.axis.schema._universal import SchemaAxisCapability
 
 if TYPE_CHECKING:
-    from emergent.wire.axis._capability import SQLAlchemyContext, SQLAlchemyTableContext
+    from sqlalchemy.sql.elements import ClauseElement
+
+    from emergent.wire.axis._capability import (
+        IndexDialectKwargs,
+        IndexElement,
+        SQLAlchemyContext,
+        SQLAlchemyTableContext,
+    )
+
+
+type ColumnKwargs = dict[str, str | int | bool | None]
+type _PgIndexKwargs = dict[str, str | list[str] | ClauseElement]
 
 
 class SQLCapability(SchemaAxisCapability):
@@ -45,7 +56,7 @@ class Index(SQLCapability):
     unique: bool = False
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
-        kwargs: dict[str, str | int | bool | None] = {**ctx.column_kwargs, "index": True}
+        kwargs: ColumnKwargs = {**ctx.column_kwargs, "index": True}
         if self.unique:
             kwargs["unique"] = True
         return replace(ctx, column_kwargs=kwargs)
@@ -125,13 +136,24 @@ class OnUpdate(SQLCapability):
 class Check(SQLCapability):
     """Custom CHECK constraint.
 
-    Example:
-        age: Annotated[int, sql.Check("age >= 0 AND age <= 150")]
+    Example (table-level):
+        @schema_meta(sql.Check("weight BETWEEN 1 AND 10", name="ck_weight"))
+        @dataclass
+        class PersonTag: ...
 
-    Table-level DDL — no compile_sqlalchemy (read directly by table compiler).
+    SQL: CHECK (weight BETWEEN 1 AND 10) — emitted as a table-level constraint.
     """
     expression: str
     name: str | None = None
+
+    def compile_sqlalchemy_table(
+        self, ctx: "SQLAlchemyTableContext"
+    ) -> "SQLAlchemyTableContext":
+        from emergent.wire.axis._capability import TableCheckSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx, add_check=TableCheckSpec(expression=self.expression, name=self.name)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,12 +178,15 @@ class PrimaryKey(SQLCapability):
 class ForeignKey(SQLCapability):
     """Explicit foreign key reference.
 
-    Example:
+    `ondelete`/`onupdate` default to None — meaning no referential action clause is
+    emitted (a bare FK == SQL default NO ACTION), matching SQLAlchemy's own default.
+    Pass a value to opt in:
+
         team_id: Annotated[int, sql.ForeignKey("teams.id", ondelete="SET NULL")]
     """
     target: str  # "table.column"
-    ondelete: str = "CASCADE"
-    onupdate: str = "CASCADE"
+    ondelete: str | None = None
+    onupdate: str | None = None
 
     def compile_sqlalchemy(self, ctx: "SQLAlchemyContext") -> "SQLAlchemyContext":
         # Store FK config in kwargs - compiler builds sqlalchemy.ForeignKey from these
@@ -222,36 +247,103 @@ class CompositeUnique(SQLCapability):
     def compile_sqlalchemy_table(
         self, ctx: "SQLAlchemyTableContext"
     ) -> "SQLAlchemyTableContext":
-        return replace(ctx, constraints=(*ctx.constraints, self.fields))
+        from emergent.wire.axis._capability import TableConstraintSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx, add_constraint=TableConstraintSpec(fields=self.fields, name=self.name)
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class CompositeIndex(SQLCapability):
-    """Index across multiple fields.
+    """Index across columns and/or SQL expressions — plain SQL.
 
     Example:
         @schema_meta(CompositeIndex("status", "created_at", name="idx_status_date"))
-        @dataclass
-        class Order: ...
+        @schema_meta(CompositeIndex("user_id", text("created_at DESC"), name="ix_user_recent"))
 
-    SQL: CREATE INDEX
+    `fields` may mix column names and `text(...)`/`col.desc()` expressions (functional
+    index). Dialect-specific extras (access method, partial WHERE, covering INCLUDE) are
+    NOT here — they are their own capability (e.g. `PostgresIndex`), composed by
+    inheritance. SQL: CREATE [UNIQUE] INDEX.
     """
 
-    fields: tuple[str, ...]
+    fields: tuple[IndexElement, ...]
     name: str | None = None
     unique: bool = False
 
-    def __init__(
-        self, *fields: str, name: str | None = None, unique: bool = False
-    ) -> None:
+    def __init__(self, *fields: IndexElement, name: str | None = None, unique: bool = False) -> None:
         object.__setattr__(self, "fields", fields)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "unique", unique)
 
+    def _dialect_kwargs(self) -> "IndexDialectKwargs":
+        """Literal `Index(...)` dialect kwargs — none for plain SQL; subclasses override."""
+        return {}
+
     def compile_sqlalchemy_table(
         self, ctx: "SQLAlchemyTableContext"
     ) -> "SQLAlchemyTableContext":
-        return replace(ctx, indexes=(*ctx.indexes, self.fields))
+        from emergent.wire.axis._capability import TableIndexSpec, sqlalchemy_table
+
+        return sqlalchemy_table(
+            ctx,
+            add_index=TableIndexSpec(
+                fields=self.fields,
+                name=self.name,
+                unique=self.unique,
+                dialect_kwargs=self._dialect_kwargs(),
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PostgresIndex(CompositeIndex):
+    """Postgres index: a CompositeIndex that gains its OWN identity — access method,
+    partial predicate, covering columns.
+
+    It does not generalise `using`/`where`/`include` into the base (those are not ANSI
+    and mean different things per backend); it is a distinct semantic atom that emits
+    ONLY `postgresql_*` Index kwargs.
+
+    Example:
+        @schema_meta(PostgresIndex("payload", name="ix_payload_gin", using="gin"))
+        @schema_meta(PostgresIndex(
+            "user_id", text("created_at DESC"),
+            name="ix_active_recent", where="deleted_at IS NULL",
+        ))
+        @schema_meta(PostgresIndex("user_id", "kind", name="ix_cover", include=("created_at",)))
+    """
+
+    using: str | None = None
+    where: str | None = None
+    include: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        *fields: IndexElement,
+        name: str | None = None,
+        unique: bool = False,
+        using: str | None = None,
+        where: str | None = None,
+        include: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(*fields, name=name, unique=unique)
+        object.__setattr__(self, "using", using)
+        object.__setattr__(self, "where", where)
+        object.__setattr__(self, "include", include)
+
+    def _dialect_kwargs(self) -> "IndexDialectKwargs":
+        from sqlalchemy import text
+
+        kwargs: _PgIndexKwargs = {}
+        if self.using is not None:
+            kwargs["postgresql_using"] = self.using
+        if self.where is not None:
+            kwargs["postgresql_where"] = text(self.where)
+        if self.include:
+            kwargs["postgresql_include"] = list(self.include)
+        return kwargs
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -313,5 +405,6 @@ __all__ = (
     # Table-Level
     "TableName",
     "CompositeIndex",
+    "PostgresIndex",
     "CompositeUnique",
 )

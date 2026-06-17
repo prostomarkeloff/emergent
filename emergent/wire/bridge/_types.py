@@ -10,6 +10,8 @@ Extracted bundles route + handler + metadata (like Handler).
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -24,12 +26,21 @@ from dataclasses import dataclass, field
 type RouteData = object
 
 
+type MetadataFactoryResult = dict[str, Any]
+type MetadataMap = dict[str, object]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Extracted — like Handler in surface
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_metadata() -> dict[str, object]:
+def empty_metadata() -> MetadataFactoryResult:
+    """Default factory for an empty Extracted.metadata mapping.
+
+    Public so sibling modules (e.g. ExtractedWithShape) can share the exact
+    same default-factory instead of re-declaring a private one.
+    """
     return {}
 
 
@@ -56,10 +67,11 @@ class Extracted[R: RouteData]:
     name: str | None = None
     description: str | None = None
     deprecated: bool = False
-    metadata: dict[str, object] = field(default_factory=_empty_metadata)
+    metadata: MetadataMap = field(default_factory=empty_metadata)
 
 
 __all__ = (
     "RouteData",
     "Extracted",
+    "empty_metadata",
 )

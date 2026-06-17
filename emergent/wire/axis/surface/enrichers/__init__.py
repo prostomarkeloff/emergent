@@ -32,6 +32,7 @@ from emergent.wire.axis.surface.enrichers._impl import (
     # Provide / Injection
     Provide,
     Inject,
+    ScopedResource,
     # Validation
     Validate,
     # Cache
@@ -63,6 +64,7 @@ __all__ = (
     # Provide / Injection
     "Provide",
     "Inject",
+    "ScopedResource",
     # Validation
     "Validate",
     # Cache

@@ -29,13 +29,16 @@ from emergent.wire.axis.surface._stack import AppStack
 
 T = TypeVar("T")
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type MountMap[T] = dict[str, "StackView[T] | list[tuple[T, Handler[Any]]]"]
+
 
 @dataclass(slots=True)
 class StackView(Generic[T]):
     """Tree of (trigger, handler) pairs extracted from an AppStack."""
 
     root: list[tuple[T, Handler[Any]]]
-    mounts: dict[str, StackView[T] | list[tuple[T, Handler[Any]]]]
+    mounts: MountMap[T]
 
 
 def scan_endpoint(
@@ -82,7 +85,7 @@ def scan_stack(
 ) -> StackView[T]:
     """Walk AppStack and extract typed (trigger, handler) tree."""
     root = scan(stack.root_app, trigger, codec)
-    mounts: dict[str, StackView[T] | list[tuple[T, Handler[Any]]]] = {}
+    mounts: MountMap[T] = {}
     for prefix, mounted in stack.mounts.items():
         if isinstance(mounted, AppStack):
             mounts[prefix] = scan_stack(mounted, trigger, codec)

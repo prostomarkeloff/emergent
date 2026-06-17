@@ -14,6 +14,8 @@
 Requires: sqlalchemy[asyncio]
 """
 
+
+from typing import Any
 try:
     from emergent.wire.axis.query.contrib._impls._sqlalchemy import (
         # Provider
@@ -40,10 +42,10 @@ try:
 except ImportError as e:
     _msg = f"sqlalchemy[asyncio] is required for SQLAlchemy relational provider: {e}"
 
-    def _raise_import_error(*_args: object, **_kwargs: object) -> None:
+    def _raise_import_error(*_args: Any, **_kwargs: Any) -> None:
         raise ImportError(_msg)
 
-    provider = _raise_import_error  # type: ignore[assignment]
-    store = _raise_import_error  # type: ignore[assignment]
+    provider = _raise_import_error
+    store = _raise_import_error
 
     __all__ = ("provider", "store")

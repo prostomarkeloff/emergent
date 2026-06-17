@@ -14,7 +14,7 @@ All derivelib transforms expressed as capabilities using DeriveCtx methods.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, TypeGuard
+from typing import Any, TYPE_CHECKING, TypeGuard
 
 from emergent.wire.axis.schema._universal import SchemaCapability
 from emergent.wire.derive._effects import (
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from emergent.wire.derive._opspec import OpSpec
 
 
-def _is_list_of_objects(val: object) -> TypeGuard[list[object]]:
+def _is_list_of_objects(val: Any) -> TypeGuard[list[Any]]:
     """TypeGuard that narrows object to list[object] instead of list[Unknown].
 
     isinstance(x, list) narrows to list[Unknown] in pyright strict mode,

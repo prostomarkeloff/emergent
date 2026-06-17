@@ -32,6 +32,10 @@ from emergent.wire.axis._capability import (
 )
 from emergent.wire.compile._core import fold
 
+type JsonObj = dict[str, Any]
+type JsonObjList = list[dict[str, Any]]
+type JsonNode = dict[str, Any] | list[Any] | Any
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Handler Runtime Fold
@@ -154,7 +158,7 @@ class Mount(SurfaceCapability):
     app: Any  # ASGI app
     prefix: str = "/"
     source: str = ""
-    openapi_schema: dict[str, Any] | None = None  # Pre-extracted OpenAPI
+    openapi_schema: JsonObj | None = None  # Pre-extracted OpenAPI
 
     def compile_fastapi(self, ctx: FastAPICompileContext) -> FastAPICompileContext:
         """Mount ASGI app. Self-contained — does the work."""
@@ -177,7 +181,7 @@ class Mount(SurfaceCapability):
         source = self.source or "legacy"
         source_schema = self.openapi_schema
 
-        def custom_openapi() -> dict[str, Any]:
+        def custom_openapi() -> JsonObj:
             if app.openapi_schema:
                 return app.openapi_schema
 
@@ -197,8 +201,8 @@ class Mount(SurfaceCapability):
 
 
 def _merge_openapi(
-    target: dict[str, Any],
-    source: dict[str, Any],
+    target: JsonObj,
+    source: JsonObj,
     prefix: str,
     source_name: str,
 ) -> None:
@@ -212,7 +216,7 @@ def _merge_openapi(
         full_path = f"{prefix}{source_base}{path}"
 
         # Convert Swagger 2.0 to OpenAPI 3.x if needed
-        converted_methods: dict[str, Any] = {}
+        converted_methods: JsonObj = {}
         for method, spec in methods.items():
             if method == "parameters":
                 continue  # Path-level params handled separately
@@ -232,8 +236,8 @@ def _merge_openapi(
                         resp["content"] = {"application/json": {"schema": schema}}
 
             # Convert body parameter to requestBody (Swagger 2.0 → 3.x)
-            params: list[dict[str, Any]] = converted_spec.get("parameters", [])
-            new_params: list[dict[str, Any]] = []
+            params: JsonObjList = converted_spec.get("parameters", [])
+            new_params: JsonObjList = []
             for param in params:
                 if param.get("in") == "body":
                     converted_spec["requestBody"] = {
@@ -297,7 +301,7 @@ def _merge_openapi(
 
 
 def _update_refs(
-    obj: dict[str, Any] | list[Any] | Any, old_ref: str, new_ref: str
+    obj: JsonNode, old_ref: str, new_ref: str
 ) -> None:
     """Recursively update $ref values in object."""
     if isinstance(obj, dict):
@@ -314,7 +318,7 @@ def _update_refs(
 
 
 def _add_generic_mount_docs(
-    schema: dict[str, Any],
+    schema: JsonObj,
     prefix: str,
     source: str,
 ) -> None:

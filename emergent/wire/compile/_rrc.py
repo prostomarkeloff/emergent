@@ -22,6 +22,8 @@ from emergent.wire.axis.surface.codecs.rrc import RequestResponseCodec
 from emergent.wire.axis.surface.enrichers import chain_enrichers
 from emergent.wire.compile._capabilities import fold_handler_runtime
 
+type ScopeExtras = dict[type, Any]
+
 
 async def execute_rrc(
     handler: Handler[RequestResponseCodec],
@@ -44,7 +46,7 @@ async def execute_rrc(
     async def core_handler(scope: Scope) -> Any:
         op = request.to_domain()
         # Extract scope values to pass to ops runner
-        scope_extras: dict[type, object] = {}
+        scope_extras: ScopeExtras = {}
         for key, value in scope.items():
             if key is not Scope:  # Skip Scope itself
                 scope_extras[key] = value.value

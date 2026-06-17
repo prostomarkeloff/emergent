@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import ABC
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeVar
+from typing import Any, TYPE_CHECKING, TypeVar
 
 if TYPE_CHECKING:
     from emergent.wire.axis.query._proxy import FieldProxy, OrderSpec
@@ -189,13 +189,14 @@ class AggregateExpr:
 
 
 type AggHandler[Ctx] = Callable[[AggregateSpec, Ctx], object]
+type AggHandlerMap[Ctx] = Mapping[type[AggregateFunc], Callable[[AggregateSpec, Ctx], Any]]
 
 
 def fold_aggregate(
     spec: AggregateSpec,
     ctx: _Ctx,
-    handlers: Mapping[type[AggregateFunc], Callable[[AggregateSpec, _Ctx], object]],
-) -> object:
+    handlers: AggHandlerMap[_Ctx],
+) -> Any:
     """Dispatch aggregate computation by AggregateFunc type.
 
     Flat dispatch (not recursive like fold_expr). Looks up handler

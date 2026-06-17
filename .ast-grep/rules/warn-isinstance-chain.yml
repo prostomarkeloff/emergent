@@ -1,0 +1,10 @@
+id: warn-isinstance-chain
+language: python
+severity: warning
+message: "isinstance chain may indicate dispatch-by-type — consider Protocol or visitor pattern"
+rule:
+  pattern: |
+    if isinstance($OBJ, $TYPE1):
+        $$$BODY1
+    elif isinstance($OBJ, $TYPE2):
+        $$$BODY2

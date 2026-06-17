@@ -30,7 +30,9 @@ Two patterns:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, TypeVar
+from typing import Any, Callable, Protocol, TypeVar, runtime_checkable
+
+from emergent.wire.axis._explain import ExplainContext, ExplainNode, callable_name
 
 
 R_co = TypeVar("R_co", covariant=True)
@@ -47,6 +49,18 @@ class Producing(Protocol[R_co]):
     def produce(cls) -> R_co: ...
 
 
+@runtime_checkable
+class ImmediateProducible(Protocol):
+    """A codec that yields its response directly, with no domain layer.
+
+    Open-world dispatch: execution calls ``produce_response()`` instead of an
+    isinstance ladder over concrete immediate-codec types. Any future immediate
+    codec participates by implementing this method.
+    """
+
+    def produce_response(self) -> Any: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ImmediateCodec:
     """Immediate response codec — no domain, just produce().
@@ -56,6 +70,14 @@ class ImmediateCodec:
     """
 
     response: type[Producing[Any]]
+
+    def produce_response(self) -> Any:
+        return self.response.produce()
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode("ImmediateCodec", (("response", self.response.__name__),))
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +89,16 @@ class ImmediateFactoryCodec:
     """
 
     factory: Callable[[], Any]
+
+    def produce_response(self) -> Any:
+        return self.factory()
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        return ctx.add(
+            ExplainNode(
+                "ImmediateFactoryCodec", (("factory", callable_name(self.factory)),)
+            )
+        )
 
 
 def immediate(response: type[Producing[R_co]]) -> ImmediateCodec:

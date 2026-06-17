@@ -1,0 +1,17 @@
+id: warn-string-dispatch
+language: python
+severity: warning
+message: "string-literal equality dispatch — use an Enum and match/if on enum members instead"
+rule:
+  kind: if_statement
+  all:
+    - has:
+        stopBy: end
+        kind: comparison_operator
+        all:
+          - has:
+              kind: string
+          - has:
+              regex: "^==$"
+    - has:
+        kind: elif_clause

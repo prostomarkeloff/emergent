@@ -1,0 +1,12 @@
+id: ban-setattr
+language: python
+severity: error
+message: "setattr() is banned — use direct attribute assignment"
+ignores:
+  - emergent/wire/axis/schema/_universal.py
+  - emergent/wire/axis/surface/codecs/stateful.py
+  - emergent/wire/bridge/_capabilities.py
+  - emergent/wire/derive/patterns/methods.py
+
+rule:
+  pattern: "setattr($$$)"

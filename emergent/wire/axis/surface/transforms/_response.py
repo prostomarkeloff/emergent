@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Generic, Protocol, runtime_checkable, TypeVar, ClassVar, cast
+from typing import Any, Awaitable, Callable, Generic, Protocol, runtime_checkable, TypeVar, ClassVar, cast
 
 from ._base import ResponseTransform
+
+# JSON-ish object mapping produced by response conversion.
+type StrDict = dict[str, Any]
+# Dataclass field table on a dataclass instance.
+type FieldTable = dict[str, dataclasses.Field[object]]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -17,25 +22,25 @@ from ._base import ResponseTransform
 @runtime_checkable
 class HasToDict(Protocol):
     """Object with to_dict() method."""
-    def to_dict(self) -> dict[str, object]: ...
+    def to_dict(self) -> StrDict: ...
 
 
 @runtime_checkable
 class HasAsDict(Protocol):
     """Object with asdict() method."""
-    def asdict(self) -> dict[str, object]: ...
+    def asdict(self) -> StrDict: ...
 
 
 @runtime_checkable
 class HasModelDump(Protocol):
     """Pydantic v2 model."""
-    def model_dump(self) -> dict[str, object]: ...
+    def model_dump(self) -> StrDict: ...
 
 
 @runtime_checkable
 class HasDict(Protocol):
     """Pydantic v1 model."""
-    def dict(self) -> dict[str, object]: ...
+    def dict(self) -> StrDict: ...
 
 
 @runtime_checkable
@@ -44,7 +49,7 @@ class DataclassInstance(Protocol):
 
     Dataclasses have __dataclass_fields__ as a class attribute.
     """
-    __dataclass_fields__: ClassVar[dict[str, dataclasses.Field[object]]]
+    __dataclass_fields__: ClassVar[FieldTable]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -63,7 +68,7 @@ DictConvertible = HasToDict | HasAsDict | HasModelDump | HasDict | dict[str, obj
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def to_dict_from_protocol(obj: DictConvertible) -> dict[str, object]:
+def to_dict_from_protocol(obj: DictConvertible) -> StrDict:
     """Convert protocol-compatible object to dict.
 
     For objects that implement one of: to_dict, asdict, model_dump, dict.
@@ -80,7 +85,7 @@ def to_dict_from_protocol(obj: DictConvertible) -> dict[str, object]:
     return obj.dict()
 
 
-def try_convert_to_dict(obj: DictConvertible) -> dict[str, object]:
+def try_convert_to_dict(obj: DictConvertible) -> StrDict:
     """Convert DictConvertible to dict."""
     return to_dict_from_protocol(obj)
 
@@ -94,10 +99,10 @@ def is_dict_convertible(obj: HasToDict | HasAsDict | HasModelDump | HasDict) -> 
     return True  # Type already guarantees convertibility
 
 
-def convert_dataclass_to_dict(obj: DataclassInstance) -> dict[str, object]:
+def convert_dataclass_to_dict(obj: DataclassInstance) -> StrDict:
     """Convert dataclass instance to dict."""
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        result: dict[str, object] = dict(dataclasses.asdict(obj))
+        result: StrDict = dict(dataclasses.asdict(obj))
         return result
     raise TypeError(f"{type(obj).__name__} is not a dataclass instance")
 
@@ -123,11 +128,11 @@ class AsDict(ResponseTransform):
 
     skip: bool = False
 
-    def apply_response(self, response: object) -> dict[str, object]:
+    def apply_response(self, response: Any) -> StrDict:
         """Convert response to dict."""
         if isinstance(response, dict):
             # Cast needed because isinstance(x, dict) narrows to dict[Unknown, Unknown]
-            raw = cast(dict[str, object], response)
+            raw = cast(dict[str, Any], response)
             return raw
         if isinstance(response, (HasToDict, HasAsDict, HasModelDump, HasDict)):
             return to_dict_from_protocol(response)
@@ -152,7 +157,7 @@ class AsStr(ResponseTransform):
     Useful for telegrinder's str_manager.
     """
 
-    def apply_response(self, response: object) -> str:
+    def apply_response(self, response: Any) -> str:
         """Convert response to string."""
         return str(response)
 

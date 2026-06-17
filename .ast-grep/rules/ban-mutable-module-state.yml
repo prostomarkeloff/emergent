@@ -1,0 +1,23 @@
+id: ban-mutable-module-state
+language: python
+severity: warning
+message: "Mutable module-level state is discouraged — use DI or function-scoped state"
+ignores:
+  - tests/**
+rule:
+  any:
+    - pattern: "$NAME: dict[$$$] = {}"
+    - pattern: "$NAME: list[$$$] = []"
+    - pattern: "$NAME: set[$$$] = set()"
+    - pattern: "$NAME = {}"
+    - pattern: "$NAME = []"
+  not:
+    inside:
+      stopBy: end
+      any:
+        - kind: function_definition
+        - kind: class_definition
+constraints:
+  NAME:
+    not:
+      regex: "^[A-Z_][A-Z0-9_]*$"

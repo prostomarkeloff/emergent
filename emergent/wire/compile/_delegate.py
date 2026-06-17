@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from nodnod.agent.base import Agent
 
 
+type ResolvedParams = dict[str, Any]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Compose Dialect Support — resolve handler params via compose.*
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -29,7 +32,7 @@ async def resolve_handler_params(
     handler: Callable[..., Any],
     scope: Scope,
     agent_cls: type[Agent],
-) -> dict[str, Any]:
+) -> ResolvedParams:
     """Resolve handler params using compose dialect.
 
     For each param:
@@ -58,7 +61,7 @@ async def resolve_handler_params(
         hints = {}
 
     sig = inspect.signature(handler)
-    result: dict[str, Any] = {}
+    result: ResolvedParams = {}
 
     for name, param in sig.parameters.items():
         if name in ("self", "cls"):
@@ -150,7 +153,7 @@ def _get_base_type(param_type: Any) -> type | None:
     return param_type if isinstance(param_type, type) else None
 
 
-def _extract_compose_result(raw: tuple[bool, object]) -> tuple[bool, object]:
+def _extract_compose_result(raw: tuple[bool, Any]) -> tuple[bool, Any]:
     """Extract compose result — breaks Unknown propagation from generic T.
 
     Composer.compose[T] returns tuple[bool, T | str]. When T is Unknown
@@ -171,10 +174,11 @@ async def _compose_node(
     composer = Composer.create(scope, agent_cls)
     # Composer.compose is generic: compose[T](node_type: type[T]) -> tuple[bool, T | str].
     # With bare `type` (no type param), T resolves to Unknown — unavoidable since the
-    # node_type is only known at runtime via reflection (get_type_hints).
-    # _extract_compose_result breaks the Unknown propagation chain.
-    raw = await composer.compose(node_type)  # pyright: ignore[reportUnknownVariableType]  # T is Unknown because node_type is bare `type`
-    success, value = _extract_compose_result(raw)  # pyright: ignore[reportUnknownArgumentType]  # tuple carries Unknown T from compose
+    # node_type is only known at runtime via reflection (get_type_hints). The composed
+    # value is therefore genuinely Any; annotating `raw` pins the concrete shape so the
+    # Unknown does not propagate, and _extract_compose_result keeps the chain explicit.
+    raw: tuple[bool, Any] = await composer.compose(node_type)
+    success, value = _extract_compose_result(raw)
     if success:
         return True, value
     return False, None

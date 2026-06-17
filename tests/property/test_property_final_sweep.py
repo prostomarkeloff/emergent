@@ -1135,7 +1135,7 @@ class TestSchemaDialects:
         cu = CompositeUnique("email", "tenant_id")
         ctx = SQLAlchemyTableContext(class_name="User", table_name="users")
         new_ctx = cu.compile_sqlalchemy_table(ctx)
-        assert ("email", "tenant_id") in new_ctx.constraints
+        assert ("email", "tenant_id") in tuple(c.fields for c in new_ctx.constraints)
 
     def test_sql_composite_index(self):
         """SQL CompositeIndex compile_sqlalchemy_table."""
@@ -1145,7 +1145,7 @@ class TestSchemaDialects:
         ci = CompositeIndex("status", "created_at")
         ctx = SQLAlchemyTableContext(class_name="Order", table_name="orders")
         new_ctx = ci.compile_sqlalchemy_table(ctx)
-        assert ("status", "created_at") in new_ctx.indexes
+        assert ("status", "created_at") in tuple(i.fields for i in new_ctx.indexes)
 
     def test_sql_table_name(self):
         """SQL TableName compile_sqlalchemy_table."""
@@ -1887,12 +1887,13 @@ class TestCompileExplain:
     """Tests for compile/_explain.py."""
 
     def test_trace_dict_no_trace(self):
-        """trace_dict returns empty dict when no trace."""
+        """trace_dict returns empty-shape TraceDict when no trace."""
         from emergent.wire.compile._explain import trace_dict
 
         axes = Axes.default()
         data = trace_dict(axes)
-        assert data == {}
+        # Post-TypedDict refactor: always returns TraceDict shape.
+        assert data == {"types": [], "scan": [], "wrap": []}
 
     def test_trace_dict_with_traced(self):
         """trace_dict returns structured data with traced axes."""

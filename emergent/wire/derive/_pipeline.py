@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field as dataclass_field
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Any, TYPE_CHECKING, Protocol, runtime_checkable
 
 from kungfu import Error, Ok, Result
 
@@ -36,6 +36,10 @@ if TYPE_CHECKING:
     from emergent.wire.axis.query import RelationalQuerySet
     from emergent.wire.derive._ctx import OperationHandler
     from emergent.wire.derive._handler import HandlerSpec, HasProvider
+
+
+type EntityData = dict[str, object]
+type EntityFieldData = dict[str, Any]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,10 +64,10 @@ class PipelineContext[EntityT]:
     # Accumulated state — steps read/write these
     query: RelationalQuerySet[EntityT] | None = None
     existing: EntityT | None = None
-    entity_data: dict[str, object] | None = None
+    entity_data: EntityData | None = None
     items: list[EntityT] | None = None
     result: object = None
-    extras: dict[str, object] = dataclass_field(default_factory=lambda: dict[str, object]())
+    extras: EntityData = dataclass_field(default_factory=lambda: dict[str, object]())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -82,7 +86,7 @@ class PipelineStep(Protocol):
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> PipelineContext[EntityT] | Result[object, DomainError]: ...
+    ) -> PipelineContext[EntityT] | Result[Any, DomainError]: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -107,11 +111,11 @@ class Pipeline:
 
     def build[EntityT](
         self, spec: HandlerSpec[EntityT]
-    ) -> OperationHandler[object, DomainError]:
+    ) -> OperationHandler[Any, DomainError]:
         """Build handler by closing over spec and steps."""
         pipeline_steps = self.steps
 
-        async def handler(op: HasProvider[EntityT]) -> Result[object, DomainError]:
+        async def handler(op: HasProvider[EntityT]) -> Result[Any, DomainError]:
             pctx: PipelineContext[EntityT] = PipelineContext(spec=spec, op=op)
 
             for step in pipeline_steps:
@@ -204,7 +208,7 @@ class FetchOrNotFound:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> PipelineContext[EntityT] | Result[object, DomainError]:
+    ) -> PipelineContext[EntityT] | Result[Any, DomainError]:
         assert pctx.query is not None
         result = await pctx.op.provider.fetch_one(pctx.query)
         if result is None:
@@ -261,7 +265,7 @@ class BuildEntityData:
         pctx: PipelineContext[EntityT],
     ) -> PipelineContext[EntityT]:
         spec = pctx.spec
-        entity_data: dict[str, object] = {
+        entity_data: EntityFieldData = {
             f: getattr(pctx.op, f)
             for f in spec.non_identity_names
             if hasattr(pctx.op, f)
@@ -295,7 +299,7 @@ class MergeFields:
     ) -> PipelineContext[EntityT]:
         assert pctx.existing is not None
         spec = pctx.spec
-        entity_data: dict[str, object] = {
+        entity_data: EntityFieldData = {
             f: getattr(pctx.op, f, getattr(pctx.existing, f))
             for f in spec.non_identity_names
         }
@@ -319,7 +323,7 @@ class PatchMergeFields:
     ) -> PipelineContext[EntityT]:
         assert pctx.existing is not None
         spec = pctx.spec
-        entity_data: dict[str, object] = {
+        entity_data: EntityFieldData = {
             name: getattr(pctx.existing, name)
             for name in (*spec.non_identity_names, *spec.identity_names)
         }
@@ -467,7 +471,7 @@ class CheckCache:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> PipelineContext[EntityT] | Result[object, DomainError]:
+    ) -> PipelineContext[EntityT] | Result[Any, DomainError]:
         cache_key = f"{pctx.spec.entity_name}:{identity_values(pctx.op, pctx.spec.identity_names)}"
         pctx.extras["cache_key"] = cache_key
         cache = getattr(pctx.op, "cache")
@@ -504,7 +508,7 @@ class WrapOk:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> Result[object, DomainError]:
+    ) -> Result[Any, DomainError]:
         value = pctx.result
         if value is None:
             value = pctx.items if pctx.items is not None else pctx.existing
@@ -518,7 +522,7 @@ class WrapItems:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> Result[object, DomainError]:
+    ) -> Result[Any, DomainError]:
         assert pctx.items is not None
         return Ok(pctx.items)
 
@@ -532,7 +536,7 @@ class WrapPaginated:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> Result[object, DomainError]:
+    ) -> Result[Any, DomainError]:
         assert pctx.items is not None
         page: int = getattr(pctx.op, "page", 1)
         page_size: int = getattr(pctx.op, "page_size", self.default_page_size)
@@ -551,7 +555,7 @@ class WrapCount:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> Result[object, DomainError]:
+    ) -> Result[Any, DomainError]:
         return Ok(pctx.extras["total"])
 
 
@@ -562,7 +566,7 @@ class WrapExists:
     async def execute[EntityT](
         self,
         pctx: PipelineContext[EntityT],
-    ) -> Result[object, DomainError]:
+    ) -> Result[Any, DomainError]:
         return Ok(pctx.existing is not None)
 
 

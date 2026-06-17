@@ -14,6 +14,7 @@ All modes run the same pytest. The difference:
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import time
@@ -55,11 +56,18 @@ def light() -> bool:
 
 
 def medium() -> bool:
-    """~3min: all tests, hypothesis=50, + pyright."""
+    """~3min: all tests, hypothesis=50, + pyright.
+
+    Pyright runs only when the optional ``telegrinder`` target (gated to Python>=3.14)
+    is installed: it is absent on the 3.13 CI matrix leg, where pyright would otherwise
+    report spurious ``reportMissingImports`` for an intentionally-optional dependency.
+    The dedicated ``typecheck`` CI job pins 3.14 and is the authoritative type gate.
+    """
     ok = _run([
         *BASE_ARGS,
     ], "All tests (medium)", profile="medium")
-    ok &= _run(["uv", "run", "pyright", "emergent/"], "Pyright")
+    if importlib.util.find_spec("telegrinder") is not None:
+        ok &= _run(["uv", "run", "pyright", "emergent/"], "Pyright")
     return ok
 
 

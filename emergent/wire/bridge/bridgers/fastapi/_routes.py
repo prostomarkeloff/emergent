@@ -12,7 +12,12 @@ Each type captures framework-specific route information.
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from dataclasses import dataclass, field
+
+type OptionMap = dict[str, Any]
+type MiddlewareOptions = dict[str, object]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -87,7 +92,7 @@ class LifespanData:
         order: Execution order (lower = earlier).
     """
 
-    kind: str  # "startup" | "shutdown"
+    kind: Literal["startup", "shutdown"]
     order: int = 0
 
 
@@ -112,7 +117,7 @@ class ExceptionHandlerData:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_options() -> dict[str, object]:
+def _empty_options() -> OptionMap:
     return {}
 
 
@@ -129,7 +134,7 @@ class MiddlewareData:
     """
 
     middleware_class: type
-    options: dict[str, object] = field(default_factory=_empty_options)
+    options: MiddlewareOptions = field(default_factory=_empty_options)
 
 
 __all__ = (

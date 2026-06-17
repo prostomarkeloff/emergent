@@ -20,6 +20,7 @@ All behavior is unified here. Adapters just provide:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
@@ -47,8 +48,12 @@ if TYPE_CHECKING:
     from nodnod.agent.base import Agent
     from emergent.wire.compile._lifetime import ScopeLayer
 
+type FamilyScopes = Mapping[type, Scope]
+type TransitionResult = tuple[Any, dict[str, Any]] | None
+type ResolveTransition = Callable[..., Awaitable[TransitionResult]]
 
-def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> Mapping[type, Scope]:
+
+def _family_mapped(layer: ScopeLayer | None, scope: Scope) -> FamilyScopes:
     """Compute mapped_scopes from layer's family.
 
     Returns empty dict when no family is configured.
@@ -112,7 +117,7 @@ async def execute_rrc_unified(
         async with scope:
             # 1. Inject framework context
             result = inject_scope(scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
 
             # Compute mapped_scopes from family
@@ -160,7 +165,7 @@ async def execute_rrc_unified(
 async def execute_stateful_unified(
     handler: Handler[StatefulCodec],
     store_key: str,
-    resolve_transition: Callable[..., Awaitable[tuple[Any, dict[str, Any]] | None]],
+    resolve_transition: ResolveTransition,
     inject_scope: ScopeInjector,
     format_response: ResponseFormatter | None = None,
     axes: Axes | None = None,
@@ -224,7 +229,7 @@ async def execute_stateful_unified(
             done_scope = Scope()
         async with done_scope:
             result = inject_scope(done_scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
             final = await execute_stateful_done(handler, new_state, done_scope, target=target)
 
@@ -264,14 +269,12 @@ def execute_immediate_unified(
     Returns:
         Formatted response
     """
-    from emergent.wire.axis.surface.codecs.immediate import ImmediateCodec, ImmediateFactoryCodec
+    from emergent.wire.axis.surface.codecs.immediate import ImmediateProducible
 
     codec = handler.codec
 
-    if isinstance(codec, ImmediateCodec):
-        response = codec.response.produce()
-    elif isinstance(codec, ImmediateFactoryCodec):
-        response = codec.factory()
+    if isinstance(codec, ImmediateProducible):
+        response = codec.produce_response()
     else:
         raise TypeError(f"Expected ImmediateCodec or ImmediateFactoryCodec, got {type(codec)}")
 
@@ -327,7 +330,7 @@ async def execute_delegate_unified(
         async with scope:
             # 1. Inject framework context
             result = inject_scope(scope)
-            if result is not None and hasattr(result, "__await__"):
+            if result is not None and inspect.isawaitable(result):
                 await result
 
             # Compute mapped_scopes from family

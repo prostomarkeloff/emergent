@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import Any, TYPE_CHECKING, ParamSpec, TypeVar
 
 from kungfu import Result
+
+from emergent.wire.axis.surface.capabilities._base import empty_caps as _empty_caps
 
 if TYPE_CHECKING:
     from emergent.wire.axis.surface.capabilities._base import SurfaceCapability
@@ -31,11 +33,7 @@ type AnyHandler[**P, R] = SyncHandler[P, R] | AsyncHandler[P, R]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def _empty_caps() -> tuple[SurfaceCapability, ...]:
-    return ()
-
-
-def _empty_triggers() -> tuple[tuple[type, Callable[..., object]], ...]:
+def _empty_triggers() -> tuple[tuple[type, Callable[..., Any]], ...]:
     return ()
 
 

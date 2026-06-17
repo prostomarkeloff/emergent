@@ -659,11 +659,30 @@ def test_explain_dialect_with_handler():
 
 
 def test_explain_dialect_without_handler():
-    """ExplainDialect.without_handler removes a handler."""
+    """ExplainDialect.without_handler removes a custom override.
+
+    Post-self-compilation: ops self-describe via compile_explain, so
+    removing a dialect override falls back to the op's own compile_explain
+    output (not to a bare type-name stub). ``without_handler`` only has
+    a visible effect if a handler was previously ``with_handler``-added
+    to override the op's own description.
+    """
+    # Base dialect has no handlers — ops self-describe regardless.
     dialect = RELATIONAL_EXPLAIN_DIALECT.without_handler(Filter)
     result = dialect.explain([Filter(Eq(Field("x"), Const(1)))])
-    assert result[0]["op"] == "Filter"  # fallback to type name
-    assert "expr" not in result[0]
+    assert result[0]["op"] == "Filter"
+    # Self-description from Filter.compile_explain is preserved.
+    assert "expr" in result[0]
+
+    # Confirm the override-removal pathway: add a handler, remove it,
+    # verify the op's own self-description is back.
+    def _stub(_op: Filter) -> dict:
+        return {"op": "Filter"}
+
+    overridden = RELATIONAL_EXPLAIN_DIALECT.with_handler(Filter, _stub)
+    assert "expr" not in overridden.explain([Filter(Eq(Field("x"), Const(1)))])[0]
+    reverted = overridden.without_handler(Filter)
+    assert "expr" in reverted.explain([Filter(Eq(Field("x"), Const(1)))])[0]
 
 
 def test_explain_dialect_format():

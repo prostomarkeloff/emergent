@@ -27,10 +27,15 @@ from emergent.wire.derive._query_helpers import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import datetime
 
     from emergent.wire.axis.query import MutatingRelationalProvider, RelationalQuerySet
     from emergent.wire.derive._ctx import OperationHandler
     from emergent.wire.derive._opspec import Op
+
+
+type PaginatedPage[EntityT] = dict[str, int | list[EntityT]]
+type ScalarEntityData = dict[str, int | str | float | bool | datetime | None]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -312,12 +317,12 @@ class PaginatedFetchMany:
 
     page_size: int = 20
 
-    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[dict[str, int | list[EntityT]], DomainError]":
+    def build[EntityT](self, spec: HandlerSpec[EntityT]) -> "OperationHandler[PaginatedPage[EntityT], DomainError]":
         base = spec.base_query
         sf = spec.scope_fields
         default_ps = self.page_size
 
-        async def handler(op: HasProvider[EntityT]) -> Result[dict[str, int | list[EntityT]], DomainError]:
+        async def handler(op: HasProvider[EntityT]) -> Result[PaginatedPage[EntityT], DomainError]:
             assert base is not None
             query = scoped_query(base, op, sf)
             total = await op.provider.count(query)
@@ -622,7 +627,7 @@ class SoftDeleteMark:
                 return result
 
             all_names = (*id_names, *non_id_names)
-            data: dict[str, int | str | float | bool | datetime | None] = {
+            data: ScalarEntityData = {
                 n: getattr(existing, n) for n in all_names
             }
             data[field] = datetime.now(tz=timezone.utc)

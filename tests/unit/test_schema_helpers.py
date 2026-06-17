@@ -285,7 +285,9 @@ class TestFilterUniversal:
 
         caps = (Identity(), Index("idx"), MaxLen(100))
         result = filter_universal(caps)
-        assert len(result) == 2  # Identity and MaxLen
+        # UniversalCapability is aliased to SchemaAxisCapability, so every
+        # schema cap is universal — filter_universal keeps them all.
+        assert len(result) == 3
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -495,7 +497,10 @@ class TestIntegrationHelpersPipeline:
         universal_only = filter_universal(caps)
         dialect_only = filter_by_dialect(caps, SQLCapability)
         assert len(dialect_only) == 1  # Index
-        assert all(not isinstance(c, SQLCapability) for c in universal_only)
+        # filter_universal is a no-op under the current model (UniversalCapability
+        # is aliased to SchemaAxisCapability) — it keeps every cap. Dialect
+        # separation is done by filter_by_dialect above, not by filter_universal.
+        assert len(universal_only) == len(caps)
 
     def test_nested_schema_meta_composition(self):
         """compose_schema_meta and get_nested_schema_meta on related entities."""

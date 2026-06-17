@@ -14,35 +14,23 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field as dataclass_field, replace
-from typing import TYPE_CHECKING, Never
+from typing import Any, TYPE_CHECKING, Never
 
-from emergent.wire.axis._capability import Capability
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.query import RelationalQuerySet
-from emergent.wire.axis.query._expr import Expr  # noqa: TC001
-from emergent.wire.axis.query._proxy import EntityProxy  # noqa: TC001
 from emergent.wire.axis.schema import FieldInfo, fields_with_capability, inspect_type
 from emergent.wire.axis.surface import Exposure
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
+from emergent.wire.derive._codegen import AnnotationValue, make_annotation
 from emergent.wire.derive._query_strategy import (
     NoQueryStrategy,
     QueryStrategy,
     RelationalStrategy,
 )
 
-
-def _make_annotated(base_type: type, capabilities: tuple[Capability, ...]) -> type:
-    """Build Annotated[base_type, *caps] at runtime.
-
-    Pyright treats Annotated as a special form and doesn't model
-    __getitem__ on it. No static alternative exists for building
-    Annotated types dynamically — this is a fundamental limitation of
-    the typing module's runtime API having no static type.
-    """
-    import typing
-
-    args: tuple[type | Capability, ...] = (base_type, *capabilities)
-    getitem: Callable[[tuple[type | Capability, ...]], type] = getattr(typing, "Annotated").__getitem__
-    return getitem(args)
+if TYPE_CHECKING:
+    from emergent.wire.axis.query._expr import Expr
+    from emergent.wire.axis.query._proxy import EntityProxy
 
 
 if TYPE_CHECKING:
@@ -57,6 +45,10 @@ if TYPE_CHECKING:
 type OperationHandler[T, E] = Callable[..., Awaitable[Result[T, E]]]
 type Operation[T, E] = tuple[type, OperationHandler[T, E], Exposure]
 
+# ── Named type aliases (house style: alias instead of inline dict[...]) ──
+type FieldMap = dict[str, FieldInfo]
+type FieldTypeMap = dict[str, AnnotationValue]
+
 
 @dataclass(frozen=True, slots=True)
 class DeriveCtx[EntityT]:
@@ -69,10 +61,10 @@ class DeriveCtx[EntityT]:
     """
 
     entity: type[EntityT]
-    fields: dict[str, FieldInfo] = dataclass_field(
+    fields: FieldMap = dataclass_field(
         default_factory=lambda: dict[str, FieldInfo]()
     )
-    identity_fields: dict[str, FieldInfo] = dataclass_field(
+    identity_fields: FieldMap = dataclass_field(
         default_factory=lambda: dict[str, FieldInfo]()
     )
     # Query axis
@@ -86,6 +78,17 @@ class DeriveCtx[EntityT]:
     specs: tuple[OpSpec, ...] = ()
     operations: tuple[Operation[object, DomainError], ...] = ()
     capabilities: tuple[SurfaceCapability, ...] = ()
+
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        """Self-describe via the shared `Explainable` protocol.
+
+        Derive's dict projection is bespoke (semantic trigger labels,
+        scalar-only effect/capability reflection), so it is carried verbatim
+        as `raw` rather than restructured into shared node fields/children.
+        """
+        from emergent.wire.derive._explain import derive_dict
+
+        return ctx.add(ExplainNode(type(self).__name__, raw=derive_dict(self)))
 
     # ─── Backward-compat properties (query axis) ─────────────────
 
@@ -128,7 +131,7 @@ class DeriveCtx[EntityT]:
         """All identity field names."""
         return tuple(self.identity_fields.keys())
 
-    def non_identity_fields(self) -> dict[str, FieldInfo]:
+    def non_identity_fields(self) -> FieldMap:
         """Get fields excluding all identity fields."""
         return {
             name: info
@@ -136,7 +139,7 @@ class DeriveCtx[EntityT]:
             if name not in self.identity_fields
         }
 
-    def field_types(self, exclude: tuple[str, ...] = ()) -> dict[str, type]:
+    def field_types(self, exclude: tuple[str, ...] = ()) -> FieldTypeMap:
         """Get {name: base_type} dict, optionally excluding fields."""
         return {
             name: info.base_type
@@ -146,20 +149,20 @@ class DeriveCtx[EntityT]:
 
     def annotated_field_types(
         self, exclude: tuple[str, ...] = (), only: set[str] | None = None,
-    ) -> dict[str, type]:
+    ) -> FieldTypeMap:
         """Get {name: Annotated[base_type, *caps]} dict — preserves schema capabilities.
 
         Use for Request/Response types that go through the wire compiler.
         The compiler reads capabilities for Pydantic validation, OpenAPI docs, CLI help.
         """
-        result: dict[str, type] = {}
+        result: FieldTypeMap = {}
         for name, info in self.fields.items():
             if name in exclude:
                 continue
             if only is not None and name not in only:
                 continue
             if info.capabilities:
-                result[name] = _make_annotated(info.base_type, info.capabilities)
+                result[name] = make_annotation(info.base_type, *info.capabilities)
             else:
                 result[name] = info.base_type
         return result
@@ -170,7 +173,7 @@ class DeriveCtx[EntityT]:
         """Return new ctx with OpSpec appended."""
         return replace(self, specs=(*self.specs, spec))
 
-    def add_operation(self, op: Operation[object, DomainError]) -> DeriveCtx[EntityT]:
+    def add_operation(self, op: Operation[Any, DomainError]) -> DeriveCtx[EntityT]:
         """Return new ctx with direct operation appended."""
         return replace(self, operations=(*self.operations, op))
 
@@ -183,7 +186,7 @@ class DeriveCtx[EntityT]:
     def replace_handler(
         self,
         effect: type,
-        template: object,
+        template: Any,
     ) -> DeriveCtx[EntityT]:
         """Replace handler_template on specs matching effect type.
 

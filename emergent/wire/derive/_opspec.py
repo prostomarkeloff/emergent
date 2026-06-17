@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypeGuard  # noqa: TC003
+from typing import Any, TYPE_CHECKING
 
+from emergent.wire.axis._explain import ExplainContext, ExplainNode
 from emergent.wire.axis.surface import Exposure, Trigger
 from emergent.wire.axis.surface.capabilities import SurfaceCapability
 from emergent.wire.axis.surface.codecs import rrc
@@ -32,10 +33,16 @@ from emergent.wire.derive._ctx import DeriveCtx, Operation, OperationHandler
 from emergent.wire.derive._effects import DerivationEffect
 from emergent.wire.derive._errors import DomainError
 from emergent.wire.derive._handler import DescriptiveTemplate, HandlerSpec, HandlerTemplate
-from emergent.wire.derive._project import FieldProjection, ResponseSpec, response_converter, response_fields  # noqa: TC001
+from emergent.wire.derive._project import response_converter, response_fields
 
 if TYPE_CHECKING:
+    from typing import TypeGuard
+
+    from emergent.wire.derive._project import FieldProjection, ResponseSpec
     from emergent.wire.derive._trigger import TriggerGen
+
+
+type FieldMap = Mapping[str, AnnotationValue]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -81,8 +88,8 @@ class OpSpec:
 
     name: str
     entity_name: str
-    input_fields: Mapping[str, AnnotationValue]
-    request_fields: Mapping[str, AnnotationValue]
+    input_fields: FieldMap
+    request_fields: FieldMap
     response_spec: ResponseSpec
     handler_template: HandlerTemplate
     trigger: Trigger
@@ -94,13 +101,25 @@ class OpSpec:
     scope_fields: tuple[str, ...] = ()
     source: str = ""
 
+    def compile_explain(self, ctx: ExplainContext) -> ExplainContext:
+        """Self-describe via the shared `Explainable` protocol.
+
+        Derive's per-op dict projection is bespoke (semantic trigger labels,
+        scalar-only effect/capability reflection, scalar-or-dict handler), so it
+        is carried verbatim as `raw` rather than restructured into shared node
+        fields/children.
+        """
+        from emergent.wire.derive._explain import spec_dict
+
+        return ctx.add(ExplainNode(type(self).__name__, raw=spec_dict(self)))
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # build_from_spec — OpSpec + DeriveCtx → Operation
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[object, DomainError]:
+def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation[Any, DomainError]:
     """Build Op type, handler, and Exposure from an OpSpec.
 
     Takes DeriveCtx directly — no SurfaceCtx bridging needed.
@@ -147,7 +166,7 @@ def build_from_spec[EntityT](spec: OpSpec, ctx: DeriveCtx[EntityT]) -> Operation
 
     # Build handler from template, annotate with op_type for runner dispatch
     handler = spec.handler_template.build(handler_spec)
-    annotated_handler: OperationHandler[object, DomainError] = annotate_handler(handler, op_type)
+    annotated_handler: OperationHandler[Any, DomainError] = annotate_handler(handler, op_type)
 
     # Build exposure
     codec_fn = spec.codec_factory if spec.codec_factory is not None else rrc

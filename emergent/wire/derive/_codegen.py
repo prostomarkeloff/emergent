@@ -10,30 +10,74 @@ Three concerns:
 from __future__ import annotations
 
 import types
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, make_dataclass
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import Annotated, Any, TYPE_CHECKING, Callable, Protocol
 
 from kungfu import Error, Ok, Result
 
+from emergent.wire.axis._capability import Capability
+
 if TYPE_CHECKING:
     from emergent.wire.derive._ctx import OperationHandler
+    from emergent.wire.derive._errors import DomainError
 
-# Annotation value: anything Python accepts in a type annotation context.
-type AnnotationValue = type | types.UnionType | types.GenericAlias
+# An ``Annotated[...]`` alias is a typing special form, not a concrete ``type`` /
+# ``UnionType`` / ``GenericAlias``. Pyright models its only nameable supertype as
+# this representative form, so it must be a member of the annotation-value union
+# for dynamically-built ``Annotated[base, *caps]`` values to type-check.
+_AnnotatedForm = Annotated[object, ...]
+
+# Annotation value: anything Python accepts in a type annotation context — a
+# concrete type, a runtime union, a parameterized generic alias, or an
+# ``Annotated[...]`` alias produced by ``make_annotation``.
+type AnnotationValue = type | types.UnionType | types.GenericAlias | _AnnotatedForm
 
 # Field spec for make_dataclass: (name, annotation) or (name, annotation, default).
-type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, int | str | float | bool | None]
+# Default may be any Python value — dataclasses accept arbitrary defaults.
+type FieldSpec = tuple[str, AnnotationValue] | tuple[str, AnnotationValue, object]
+
+type AnnotationMap = dict[str, type]
+type ScalarFieldMap = Mapping[str, str | int | float | bool | None]
+
+# JSON-like value for collection-response rows: handlers return ``Ok([row, ...])``
+# where each row is splatted into the item dataclass. Values are recursively
+# JSON-ish, never raw ``object``.
+type CollectionValue = (
+    str | int | float | bool | None
+    | Sequence[CollectionValue]
+    | Mapping[str, CollectionValue]
+)
+type CollectionRow = Mapping[str, CollectionValue]
+
+type NamespaceMap = dict[str, Callable[..., HasAnnotations | str | int | float | bool | None]]
 
 
 class HasAnnotations(Protocol):
     """Protocol for objects with __annotations__ attribute."""
-    __annotations__: dict[str, type]
+    __annotations__: AnnotationMap
 
 
 class FieldMapper(Protocol):
     """Protocol for custom field extraction from request to dict."""
-    def __call__(self, request: HasAnnotations) -> Mapping[str, str | int | float | bool | None]: ...
+    def __call__(self, request: HasAnnotations) -> ScalarFieldMap: ...
+
+
+# A collection ``from_domain`` yields either the mapped item instances or the
+# domain error (passed through for the error capabilities to render).
+type CollectionResult = list[HasAnnotations] | DomainError
+
+
+def make_annotation(base: AnnotationValue, *metas: Capability) -> AnnotationValue:
+    """Build ``Annotated[base, *metas]`` at runtime.
+
+    Pyright special-cases ``Annotated`` and does not model ``__getitem__`` on it,
+    so there is no static alternative for building annotation aliases
+    dynamically. The result is a legitimate annotation value (see
+    ``_AnnotatedForm`` / ``AnnotationValue``). ``metas`` are axis capabilities
+    (schema markers, compose ``Node``/``Retrieve``, ...) attached as metadata.
+    """
+    return Annotated[base, *metas]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -48,7 +92,7 @@ class DirectMapper:
     Inspectable replacement for the closure in create_request_type.
     """
 
-    def __call__(self, request: HasAnnotations) -> Mapping[str, str | int | float | bool | None]:
+    def __call__(self, request: HasAnnotations) -> ScalarFieldMap:
         return {k: getattr(request, k) for k in type(request).__annotations__}
 
 
@@ -69,7 +113,7 @@ class ResultConversion:
             case Error(err):
                 if self.error is not None:
                     return self.error(cls, err)
-                return err  # type: ignore[return-value]
+                return err
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -83,7 +127,7 @@ def create_dataclass(
     *,
     frozen: bool = True,
     bases: tuple[type, ...] = (),
-    namespace: dict[str, Callable[..., HasAnnotations | str | int | float | bool | None]] | None = None,
+    namespace: NamespaceMap | None = None,
 ) -> type:
     """Create dataclass with proper __name__ and __qualname__."""
     cls = make_dataclass(
@@ -131,7 +175,7 @@ def create_request_type(
             return _op(**_m(self))
 
     cls = create_dataclass(name, fields, frozen=frozen, namespace={"to_domain": to_domain})
-    cls.__request_mapper__ = _mapper  # type: ignore[attr-defined]
+    cls.__request_mapper__ = _mapper
     return cls
 
 
@@ -160,8 +204,58 @@ def create_response_type(
         return "\n".join(parts)
 
     cls = create_dataclass(name, fields, frozen=frozen, namespace={"from_domain": from_domain, "__str__": __str__})
-    cls.__response_converter__ = _conv  # type: ignore[attr-defined]
+    cls.__response_converter__ = _conv
     return cls
+
+
+class CollectionResponseMarker:
+    """Marker base: a response whose HTTP body is a top-level JSON array.
+
+    Targets test ``issubclass(response, CollectionResponseMarker)`` and read
+    ``collection_item()`` to set the response model to ``list[item]`` so the body
+    is a bare array rather than an object envelope.
+    """
+
+    @classmethod
+    def collection_item(cls) -> type:
+        raise NotImplementedError
+
+
+def create_collection_response_type(
+    name: str,
+    item_fields: list[FieldSpec],
+    *,
+    frozen: bool = True,
+) -> type:
+    """Create a collection response whose body is ``list[<item>]``.
+
+    The handler returns ``Ok(list_of_dicts)``; ``from_domain`` maps each element
+    through the item dataclass, yielding a bare JSON array. ``Error`` is passed
+    through unchanged for the error capabilities to turn into a problem response.
+    """
+    item_cls = create_dataclass(f"{name}Item", item_fields, frozen=frozen)
+
+    @classmethod
+    def collection_item(cls: type) -> type:
+        return item_cls
+
+    @classmethod
+    def from_domain(
+        cls: type,
+        domain_result: Result[Sequence[CollectionRow], DomainError],
+    ) -> CollectionResult:
+        match domain_result:
+            case Ok(values):
+                return [item_cls(**element) for element in values]
+            case Error(err):
+                return err
+            case _:
+                raise TypeError(f"Expected Result, got {type(domain_result)}")
+
+    return create_dataclass(
+        name, [], frozen=frozen, bases=(CollectionResponseMarker,),
+        namespace={"collection_item": collection_item, "from_domain": from_domain},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -180,7 +274,7 @@ def annotate_handler[T, E](
     takes a single positional arg to preserve dispatch semantics.
     """
 
-    async def annotated(op: object) -> Result[T, E]:
+    async def annotated(op: Any) -> Result[T, E]:
         return await handler(op)
 
     annotated.__annotations__ = {'op': op_type}
@@ -194,11 +288,11 @@ def annotate_handler[T, E](
 
 def create_sentinel_operation(
     name: str,
-) -> tuple[type, Callable[..., object]]:
+) -> tuple[type, Callable[..., Any]]:
     """Create a sentinel op type + noop handler for DelegateCodec exposures."""
     op_type = create_dataclass(name, [], frozen=True)
 
-    async def _noop(**kwargs: object) -> Result[object, object]:
+    async def _noop(**kwargs: Any) -> Result[Any, Any]:
         return Ok(kwargs.get("op"))
 
     return op_type, annotate_handler(_noop, op_type)
@@ -211,6 +305,7 @@ __all__ = (
     "FieldMapper",
     "DirectMapper",
     "ResultConversion",
+    "make_annotation",
     "create_dataclass",
     "set_type_name",
     "create_request_type",

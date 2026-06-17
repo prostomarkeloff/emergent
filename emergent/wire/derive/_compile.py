@@ -22,7 +22,11 @@ Multiple generators (e.g. http_crud + cli_crud) are compiled independently:
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Any
+
 from emergent.wire.axis.schema._universal import get_schema_meta
+from emergent.wire.axis.surface.enrichers._base import ScopeEnricher
 from emergent.wire.compile._core import fold, fold_schema
 from emergent.wire.derive._ctx import DeriveCtx
 from emergent.wire.derive._protocols import (
@@ -32,13 +36,16 @@ from emergent.wire.derive._protocols import (
 )
 
 
+type _SeenSpecs = dict[tuple[str, str, type], str]
+
+
 def _validate_specs[EntityT](ctx: DeriveCtx[EntityT]) -> None:
     """Check for duplicate spec names after a generate phase.
 
     Same op name with different triggers is valid (multi-target: HTTP + Telegram).
     Only reject true duplicates: same name + same trigger type + same source.
     """
-    seen: dict[tuple[str, str, type], str] = {}
+    seen: _SeenSpecs = {}
     for spec in ctx.specs:
         key = (spec.entity_name, spec.name, type(spec.trigger))
         if key in seen and seen[key] == spec.source:
@@ -73,8 +80,20 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
     """
     caps = get_schema_meta(cls)
 
+    # Runtime enrichers (ScopeEnricher: Inject/ScopedResource/Timeout/…) declared on the
+    # entity flow to the materialized exposure's capabilities so they attach at runtime.
+    # Without this they'd be silently dropped — DeriveModifiable/Augmentable folds skip them.
+    # Narrow to ScopeEnricher (not all SurfaceCapability) so derive transforms/generators
+    # (CRUD/Readonly/…) are NOT re-attached to the runtime exposure.
+    enricher_caps = tuple(cap for cap in caps if isinstance(cap, ScopeEnricher))
+
+    def _attach_surface(ctx: DeriveCtx[EntityT]) -> DeriveCtx[EntityT]:
+        if not enricher_caps:
+            return ctx
+        return replace(ctx, capabilities=(*ctx.capabilities, *enricher_caps))
+
     generators: list[DeriveGeneratable] = []
-    others: list[object] = []
+    others: list[Any] = []
     for cap in caps:
         if isinstance(cap, DeriveGeneratable):
             generators.append(cap)
@@ -88,7 +107,7 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
         _validate_specs(ctx)
         ctx = fold_schema(cls, ctx, DeriveModifiable, "compile_derive_modify")
         ctx = fold_schema(cls, ctx, DeriveAugmentable, "compile_derive_augment")
-        return [ctx]
+        return [_attach_surface(ctx)]
 
     # Multiple generators — each gets its own DeriveCtx
     results: list[DeriveCtx[EntityT]] = []
@@ -100,11 +119,11 @@ def compile_derive[EntityT](cls: type[EntityT]) -> list[DeriveCtx[EntityT]]:
         _validate_specs(ctx)
 
         # Phase 2+3: modify & augment — generator itself + shared caps
-        group: list[object] = [gen, *others]
+        group: list[Any] = [gen, *others]
         ctx = fold(group, ctx, DeriveModifiable, "compile_derive_modify")
         ctx = fold(group, ctx, DeriveAugmentable, "compile_derive_augment")
 
-        results.append(ctx)
+        results.append(_attach_surface(ctx))
 
     return results
 
