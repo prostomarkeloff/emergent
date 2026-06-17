@@ -1,6 +1,6 @@
 [project]
-name = "emergent"
-version = "0.9.0"
+name = "emergent-py"
+version = "0.9.5"
 description = "Type-safe DSLs for common patterns. Composable, local-first, lazy."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -8,10 +8,22 @@ authors = [
     { name = "prostomarkeloff" }
 ]
 license = { text = "MIT" }
+keywords = ["dsl", "compiler", "codegen", "fold", "type-safe", "fastapi", "sqlalchemy"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Code Generators",
+    "Typing :: Typed",
+]
 
 dependencies = [
     "kungfu-fp>=1.0.0",
-    "combinators-py @ git+https://github.com/prostomarkeloff/combinators.py.git",
+    "combinators-py>=0.5.0",
     "nodnod>=1.0.1",
 ]
 
@@ -26,19 +38,27 @@ sa = [
     "sqlalchemy>=2.0.46",
 ]
 tg = [
-    "telegrinder @ git+https://github.com/timoniq/telegrinder.git ; python_version >= '3.14'",
+    "telegrinder>=1.0.0 ; python_version >= '3.14'",
 ]
 cli = [
     "libcst>=1.0",
 ]
 # All optional targets
 all = [
-    "emergent[fastapi,sa,tg,cli]",
+    "emergent-py[fastapi,sa,tg,cli]",
 ]
+
+[project.urls]
+Homepage = "https://github.com/prostomarkeloff/emergent"
+Repository = "https://github.com/prostomarkeloff/emergent"
+Issues = "https://github.com/prostomarkeloff/emergent/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.sdist]
+include = ["emergent", "README.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
